@@ -104,9 +104,15 @@ true NVMe drives.
   port mirroring, static link aggregation (LAG), IGMP snooping, and broadcast storm
   control. Switching capacity 16 Gbps, 4K MAC address table.
 - **Ports**: 8x 10/100/1000 Mbps RJ45
-- **Management IP**: `<SWITCH_IP>` (TODO — record once assigned/reserved)
-- **Port assignments**: TODO — not yet documented; fill in as ports are wired
-  (e.g. Port 1 → geralt, Port 2 → yennefer, uplink port, etc.)
+- **Management IP**: `<SWITCH_IP>`
+- **Port assignments**:
+
+| Port | Connection |
+|---|---|
+| 1 | Uplink — input from router |
+| 2–6 | Unused |
+| 7 | geralt |
+| 8 | yennefer |
 
 ## Proxmox-specific notes
 
@@ -133,7 +139,3 @@ true NVMe drives.
   adapters are not disabled at firmware/rfkill level, they're simply administratively
   down and unconfigured in Proxmox (no bridge/interface config), i.e. wired-only by
   choice, not by restriction.
-
-## Open items to fill in
-
-- [ ] Switch management IP and per-port cabling map
