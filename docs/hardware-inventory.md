@@ -18,7 +18,7 @@ each node over SSH).
 | Memory | 16 GB SODIMM DDR4 2667 MT/s | 8 GB SODIMM DDR4 2133 MT/s |
 | GPU (dGPU) | NVIDIA GeForce GTX 1060 Mobile (GP106M, 6 GB) | none |
 | GPU (iGPU) | Intel UHD Graphics 630 | Intel HD Graphics 520 |
-| Boot storage | 256 GB NVMe SSD | 256 GB NVMe SSD |
+| Boot storage | 256 GB NVMe SSD | 256 GB SATA SSD |
 | Extra storage | 500 GB NVMe SSD + 1 TB HDD | 1 TB HDD |
 | Primary NIC | Killer E2400 GbE | Realtek RTL8111/8168/8211/8411 GbE |
 | Wireless | Intel CNVi WiFi (Cannon Lake PCH) | Realtek RTL8723DE 802.11b/g/n |
@@ -83,12 +83,13 @@ each node over SSH).
 
 | Device | Type | Size | Model | Role |
 |---|---|---|---|---|
-| sdb | NVMe-class SSD, SATA | 256 GB (238.5 GiB) | NFORCE 256M2 G2-PN43SY | Proxmox boot drive (`pve` VG: root/swap/data-thin) |
+| sdb | SSD, SATA | 256 GB (238.5 GiB) | NFORCE 256M2 G2-PN43SY | Proxmox boot drive (`pve` VG: root/swap/data-thin) |
 | sda | HDD, SATA | 1 TB (931.5 GiB) | WDC WD10JPVX-60JC3T1 | Bulk/backup storage |
 | sr0 | DVD-RW (SATA) | 1 GB (media dependent) | HP DVDRW GUE1N | Unused optical drive |
 
-Note: the "ssd1" boot drive on this node is a SATA SSD (`/dev/sdb`, `ata` transport),
-not NVMe — the M.2 slot on this chassis is SATA-only, unlike geralt's true NVMe drives.
+Note: the boot SSD on this node is SATA (`/dev/sdb`, `ID_BUS=ata`, no NVMe controller
+present on the PCI bus) — the M.2 slot on this chassis is SATA-only, unlike geralt's
+true NVMe drives.
 
 **Network**
 - Ethernet: Realtek RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller
