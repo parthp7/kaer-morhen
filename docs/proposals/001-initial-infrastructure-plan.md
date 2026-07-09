@@ -1,7 +1,9 @@
 # Proposal 001 — Initial software infrastructure plan
 
-- **Status**: Accepted — §1 storage implemented 2026-07-09 (see
-  [storage.md](../storage.md)); remaining sections pending
+- **Status**: Accepted — §1 storage implemented 2026-07-09
+  ([storage.md](../storage.md)); §5 backups implemented 2026-07-10
+  ([backups.md](../backups.md)); §2 monitoring implemented 2026-07-10
+  ([monitoring.md](../monitoring.md)); §§3–4 pending
 - **Date**: 2026-07-08 (updated 2026-07-09)
 - **Scope**: cluster **kaermorhen** (nodes `geralt`, `yennefer`), see
   [hardware inventory](../hardware-inventory.md)
@@ -158,7 +160,16 @@ Layered — guest-level and app-level are different problems:
 - A 2 TB USB HDD will later attach permanently to geralt for replaceable bulk
   (Jellyfin media), freeing `steel` to grow as the photo/document disk. It never
   holds originals' backups and photos never live on it.
-- Remaining build-out (monitoring, docker VM, LXCs, backups) proceeds per §§2–5.
+- **Backups: done (2026-07-10).** PBS in LXC 200 on yennefer, nightly all-guest
+  jobs (04:00/04:30), prune/GC/verify, restore-tested. As-built:
+  [backups.md](../backups.md).
+- **Monitoring: done (2026-07-10).** Beszel per the §2 lean (hub LXC 102 on
+  geralt, agents on both hosts), **plus** a layer the proposal didn't call out:
+  native failure alerting (PVE notification webhooks, zed, smartd) — a metrics
+  dashboard is the wrong owner for pool faults, disk pre-failure, and backup
+  job failures. All alert paths deliver to one ntfy.sh topic. As-built:
+  [monitoring.md](../monitoring.md).
+- Remaining build-out (docker VM, LXC services) proceeds per §§3–4.
 
 ## Appendix — sources
 
