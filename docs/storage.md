@@ -94,7 +94,7 @@ wipefs -a /dev/sda
 ```bash
 zpool create -o ashift=12 \
   -O compression=lz4 -O atime=off -O xattr=sa -O acltype=posixacl \
-  -O mountpoint=none \
+  -O mountpoint=/silver \
   silver /dev/disk/by-id/nvme-KINGSTON_SNVSE500G_<GERALT_SSD500_SERIAL>
 
 zfs create silver/guests
@@ -112,8 +112,11 @@ Why these flags:
 - `atime=off` — skip write-on-every-read metadata updates.
 - `xattr=sa` + `acltype=posixacl` — store extended attributes/ACLs in inodes
   instead of hidden files; standard for Linux guests and container rootfs.
-- `mountpoint=none` — pool holds zvols/subvols managed by Proxmox, nothing mounts
-  it directly.
+- `mountpoint=/silver` — VM disks are zvols (block devices, never mounted), but
+  LXC disks are filesystem datasets that Proxmox mounts under
+  `/silver/guests/subvol-<vmid>-disk-N` — the pool needs a real mountpoint for
+  that. (Originally created with `mountpoint=none`, which broke LXC creation;
+  fixed 2026-07-10 via `zfs set mountpoint=/silver silver`.)
 - `--sparse 1` — thin provisioning: guest disks consume only written blocks.
 
 ### 4. geralt — create `steel` (bulk pool, 1 TB HDD)
