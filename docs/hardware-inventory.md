@@ -51,8 +51,8 @@ each node over SSH).
 | Device | Type | Size | Model | Role |
 |---|---|---|---|---|
 | nvme1n1 | NVMe SSD | 256 GB (238.5 GiB) | WDC PC SN520 SDAPNUW-256G | Proxmox boot drive (`pve` VG: root/swap/data-thin) |
-| nvme0n1 | NVMe SSD | 500 GB (465.8 GiB) | KINGSTON SNVSE500G | Secondary storage (`ssd-vg` thin pool) |
-| sda | HDD, SATA | 1 TB (931.5 GiB) | Seagate ST1000LM049-2GH172 | Bulk/backup storage |
+| nvme0n1 | NVMe SSD | 500 GB (465.8 GiB) | KINGSTON SNVSE500G | ZFS pool `silver` — guest (VM/LXC) disks |
+| sda | HDD, SATA | 1 TB (931.5 GiB) | Seagate ST1000LM049-2GH172 | ZFS pool `steel` — media/photos/dumps (see [storage.md](storage.md)) |
 
 **Network**
 - Ethernet: Qualcomm Atheros Killer E2400 Gigabit Ethernet Controller (rev 10) — bridged
@@ -83,8 +83,8 @@ each node over SSH).
 
 | Device | Type | Size | Model | Role |
 |---|---|---|---|---|
-| sdb | SSD, SATA | 256 GB (238.5 GiB) | NFORCE 256M2 G2-PN43SY | Proxmox boot drive (`pve` VG: root/swap/data-thin) |
-| sda | HDD, SATA | 1 TB (931.5 GiB) | WDC WD10JPVX-60JC3T1 | Bulk/backup storage |
+| sdb | SSD, SATA | 256 GB (238.5 GiB) | NFORCE 256M2 G2-PN43SY | Proxmox boot drive (`pve` VG: root/swap/data-thin); all yennefer guest disks on `local-lvm` |
+| sda | HDD, SATA | 1 TB (931.5 GiB) | WDC WD10JPVX-60JC3T1 | ext4 `backup` at `/mnt/backup` — vzdump + future PBS datastore (see [storage.md](storage.md)) |
 | sr0 | DVD-RW (SATA) | 1 GB (media dependent) | HP DVDRW GUE1N | Unused optical drive |
 
 Note: the boot SSD on this node is SATA (`/dev/sdb`, `ID_BUS=ata`, no NVMe controller
@@ -121,8 +121,10 @@ true NVMe drives.
 - Neither node has out-of-band management (no IPMI/BMC/iDRAC) — being consumer laptops,
   remote power-cycling depends on OS-level tools (WoL if enabled) or physical access.
   Keep this in mind for outage runbooks.
-- Both nodes use LVM-thin (`pve` VG) for the boot/root pool; geralt additionally has a
-  second LVM-thin pool (`ssd-vg`) on its extra NVMe drive for VM/LXC storage.
+- Both nodes use LVM-thin (`pve` VG) for the boot/root pool. Data disks were rebuilt
+  2026-07-09: geralt runs single-disk ZFS pools `silver` (500 GB NVMe, guests) and
+  `steel` (1 TB HDD, bulk); yennefer's 1 TB HDD is ext4 at `/mnt/backup` (backup
+  target). Full layout and build runbook: [storage.md](storage.md).
 - geralt's GTX 1060 is a strong candidate for GPU passthrough (Jellyfin/Plex
   transcoding, local AI inference) — not yet configured as of this writing.
 - Laptop chassis implies real constraints vs. rack hardware: no redundant PSU, limited
