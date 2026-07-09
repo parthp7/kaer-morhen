@@ -163,8 +163,11 @@ Layered — guest-level and app-level are different problems:
 - **Backups: done (2026-07-10).** PBS in LXC 200 on yennefer, nightly all-guest
   jobs (04:00/04:30), prune/GC/verify, restore-tested. As-built:
   [backups.md](../backups.md).
-- **Monitoring: done (2026-07-10).** Beszel per the §2 lean (hub LXC 102 on
-  geralt, agents on both hosts), **plus** a layer the proposal didn't call out:
+- **Monitoring: done (2026-07-10).** Beszel per the §2 lean — though the hub
+  ended up as LXC 204 on **yennefer**, not geralt as suggested: a hub can't
+  alert its own host's death, and geralt is the loaded node whose death most
+  wants alerting (agents on both hosts) — **plus** a layer the proposal didn't
+  call out:
   native failure alerting (PVE notification webhooks, zed, smartd) — a metrics
   dashboard is the wrong owner for pool faults, disk pre-failure, and backup
   job failures. All alert paths deliver to one ntfy.sh topic. As-built:

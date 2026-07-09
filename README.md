@@ -5,7 +5,7 @@
 - [Storage layout & runbook](docs/storage.md) — as-built disk configuration (ZFS pools `silver`/`steel` on geralt, ext4 backup disk on yennefer) with the full build commands
 - [Network plan](docs/network.md) — /24 address map, VMID = last-octet convention, guest ID bands per node, and the allocation registry
 - [Backup setup & runbook](docs/backups.md) — PBS on yennefer (LXC 200, datastore `vault`), nightly all-guest jobs from both nodes, prune/GC/verify schedules, and the tested restore procedure
-- [Monitoring & alerting](docs/monitoring.md) — Beszel hub (LXC 102) + agents on both nodes, alert thresholds, and native failure alerting (PVE notifications, zed, smartd) all delivering to one ntfy topic
+- [Monitoring & alerting](docs/monitoring.md) — Beszel hub (LXC 204 on yennefer) + agents on both nodes, alert thresholds, and native failure alerting (PVE notifications, zed, smartd) all delivering to one ntfy topic
 
 ## Scripts
 - [scripts/monitoring/](scripts/monitoring/) — `smartd-ntfy.sh`, the smartd → ntfy alert handler deployed on both nodes

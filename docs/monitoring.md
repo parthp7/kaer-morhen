@@ -19,7 +19,7 @@ Everything delivers to a single **ntfy.sh topic** subscribed on the phone.
 
 | Piece | Where | Detail |
 |---|---|---|
-| Beszel hub | LXC **102** on geralt (`.102`) | Debian 13, unprivileged, nesting=1, 1 core / 512 MiB, UI `http://<LAN_PREFIX>.102:8090` |
+| Beszel hub | LXC **204** on yennefer (`.204`) | Debian 13, unprivileged, nesting=1, 1 core / 512 MiB, UI `http://<LAN_PREFIX>.204:8090`; built as 102 on geralt, relocated same day (step 6) |
 | Beszel agent | both PVE hosts, bare metal | `beszel-agent.service`, binary install, ~15 MiB RAM |
 | Alert delivery | **ntfy.sh** public server, secret topic | topic in `secrets.local.yaml` (`NTFY_TOPIC`) and `/etc/ntfy.topic` on each node |
 | PVE notifications | webhook target `ntfy`, both nodes | fires on vzdump failures etc. via `default-matcher` |
@@ -32,10 +32,14 @@ lab's failure domain — a self-hosted ntfy on a dead node delivers nothing. The
 topic name is the only credential (anyone who knows it can read/post), so it is
 random and treated as a secret.
 
-**Known blind spot**: the hub lives on geralt, so a total geralt failure cannot
-alert (yennefer-down *is* alerted — the hub outlives it). Closing this is a
-future item: Uptime-Kuma watching geralt from yennefer's band, or an external
-heartbeat check (healthchecks.io-style dead-man switch).
+**Hub placement (revised 2026-07-10)**: the hub was built as LXC 102 on geralt
+and moved to yennefer the same day (step 6). A hub cannot alert its own host's
+death, so the watcher belongs on the stable ground: geralt is the loaded,
+tinkered-with node whose sudden death most wants a phone ping — now covered
+within ~1 min. The residual blind spot is a total *yennefer* failure; it is
+partially covered indirectly (geralt's nightly job can't reach PBS → PVE
+notification from geralt → ntfy) and fully closable later with an external
+dead-man heartbeat (healthchecks.io-style) or Uptime-Kuma on geralt.
 
 ## Build runbook
 
@@ -59,7 +63,7 @@ echo "kaermorhen-$(openssl rand -hex 6)"
 echo "<NTFY_TOPIC>" > /etc/ntfy.topic && chmod 600 /etc/ntfy.topic
 ```
 
-### 1. Beszel hub — LXC 102 (geralt)
+### 1. Beszel hub — LXC 102 (geralt) — *since relocated to 204, see step 6*
 
 ```bash
 pct create 102 local:vztmpl/debian-13-standard_13.1-1_amd64.tar.zst \
@@ -215,6 +219,42 @@ in place (`/etc/ntfy.topic` mode 600 on both), PVE webhook target + matcher on
 both nodes, scrub cron present. ntfy delivery confirmed on phone at every
 stage (Beszel test, PVE test button, smartd `-M test`).
 
+### 6. Hub relocation: 102 (geralt) → 204 (yennefer), 2026-07-10
+
+Reasoning: hub load is negligible either way (~50–100 MiB, KB/s traffic) — the
+move is purely about failure domain (see "Hub placement" above). Done as a
+PBS backup-restore: history, alert thresholds, and ntfy config all live in the
+hub's data directory and travel with the container. Agents need no changes —
+the hub dials them, not the reverse. 204 sits in yennefer's 200–209 infra band
+next to PBS; 201 stays reserved for Pi-hole #2 (the `.101`/`.201` symmetry).
+
+```bash
+# geralt — final consistent image
+pct stop 102
+vzdump 102 --storage pbs-vault --mode stop --notes-template '{{guestname}}'
+
+# yennefer — restore under the new VMID (the one operation that can change it)
+pvesm list pbs-vault | grep ct/102          # newest volid
+pct restore 204 pbs-vault:backup/ct/102/<timestamp> --storage local-lvm
+pct set 204 --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.204/24,gw=<LAN_PREFIX>.1
+pct start 204                               # omit hwaddr above -> fresh MAC
+
+# verify BEFORE destroying: UI on .204 with history intact, both systems
+# reporting, notification test to phone, beszel-hub active
+
+# geralt — retire the original (destructive)
+pct destroy 102 --purge
+
+# PBS — forget the orphaned ct/102 group (prune keeps most-recent per group
+# forever otherwise — the CT 199 lesson)
+pvesm free pbs-vault:backup/ct/102/<timestamp>   # per snapshot
+```
+
+Backup coverage flipped automatically (`--all 1`): 204 was picked up by
+yennefer's very next 04:30 run. Verified post-move: 204 running with correct
+config and fresh MAC, hub UI 200 on `.204`, both agents reporting, geralt
+guest-free, datastore holding only `ct/200` and `ct/204` groups.
+
 ## Gotchas recap
 
 - Hub systemd unit is **`beszel-hub.service`**; host agents are
@@ -228,9 +268,9 @@ stage (Beszel test, PVE test button, smartd `-M test`).
 
 ## Next steps (not yet built)
 
-- **geralt-down blind spot**: Uptime-Kuma (or a dead-man heartbeat) running
-  *off geralt* — note network.md currently pencils Uptime-Kuma as 103 on
-  geralt; reconsider placing it on yennefer instead.
+- **yennefer-down blind spot** (the hub's own host, post-relocation): an
+  external dead-man heartbeat (healthchecks.io-style), or Uptime-Kuma — its
+  pencilled slot 103 on geralt is now the *right* side to watch yennefer from.
 - **Docker stats**: install the agent inside docker VM 150 when it exists —
   per-container metrics appear in the same dashboard.
 - **GPU panel**: GTX 1060 monitoring needs nvidia drivers wherever the GPU
