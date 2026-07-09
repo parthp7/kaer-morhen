@@ -11,8 +11,8 @@ Storage it sits on: [storage.md](storage.md). IDs/IPs follow the
 |---|---|---|
 | Proxmox Backup Server 4.x | LXC **200** on yennefer (`.200`) | Debian 13, unprivileged, nesting=1, 2 cores / 2 GiB |
 | Datastore `vault` | `/mnt/backup/pbs` (ext4 HDD) bind-mounted at `/datastore` | ~907 GiB ceiling |
-| Nightly backup job — geralt | PVE job, 02:00 | `--all`: every guest, present and future |
-| Nightly backup job — yennefer | PVE job, 02:30 | offset so both nodes don't hammer the HDD at once |
+| Nightly backup job — geralt | PVE job, 04:00 | `--all`: every guest, present and future |
+| Nightly backup job — yennefer | PVE job, 04:30 | offset so both nodes don't hammer the HDD at once |
 | Prune | PBS job, daily | keep-daily 7, keep-weekly 4, keep-monthly 3 |
 | Garbage collection | PBS job, daily | actually reclaims pruned chunks (prune alone frees nothing) |
 | Verify | PBS job, weekly | re-checksums chunks — bit-rot detection at the layer that owns the data |
@@ -131,13 +131,19 @@ pvesm status    # pbs-vault active, ~907 GiB
 
 ```bash
 # geralt
-pvesh create /cluster/backup --schedule "02:00" --storage pbs-vault \
+pvesh create /cluster/backup --schedule "04:00" --storage pbs-vault \
   --all 1 --mode snapshot --enabled 1 --notes-template '{{guestname}}'
 
 # yennefer — offset 30 min
-pvesh create /cluster/backup --schedule "02:30" --storage pbs-vault \
+pvesh create /cluster/backup --schedule "04:30" --storage pbs-vault \
   --all 1 --mode snapshot --enabled 1 --notes-template '{{guestname}}'
 ```
+
+- Originally created at 02:00/02:30; retimed to 04:00/04:30 on 2026-07-10 for a
+  better copy window. To retune later: node UI → Datacenter → Backup → Edit, or
+  `pvesh set /cluster/backup/<job-id> --schedule "HH:MM"` (ids in
+  `/etc/pve/jobs.cfg`). Keep the two nodes staggered (shared target HDD) and
+  ahead of PBS's prune/GC window.
 
 - `--all 1` is the point of the skeleton: every guest created from now on is
   born covered — no per-guest opt-in to forget.
@@ -163,7 +169,7 @@ pct create 199 local:vztmpl/debian-13-standard_13.1-1_amd64.tar.zst \
 # marker state: update + a package that isn't in the base template
 pct exec 199 -- bash -c 'apt update && apt upgrade -y && apt install -y tree'
 
-# ... wait for the 02:00 job to run (or trigger the job manually in the UI) ...
+# ... wait for the nightly job to run (or trigger the job manually in the UI) ...
 
 pct destroy 199                          # simulate loss
 pvesm list pbs-vault                     # find the backup volid
