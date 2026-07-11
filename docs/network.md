@@ -55,7 +55,7 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 
 | Band | Purpose | Planned/assigned |
 |---|---|---|
-| 100–109 | Core infra LXCs | **101 Pi-hole #1 (built 2026-07-11)** · 103 Uptime-Kuma (planned — right side to watch yennefer/hub from) · 102 free again (Beszel hub built here 2026-07-10, moved to 204 same day) |
+| 100–109 | Core infra LXCs | **101 Pi-hole #1 (built 2026-07-11)** · **103 Uptime-Kuma (built 2026-07-11 — the right side to watch yennefer/hub from; [uptime-kuma.md](uptime-kuma.md))** · 102 free again (Beszel hub built here 2026-07-10, moved to 204 same day) |
 | 110–149 | Service LXCs | — |
 | 150 | Docker VM (all compose apps) | 150 docker VM |
 | 151–189 | Future VMs (AI/GPU workloads, OPNsense if VLANs) | — |

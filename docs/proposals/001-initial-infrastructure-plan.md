@@ -181,8 +181,12 @@ Layered — guest-level and app-level are different problems:
   fix is two blocking resolvers, redundancy from the second Pi-hole. list-sync
   (nebula-sync) and local DNS records deferred to the docker VM (150). As-built:
   [dns.md](../dns.md).
+- **Uptime-Kuma: done (2026-07-11).** LXC 103 on geralt — service-level checks
+  (Pi-hole DNS, Beszel hub, PBS, yennefer, router) complementing Beszel, alerts
+  to the same ntfy topic. Placed on geralt to watch yennefer's side (the hub
+  can't alert its own host's death). As-built: [uptime-kuma.md](../uptime-kuma.md).
 - Remaining build-out (docker VM, remaining LXC services — HAOS VM, reverse
-  proxy, VPN, Uptime-Kuma) proceeds per §§3–4.
+  proxy, VPN) proceeds per §§3–4.
 
 ## Appendix — sources
 

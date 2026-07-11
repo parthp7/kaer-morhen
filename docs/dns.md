@@ -161,7 +161,12 @@ backed-up guest. See [backups.md](backups.md).
   any list change must be made in both UIs by hand.**
 - **Local DNS records** (lab hostnames → IPs) deferred to land together with
   nebula-sync, so they sync rather than drift.
-- **Failover acceptance test**: reboot one node and confirm the house still
-  resolves through the other — the reason the pair exists, not yet proven.
-- **Uptime-Kuma** (penciled at LXC 103 on geralt) as a service-level "is `.101`/
-  `.201` answering on 53" check, complementing Beszel's host-level view.
+- **Failover acceptance test — partially done (2026-07-11)**: stopping each
+  container in turn (101, then 201) left new-site browsing working. Still
+  pending: the **node-reboot** variant — a stopped container fails fast
+  (connection refused → instant client failover) while a dead node drops
+  packets silently (timeouts, the harder case); a reboot also proves
+  `onboot=1` actually brings Pi-hole back.
+- **Uptime-Kuma: done (2026-07-11)** — LXC 103 on geralt runs DNS checks
+  against `.101`/`.201` every 60 s, alerting via ntfy. As-built:
+  [uptime-kuma.md](uptime-kuma.md).

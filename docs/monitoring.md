@@ -268,9 +268,11 @@ guest-free, datastore holding only `ct/200` and `ct/204` groups.
 
 ## Next steps (not yet built)
 
-- **yennefer-down blind spot** (the hub's own host, post-relocation): an
-  external dead-man heartbeat (healthchecks.io-style), or Uptime-Kuma — its
-  pencilled slot 103 on geralt is now the *right* side to watch yennefer from.
+- **yennefer-down blind spot: closed (2026-07-11)** — Uptime-Kuma in LXC 103
+  on geralt pings yennefer and checks its services (hub, PBS, Pi-hole #2)
+  directly; see [uptime-kuma.md](uptime-kuma.md). Remaining gap: both nodes
+  down simultaneously (power outage) — still needs an external dead-man
+  heartbeat (healthchecks.io-style).
 - **Docker stats**: install the agent inside docker VM 150 when it exists —
   per-container metrics appear in the same dashboard.
 - **GPU panel**: GTX 1060 monitoring needs nvidia drivers wherever the GPU
