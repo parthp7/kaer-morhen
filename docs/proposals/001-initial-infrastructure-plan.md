@@ -3,7 +3,8 @@
 - **Status**: Accepted — §1 storage implemented 2026-07-09
   ([storage.md](../storage.md)); §5 backups implemented 2026-07-10
   ([backups.md](../backups.md)); §2 monitoring implemented 2026-07-10
-  ([monitoring.md](../monitoring.md)); §§3–4 pending
+  ([monitoring.md](../monitoring.md)); §4 Pi-hole pair implemented 2026-07-11
+  ([dns.md](../dns.md)); §3 and rest of §4 pending
 - **Date**: 2026-07-08 (updated 2026-07-09)
 - **Scope**: cluster **kaermorhen** (nodes `geralt`, `yennefer`), see
   [hardware inventory](../hardware-inventory.md)
@@ -172,7 +173,16 @@ Layered — guest-level and app-level are different problems:
   dashboard is the wrong owner for pool faults, disk pre-failure, and backup
   job failures. All alert paths deliver to one ntfy.sh topic. As-built:
   [monitoring.md](../monitoring.md).
-- Remaining build-out (docker VM, LXC services) proceeds per §§3–4.
+- **Pi-hole pair: done (2026-07-11).** Per §4's dual-instance recommendation —
+  LXC 101 on geralt, 201 on yennefer, Cloudflare upstream, conditional
+  forwarding, router handing out both. The §4 warning proved out in practice: a
+  Pi-hole + public-resolver primary/secondary split caused intermittent
+  house-wide DNS hangs (clients race resolvers rather than failing over) — the
+  fix is two blocking resolvers, redundancy from the second Pi-hole. list-sync
+  (nebula-sync) and local DNS records deferred to the docker VM (150). As-built:
+  [dns.md](../dns.md).
+- Remaining build-out (docker VM, remaining LXC services — HAOS VM, reverse
+  proxy, VPN, Uptime-Kuma) proceeds per §§3–4.
 
 ## Appendix — sources
 

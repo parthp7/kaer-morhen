@@ -55,7 +55,7 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 
 | Band | Purpose | Planned/assigned |
 |---|---|---|
-| 100–109 | Core infra LXCs | 101 Pi-hole #1 · 103 Uptime-Kuma (planned — right side to watch yennefer/hub from) · 102 free again (Beszel hub built here 2026-07-10, moved to 204 same day) |
+| 100–109 | Core infra LXCs | **101 Pi-hole #1 (built 2026-07-11)** · 103 Uptime-Kuma (planned — right side to watch yennefer/hub from) · 102 free again (Beszel hub built here 2026-07-10, moved to 204 same day) |
 | 110–149 | Service LXCs | — |
 | 150 | Docker VM (all compose apps) | 150 docker VM |
 | 151–189 | Future VMs (AI/GPU workloads, OPNsense if VLANs) | — |
@@ -65,7 +65,7 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 
 | Band | Purpose | Planned/assigned |
 |---|---|---|
-| 200–209 | Infra LXCs | 200 PBS · 201 Pi-hole #2 · 202 reverse proxy · 203 Tailscale/WireGuard · **204 Beszel hub (moved from geralt 2026-07-10 — a hub can't alert its own host's death, so it watches the busy node from the stable one)** |
+| 200–209 | Infra LXCs | 200 PBS · **201 Pi-hole #2 (built 2026-07-11)** · 202 reverse proxy · 203 Tailscale/WireGuard · **204 Beszel hub (moved from geralt 2026-07-10 — a hub can't alert its own host's death, so it watches the busy node from the stable one)** |
 | 210–219 | VMs | 210 HAOS (Home Assistant OS) |
 | 220–249 | Service LXCs / future | — |
 | 250–254 | Scratch / test | — |
@@ -76,8 +76,11 @@ when a guest is created.
 ## Design notes
 
 - **DNS**: Pi-holes at `.101` and `.201` (x01 = "first service on node x") —
-  point the router's DHCP DNS at both, one per node so a single node reboot
-  never takes the house's DNS down.
+  router's DHCP DNS points at both, one per node so a single node reboot never
+  takes the house's DNS down. Built 2026-07-11; as-built runbook in
+  [dns.md](dns.md). Note: both handout entries are Pi-holes, never a public
+  resolver as "secondary" — clients race the two rather than failing over, so a
+  public secondary breaks blocking and causes intermittent hangs.
 - **Cluster status**: nodes run standalone (no corosync cluster) until a third
   vote exists — a 2-node cluster freezes management on the survivor whenever
   either node is down. The VMID bands keep a future cluster merge collision-free.
