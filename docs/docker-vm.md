@@ -17,7 +17,9 @@ guardian. VM name = guest hostname = login user = `ciri`.
 | VM | **150** on **geralt**, `.150`, name/hostname/user `ciri` |
 | OS | Ubuntu Server **26.04 LTS** (Resolute) cloud image, cloud-init provisioned |
 | Machine | **q35 + OVMF**, Secure Boot off (`pre-enrolled-keys=0`) — GPU passthrough later is a `qm set --hostpci0`, not a rebuild; no MOK dance for future NVIDIA DKMS |
-| Resources | 6 vCPU (`cpu: host`), **8192 MB fixed** (`balloon: 0`), 64 G sparse zvol on `silver-guests` (`discard=on,iothread=1,ssd=1`, virtio-scsi-single) |
+| Resources | 6 vCPU (`cpu: host`), **8192 MB fixed** (`balloon: 0`) |
+| Disks | **scsi0 64 G = OS**; **scsi1 32 G = `/data`** (Docker + app data) — both sparse zvols on `silver-guests`, `discard=on,iothread=1,ssd=1`, virtio-scsi-single; see "Storage layout" |
+| Docker config | `data-root: /data/docker`; `local` log driver capped **100 MB × 5 files per container** (`/etc/docker/daemon.json`); containerd `root = /data/containerd` (`/etc/containerd/config.toml`) — image layers live *there*, not in data-root (containerd image store, see gotchas) |
 | Network | virtio on `vmbr0`, static `<LAN_PREFIX>.150/24` via cloud-init, DNS `.101`/`.201` (the Pi-holes), search `kaermorhen.home.arpa` |
 | Login | user `ciri`, SSH-key only (keys inherited from geralt's `/root/.ssh/authorized_keys`); no password unless set via `sudo passwd ciri` |
 | Docker | Engine 29.6.1 + Compose v5.3.1 from Docker's official apt repo; `ciri` in the `docker` group |
@@ -34,12 +36,43 @@ QEMU process size, not guest-actual; true usage comes from the Beszel agent
 inside the guest. `qm set 150 --delete balloon` would restore the stats device
 while keeping memory fixed.
 
-**Disk sizing**: 64 G is a cap on a sparse zvol, not an allocation. Growing is
-online and trivial (`qm disk resize 150 scsi0 +32G`, then `growpart` in-guest);
-shrinking is effectively impossible — grow on evidence. Bulk data classes
-never go here: media later arrives as a second disk (`--scsi1`) backed by
-steel/USB with **`backup=0`**, so replaceable terabytes never inflate the
-nightly PBS job protecting the irreplaceable app data.
+## Storage layout (two-disk split, implemented 2026-07-11)
+
+| Disk | Size | Holds | Why separate |
+|---|---|---|---|
+| scsi0 → `/` | 64 G | OS only | a full data disk stops containers but leaves SSH, the OS, and monitoring alive |
+| scsi1 → `/data` | 32 G | `/data/docker` (Docker data-root: volumes, container state, logs) + `/data/containerd` (image layers & content) + `/data/stacks` (compose files & bind mounts, owned by `ciri`) | independent online growth; per-disk vzdump policy |
+
+Design decisions behind the split (evaluated 2026-07-11):
+
+- **Runaway logs are fixed by caps, not partitions** — a dedicated log
+  partition without caps still fills (and breaks logging for every container);
+  with caps it's redundant. `daemon.json` caps each container at
+  100 MB × 5 files (`local` driver, rotated files compressed). Caveat: that's
+  a **size** guarantee, not a **time** one — a crash-looping app can churn
+  through its 500 MB in hours. Verify the window empirically once apps run
+  (`docker logs --since 336h <ct> | head -1`) and raise a chatty app's
+  `logging:` block in its compose file if needed. Hard time-window retention =
+  log shipping (Loki), parked per Proposal 001 §5.
+- **Two disks, not five partitions.** Fine-grained purpose-sized partitions
+  cause the outages they're meant to prevent (premature ENOSPC in one silo,
+  unshrinkable free space in another). One coarse OS/data boundary captures
+  the blast-radius and backup-granularity value with one moving part.
+- **The host was never at risk** — zvols are hard-capped, so a full VM
+  filesystem is contained by virtualization anyway. The split protects ciri's
+  OS from ciri's apps, nothing more.
+- **Root stays 64 G even though the OS needs ~8 G** (evaluated 2026-07-12):
+  the zvol is sparse, so the pool is charged for written blocks (~2.6 G), not
+  the cap — `discard` + weekly fstrim return deletions, and PBS backs up used
+  blocks only. Shrinking would be rescue-media surgery (PVE can't shrink
+  disks; ext4 root shrink is offline-only) for a purely cosmetic gain, and a
+  reinstall buys the same nothing at higher cost.
+- **Sizing**: caps on sparse zvols, not allocations. Growing is online and
+  trivial (`qm disk resize` + `resize2fs`); shrinking is effectively
+  impossible — grow on evidence. Bulk media never goes here: it later arrives
+  as **`--scsi2`** backed by steel/USB with **`backup=0`**, so replaceable
+  terabytes never inflate the nightly PBS job protecting the irreplaceable
+  app data on scsi0+scsi1 (both backed up by default).
 
 ## Runbook (as executed)
 
@@ -117,6 +150,65 @@ docker run --rm hello-world
 - **Uptime-Kuma** (`http://<LAN_PREFIX>.103:3001`): Ping monitor for `.150` —
   Kuma shares the node, but a VM crash isn't a node crash.
 
+### 5. Data disk + Docker relocation + log caps (2026-07-11)
+
+Done while Docker was still empty (hello-world only) — so a fresh `data-root`,
+no migration.
+
+```bash
+# geralt — new 32 G sparse zvol, hot-plugged (no VM reboot needed)
+qm set 150 --scsi1 silver-guests:32,discard=on,iothread=1,ssd=1
+```
+
+```bash
+# ciri — verify the new disk is sdb (32G, bare) BEFORE mkfs
+lsblk -o NAME,SIZE,TYPE,MOUNTPOINTS,MODEL
+sudo mkfs.ext4 -L data /dev/sdb   # deliberately no partition table: future
+                                  # grow = qm disk resize + resize2fs, no growpart
+
+sudo mkdir /data
+echo 'LABEL=data /data ext4 defaults,noatime,nofail 0 2' | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload && sudo mount -a
+# LABEL survives device renames; nofail = a dead data disk degrades boot
+# instead of dropping to emergency mode and killing SSH
+
+sudo mkdir -p /data/docker /data/stacks
+sudo chown ciri: /data/stacks
+```
+
+```bash
+# ciri — relocate Docker + cap logs (stop BOTH units, see gotchas)
+sudo systemctl stop docker.service docker.socket
+sudo tee /etc/docker/daemon.json <<'EOF'
+{
+  "data-root": "/data/docker",
+  "log-driver": "local",
+  "log-opts": { "max-size": "100m", "max-file": "5" }
+}
+EOF
+sudo systemctl start docker.socket docker.service
+docker info --format 'root: {{.DockerRootDir}} | logging: {{.LoggingDriver}}'
+docker run --rm hello-world
+sudo rm -rf /var/lib/docker      # only after the verify above
+
+# Beszel: agents watch / only — add the new fs, then confirm on the hub
+sudo systemctl edit beszel-agent   # [Service] Environment="EXTRA_FILESYSTEMS=/data"
+sudo systemctl restart beszel-agent
+
+sudo reboot   # prove fstab + docker come back — never skip this
+```
+
+```bash
+# ciri — move containerd's root too (2026-07-12): on modern Docker the image
+# store is containerd's, so data-root alone leaves image layers on the root disk
+sudo systemctl stop docker.service docker.socket containerd
+# /etc/containerd/config.toml — add top-level line:
+#   root = "/data/containerd"
+sudo systemctl start containerd docker.socket docker.service
+docker run --rm hello-world      # repulls; layers land in /data/containerd
+sudo rm -rf /var/lib/containerd  # abandoned pre-move remnant
+```
+
 ## Gotchas hit (and the fixes)
 
 - **VM booted on a DHCP address (`.34`), not `.150`; SSH to `.150` timed out.**
@@ -140,6 +232,26 @@ docker run --rm hello-world
 - **Finding a guest that isn't where it should be**: ping-sweep the DHCP range
   and match the VM's MAC (`qm config 150 | grep net0`) in `ip neigh` — the
   router's lease table isn't scriptable (Boa/GPON captcha), but ARP is.
+- **"Docker is down" after editing `daemon.json`** — stopping
+  `docker.service` alone isn't enough (`docker.socket` resurrects it on the
+  next API call, possibly mid-edit), so the runbook stops both — but then
+  **both must be started again**; an edit session that ends with the daemon
+  cleanly stopped looks exactly like a crash later.
+- **`EXTRA_FILESYSTEMS` wants a mount path, not a device name** —
+  `EXTRA_FILESYSTEMS=sdb` shows nothing on the hub; `EXTRA_FILESYSTEMS=/data`
+  works.
+- **`data-root` does not govern image storage on modern Docker.** Fresh
+  Docker 28+ installs default to the **containerd image store**
+  (`docker info` shows driver `overlayfs`; classic is `overlay2`), which
+  keeps image layers under containerd's root — `/var/lib/containerd`, on the
+  root disk — silently defeating a relocated data-root as images accumulate.
+  Fix: `root = "/data/containerd"` in `/etc/containerd/config.toml`, restart
+  containerd + docker (the moved store starts empty; repull). Verify with
+  `du -sh /data/containerd` after a pull.
+- **`local` log driver files are binary + compressed** — read logs with
+  `docker logs --since/--until <ct>` (handles rotated files), not by grepping
+  `/data/docker`. If raw grep-able files ever matter more than compactness,
+  switch to `json-file` with the same `max-size`/`max-file` opts.
 
 ## Verification (read-only)
 
@@ -153,18 +265,28 @@ qm config 150
 hostname; ip -4 -br addr show eth0     # ciri, .150/24
 cloud-init status                       # done
 docker version --format '{{.Server.Version}}'; docker compose version
+docker info --format '{{.Driver}} | {{.DockerRootDir}} | {{.LoggingDriver}}'
+                                        # overlayfs | /data/docker | local
+grep '^root' /etc/containerd/config.toml   # root = "/data/containerd"
+sudo du -sh /data/containerd /data/docker
 groups ciri                             # includes docker
-systemctl is-active beszel-agent qemu-guest-agent
+systemctl is-active docker docker.socket beszel-agent qemu-guest-agent
 systemctl is-enabled beszel-agent-update.timer   # disabled
-df -h /; free -m
+lsblk; grep data /etc/fstab; df -h / /data
+systemctl cat beszel-agent | grep EXTRA_FILESYSTEMS   # /data
+free -m
 resolvectl status | grep -A3 'DNS Servers'
 ```
 
 Verified 2026-07-11: VM running with the config above, guest agent answering,
 `.150` static with Pi-hole DNS + search domain, cloud-init done, Docker
 29.6.1 / Compose v5.3.1 with `ciri` in the docker group, root fs grown to
-61 G (2.6 G used), Beszel agent active with update timer disabled,
-~585 MB RAM in use of 7.9 G.
+61 G (2.6 G used), Beszel agent active with update timer disabled. Two-disk
+split verified same day **including reboot survival**: `/data` mounted by
+label, `data-root` at `/data/docker` with `local` logging (100m×5),
+old `/var/lib/docker` removed, hello-world runs, hub showing `/data`.
+Containerd root move verified 2026-07-12: config set, services active,
+hello-world layers landing in `/data/containerd`.
 
 ## Next steps (not yet built)
 
@@ -174,7 +296,7 @@ Verified 2026-07-11: VM running with the config above, guest agent answering,
 - **App stacks**: sure, memos, paperless-ngx; Jellyfin last.
 - **Jellyfin prerequisites**: GPU decision (iGPU QuickSync vs GTX 1060
   passthrough — also unblocks the Beszel GPU panel, see
-  [monitoring.md](monitoring.md)), and the media disk as `--scsi1` from
+  [monitoring.md](monitoring.md)), and the media disk as `--scsi2` from
   steel/USB with `backup=0`.
 - **App-level backups**: restic/borgmatic dumps to offsite once apps hold
   real data ([backups.md](backups.md) next phase).
