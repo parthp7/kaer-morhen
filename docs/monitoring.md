@@ -273,8 +273,10 @@ guest-free, datastore holding only `ct/200` and `ct/204` groups.
   directly; see [uptime-kuma.md](uptime-kuma.md). Remaining gap: both nodes
   down simultaneously (power outage) — still needs an external dead-man
   heartbeat (healthchecks.io-style).
-- **Docker stats**: install the agent inside docker VM 150 when it exists —
-  per-container metrics appear in the same dashboard.
+- **Docker stats: done (2026-07-11)** — agent installed in VM 150 (`ciri`,
+  [docker-vm.md](docker-vm.md)); per-container metrics on the dashboard.
+  Gotcha: the agent install script offers daily auto-updates — decline (house
+  policy); if accepted, `systemctl disable --now beszel-agent-update.timer`.
 - **GPU panel**: GTX 1060 monitoring needs nvidia drivers wherever the GPU
   lives; decide after the passthrough choice (host drivers vs VM passthrough
   are mutually exclusive).

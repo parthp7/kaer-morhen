@@ -57,7 +57,7 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 |---|---|---|
 | 100–109 | Core infra LXCs | **101 Pi-hole #1 (built 2026-07-11)** · **103 Uptime-Kuma (built 2026-07-11 — the right side to watch yennefer/hub from; [uptime-kuma.md](uptime-kuma.md))** · 102 free again (Beszel hub built here 2026-07-10, moved to 204 same day) |
 | 110–149 | Service LXCs | — |
-| 150 | Docker VM (all compose apps) | 150 docker VM |
+| 150 | Docker VM (all compose apps) | **150 ciri (built 2026-07-11 — Ubuntu 26.04, Docker; [docker-vm.md](docker-vm.md))** |
 | 151–189 | Future VMs (AI/GPU workloads, OPNsense if VLANs) | — |
 | 190–199 | Scratch / test guests | 199 restore-test (throwaway) |
 
@@ -72,6 +72,10 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 
 Keep these tables current — they are the allocation registry. Claim an ID here
 when a guest is created.
+
+**Guest naming**: single-purpose LXCs get functional names (`pihole-1`,
+`beszel`, `uptime-kuma`); big multi-service guests get character names like
+the nodes (`ciri` = docker VM 150; a future HAOS VM could follow suit).
 
 ## Design notes
 

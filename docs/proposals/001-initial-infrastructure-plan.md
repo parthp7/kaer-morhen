@@ -4,7 +4,9 @@
   ([storage.md](../storage.md)); §5 backups implemented 2026-07-10
   ([backups.md](../backups.md)); §2 monitoring implemented 2026-07-10
   ([monitoring.md](../monitoring.md)); §4 Pi-hole pair implemented 2026-07-11
-  ([dns.md](../dns.md)); §3 and rest of §4 pending
+  ([dns.md](../dns.md)); §4 Uptime-Kuma + §3 docker VM base implemented
+  2026-07-11 ([uptime-kuma.md](../uptime-kuma.md),
+  [docker-vm.md](../docker-vm.md)); §3 app stacks and rest of §4 pending
 - **Date**: 2026-07-08 (updated 2026-07-09)
 - **Scope**: cluster **kaermorhen** (nodes `geralt`, `yennefer`), see
   [hardware inventory](../hardware-inventory.md)
@@ -181,6 +183,12 @@ Layered — guest-level and app-level are different problems:
   fix is two blocking resolvers, redundancy from the second Pi-hole. list-sync
   (nebula-sync) and local DNS records deferred to the docker VM (150). As-built:
   [dns.md](../dns.md).
+- **Docker VM: base built (2026-07-11).** VM 150 `ciri` on geralt — Ubuntu
+  26.04 LTS cloud image, q35/OVMF (GPU passthrough stays a config change; the
+  iGPU-vs-GTX 1060 call is deferred to Jellyfin's turn), 6 vCPU / 8 GB fixed,
+  64 G on `silver`, Docker + Compose, Beszel agent with Docker stats. App
+  stacks pending — nebula-sync first, then apps per §3. As-built:
+  [docker-vm.md](../docker-vm.md).
 - **Uptime-Kuma: done (2026-07-11).** LXC 103 on geralt — service-level checks
   (Pi-hole DNS, Beszel hub, PBS, yennefer, router) complementing Beszel, alerts
   to the same ntfy topic. Placed on geralt to watch yennefer's side (the hub
