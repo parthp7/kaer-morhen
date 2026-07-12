@@ -1,6 +1,8 @@
 # Uptime-Kuma — service-level checks
 
-As-built runbook, implemented 2026-07-11. Service-level "is it answering"
+As-built runbook, implemented 2026-07-11; renumbered & renamed 2026-07-13
+(103 `uptime-kuma` → **104 `philippa`**, see the dated section below).
+Service-level "is it answering"
 monitoring (DNS, HTTP, ping) complementing Beszel's host-level metrics view —
 see [monitoring.md](monitoring.md) and [Proposal 001 §4](proposals/001-initial-infrastructure-plan.md).
 
@@ -15,10 +17,10 @@ watchers are inside the house (see next steps).
 
 | Piece | Value |
 |---|---|
-| Container | LXC **103** on **geralt**, `.103`, rootfs `silver-guests:8` |
+| Container | LXC **104** on **geralt**, `.104`, hostname `philippa` (lore naming per [network.md](network.md) — the owl on night watch, rival-spymaster pair with `dijkstra`/Beszel on 204), rootfs `silver-guests:8` |
 | Profile | Debian 13, unprivileged, `nesting=1`, 1 core, **512 MiB RAM / 1024 MiB swap**, `onboot=1` |
 | App | Uptime-Kuma **2.4.0**, non-Docker (git checkout + `npm run setup`), Node v20.19.2 (Debian's stock `nodejs`) |
-| Service | `uptime-kuma.service` (plain systemd unit, runs as user `uptime-kuma`), UI `http://<LAN_PREFIX>.103:3001` |
+| Service | `uptime-kuma.service` (plain systemd unit, runs as user `uptime-kuma`), UI `http://<LAN_PREFIX>.104:3001` |
 | Admin account | `KUMA_ADMIN_USER` / `KUMA_ADMIN_PASSWORD` in `secrets.local.yaml` |
 | Container nameserver | `1.1.1.1` — deliberate: the monitor must not depend on the Pi-holes it watches |
 | Alerts | native ntfy provider → `https://ntfy.sh/<NTFY_TOPIC>` (same topic as everything else), default-enabled on all monitors |
@@ -37,18 +39,20 @@ one-time `npm run setup` spike is allowed to grind through swap instead
 ### 1. Create the container (geralt)
 
 ```bash
-pct create 103 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
-  --hostname uptime-kuma --unprivileged 1 --features nesting=1 \
+pct create 104 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
+  --hostname philippa --unprivileged 1 --features nesting=1 \
   --cores 1 --memory 512 --swap 1024 \
   --rootfs silver-guests:8 \
-  --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.103/24,gw=<LAN_PREFIX>.1 \
+  --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.104/24,gw=<LAN_PREFIX>.1 \
   --nameserver 1.1.1.1 \
   --onboot 1 --start 1
 ```
 
 (Equivalent alternative: create with `--memory 1024` for a faster
-`npm run setup`, then `pct set 103 --memory 512 --swap 1024` — applies live,
-lands on the same config.)
+`npm run setup`, then `pct set 104 --memory 512 --swap 1024` — applies live,
+lands on the same config. As originally executed this was
+`pct create 103 … --hostname uptime-kuma`; command updated to what a rebuild
+should use — see the renumber section.)
 
 ### 2. Install (inside the container)
 
@@ -57,7 +61,7 @@ needs Node ≥ 20.4, and Debian 13's stock package (20.19.x) satisfies it — no
 NodeSource repo, no Docker-in-LXC.
 
 ```bash
-pct enter 103
+pct enter 104
 apt update && apt install -y git nodejs npm
 node -v    # >= 20.4 required
 
@@ -107,7 +111,7 @@ sysctl -p /etc/sysctl.d/99-ping.conf
 runuser -u uptime-kuma -- ping -c1 <LAN_PREFIX>.22   # must succeed
 ```
 
-### 5. UI setup — `http://<LAN_PREFIX>.103:3001`
+### 5. UI setup — `http://<LAN_PREFIX>.104:3001`
 
 - Create the admin account (→ `secrets.local.yaml`).
 - **Settings → Notifications → ntfy**: server `https://ntfy.sh`, topic
@@ -128,6 +132,41 @@ Weighted toward yennefer's side (the blind spot), 60 s default interval:
 
 **No geralt-host monitor** — Kuma runs on geralt and dies with it; that alert
 is owned by the Beszel hub on yennefer.
+
+## Renumber & rename 103 → 104 (as executed 2026-07-13)
+
+Built as LXC **103** `uptime-kuma`; renumbered so the watcher pair mirrors
+across nodes (Kuma **104** ↔ Beszel **204**, like the Pi-holes' 101/201),
+freeing 103 for the Tailscale twin `tor-zireael` (↔ `tor-lara` 203), and
+renamed `philippa` under the lore-naming convention
+([network.md](network.md)). PVE has no VMID rename — backup → restore *is*
+the renumber, and doubles as a live PBS restore drill:
+
+```bash
+# geralt — fresh stopped-mode backup first: the only existing snapshot
+# predated that morning's monitor changes
+pct stop 103
+vzdump 103 --storage pbs-vault --mode stopped
+
+pvesm list pbs-vault --content backup | grep ct/103 | tail -1
+pct restore 104 'pbs-vault:backup/ct/103/<TIMESTAMP>' --storage silver-guests
+pct set 104 --hostname philippa \
+  --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.104/24,gw=<LAN_PREFIX>.1
+pct start 104
+# verify (section below), then:
+pct destroy 103
+```
+
+- Only the **LXC hostname** changed — the systemd unit, service user, and
+  `/opt/uptime-kuma` path keep the app's name.
+- `pct restore` carries the whole config (onboot, nesting, nameserver,
+  swap); re-IP **before** first start. Replacing `--net0` regenerates the
+  MAC — irrelevant with static IPs.
+- PBS snapshot groups are per-VMID: history stays under `ct/103` (delete
+  that group once confident); the nightly job starts a fresh `ct/104` chain
+  automatically.
+- Kuma down = no service-level alerting and nothing watching yennefer's
+  side — keep the window short, don't overlap other maintenance.
 
 ## Gotchas hit (and the fixes)
 
@@ -162,20 +201,24 @@ when we choose — nothing auto-updates, same policy as Beszel.
 
 ```bash
 # geralt
-pct status 103
-pct config 103                                    # 512/1024, onboot, nameserver
-pct exec 103 -- systemctl is-active uptime-kuma
-curl -s -o /dev/null -w '%{http_code}\n' http://<LAN_PREFIX>.103:3001   # 302 → login
-pct exec 103 -- sysctl net.ipv4.ping_group_range  # 0 65535
-pct exec 103 -- runuser -u uptime-kuma -- ping -c1 <LAN_PREFIX>.22
-pct exec 103 -- runuser -u uptime-kuma -- git -C /opt/uptime-kuma describe --tags
-pct exec 103 -- free -m
+pct status 104
+pct config 104                                    # 512/1024, onboot, nameserver, hostname philippa
+pct exec 104 -- systemctl is-active uptime-kuma
+curl -s -o /dev/null -w '%{http_code}\n' http://<LAN_PREFIX>.104:3001   # 302 → login
+pct exec 104 -- sysctl net.ipv4.ping_group_range  # 0 65535
+pct exec 104 -- runuser -u uptime-kuma -- ping -c1 <LAN_PREFIX>.22
+pct exec 104 -- runuser -u uptime-kuma -- git -C /opt/uptime-kuma describe --tags
+pct exec 104 -- free -m
 ```
 
 Verified 2026-07-11: container running with the profile above, service
 active, UI 302, v2.4.0 on Node 20.19.2, ping working as service user, all six
 monitors green, ntfy test delivered to phone. Runtime footprint ~130 MiB, swap
 untouched.
+
+Renumber verified 2026-07-13: `philippa` running as 104 on `.104` (restored
+from the fresh PBS snapshot, config intact), UI answering 302, old 103
+destroyed.
 
 ## Next steps (not yet built)
 

@@ -5,10 +5,11 @@ The application-hosting VM from [Proposal 001 §3](proposals/001-initial-infrast
 all consumer-facing compose stacks (sure, memos, paperless-ngx, Jellyfin, …)
 live here. Base VM + Docker only — app stacks are follow-up work.
 
-**Naming**: single-purpose LXCs get functional names (`pihole-1`, `uptime-kuma`);
-the few big multi-service guests get character names like the nodes. This VM is
-`ciri` — the person the saga is actually about, running on `geralt`, her
-guardian. VM name = guest hostname = login user = `ciri`.
+**Naming**: per [network.md](network.md)'s lore-naming convention (revised
+2026-07-13 — Witcher names matched to function, each guest keeping a
+functional DNS alias). This VM is `ciri` — the person the saga is actually
+about, running on `geralt`, her guardian. VM name = guest hostname = login
+user = `ciri`.
 
 ## Architecture
 
@@ -147,7 +148,7 @@ docker run --rm hello-world
   host `<LAN_PREFIX>.150` → run the generated agent install command in the VM.
   **Decline the script's auto-update prompt** (house policy: the stack updates
   when we choose). Per-container Docker stats appear on the dashboard.
-- **Uptime-Kuma** (`http://<LAN_PREFIX>.103:3001`): Ping monitor for `.150` —
+- **Uptime-Kuma** (`http://<LAN_PREFIX>.104:3001`): Ping monitor for `.150` —
   Kuma shares the node, but a VM crash isn't a node crash.
 
 ### 5. Data disk + Docker relocation + log caps (2026-07-11)
