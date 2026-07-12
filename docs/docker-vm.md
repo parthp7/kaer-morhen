@@ -298,10 +298,15 @@ plus `.env.example` + README).
 | Stack | Since | Purpose |
 |---|---|---|
 | nebula-sync | 2026-07-12 | hourly Pi-hole sync 101 → 201 + on-demand `sync-now`; cleared both deferred items in [dns.md](dns.md) ([as-built](../configs/ciri/nebula-sync/README.md)) |
+| memos | 2026-07-12 | note-taking, port 5230; restored from old-host backup (SQLite DB + assets), historical data verified ([as-built](../configs/ciri/memos/README.md)) |
 
 ## Next steps (not yet built)
 
-- **App stacks**: sure, memos, paperless-ngx; Jellyfin last.
+- **App stacks**: sure (restore from old-host backup deferred — analysis done,
+  backup verified cold/complete; keep `postgres:16`), paperless-ngx; Jellyfin
+  last. Memos done 2026-07-12.
+- **Memos follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on
+  `:5230`.
 - **Jellyfin prerequisites**: GPU decision (iGPU QuickSync vs GTX 1060
   passthrough — also unblocks the Beszel GPU panel, see
   [monitoring.md](monitoring.md)), and the media disk as `--scsi2` from
