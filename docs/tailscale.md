@@ -181,10 +181,11 @@ renumber the same day): advertising the same `/24`, `--accept-dns=false`,
 key expiry disabled. The lore pairing is the point — Tor Lara and Tor
 Zireael are the two portal-linked towers. Deviations & findings:
 
-- **rootfs `local-lvm:4`** — the yennefer create command was reused
-  verbatim, but geralt guests normally live on `silver-guests`. Harmless at
-  4 G; fix when convenient:
-  `pct stop 103 && pct move-volume 103 rootfs silver-guests --delete 1 && pct start 103`.
+- **rootfs initially landed on `local-lvm`** — the yennefer create command
+  was reused verbatim, but geralt guests live on `silver-guests`. Fixed
+  same day with
+  `pct stop 103 && pct move-volume 103 rootfs silver-guests --delete 1 && pct start 103`;
+  tailscaled came back clean.
 - **Route approved rather than left disabled**: the original warm-standby
   plan was a manual console flip, but the route got enabled alongside
   tor-lara's. Control keeps tor-lara primary (its `PrimaryRoutes` carries
@@ -195,8 +196,9 @@ Zireael are the two portal-linked towers. Deviations & findings:
   advertising routes but --accept-routes is false": each router sees the
   other's advertisement. A subnet router must not accept the very route it
   advertises; ignore it.
-- **Wiring pending**: Kuma ping monitor on `.103`, and the
-  `tor-zireael.kaermorhen.internal` → `.103` record on pihole-1.
+- **Wiring**: `tor-zireael.kaermorhen.internal` → `.103` set on pihole-1
+  and synced to both (done 2026-07-13). Kuma ping monitor on `.103` still
+  pending.
 
 ## Verification (read-only)
 
@@ -230,7 +232,9 @@ Twin verified 2026-07-13: `tor-zireael` running as 103 on `.103` (`dev0`
 tun, `nesting=1`, `onboot=1`), tailscaled active and online, both
 forwarding sysctls = 1, advertising the `/24` with `CorpDNS=false`, route
 approved with tor-lara primary, key expiry disabled on **both** routers
-(`KeyExpiry: None` in `tailscale status --json`).
+(`KeyExpiry: None` in `tailscale status --json`). Post-fixes re-verified
+same day: rootfs on `silver-guests`, tailscaled active after the move,
+`tor-zireael.kaermorhen.internal` → `.103` from both Pi-holes.
 
 ## Next steps (not yet built)
 
