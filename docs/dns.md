@@ -17,7 +17,7 @@ VMID = last octet).
 | Container profile | unprivileged, `nesting=1`, 1 core, 512 MB RAM / 256 MB swap, `onboot=1` |
 | Container upstream (`--nameserver`) | `1.1.1.1` (so the box resolves for `apt` etc. **without** looping through itself once it becomes the LAN resolver) |
 | Pi-hole upstream DNS | Cloudflare `1.1.1.1` / `1.0.0.1` — set *inside* each Pi-hole, identical on both |
-| Conditional forwarding | `<LAN_PREFIX>.0/24` → router `<LAN_PREFIX>.1`, domain `kaermorhen.home.arpa` (so the dashboard shows client hostnames, not bare IPs) |
+| Conditional forwarding | `<LAN_PREFIX>.0/24` → router `<LAN_PREFIX>.1`, domain `kaermorhen.internal` (so the dashboard shows client hostnames, not bare IPs) — domain renamed from `kaermorhen.home.arpa` 2026-07-12, see gotchas |
 | Router DHCP DNS handout | primary `<LAN_PREFIX>.101`, secondary `<LAN_PREFIX>.201` — **both Pi-holes, no public resolver in the client list** |
 | DNSSEC | off (default) |
 | `listeningMode` | `LOCAL` (answers only the local subnet) |
@@ -95,7 +95,7 @@ pihole setpassword
 
 - **Upstream DNS**: Cloudflare `1.1.1.1` + `1.0.0.1` (confirm it matches on both).
 - **Conditional forwarding** (Settings → DNS, Expert mode): network
-  `<LAN_PREFIX>.0/24`, router `<LAN_PREFIX>.1`, domain `kaermorhen.home.arpa`.
+  `<LAN_PREFIX>.0/24`, router `<LAN_PREFIX>.1`, domain `kaermorhen.internal`.
 
 ### 4. NTP fix (both)
 
@@ -147,6 +147,21 @@ dashboards.
 - **`dig` timing out against a Pi-hole that is actually healthy** — check the
   address for a typo (`191.168…` vs `192.168…`); a wrong first octet is a
   different network and just times out.
+- **Apple clients never resolve `home.arpa` names** (hit 2026-07-12; the pair
+  was originally built on `kaermorhen.home.arpa`). macOS/iOS mDNSResponder
+  treats RFC 8375's `home.arpa` as a special-use Thread/HomeKit domain and
+  synthesizes "No Such Record" locally — the query never reaches the
+  configured DNS servers. Signature: `dig` works (it bypasses mDNSResponder)
+  while browsers/apps fail, on every Apple device; `dscacheutil -q host -a
+  name <fqdn>` reproduces the failure, `dns-sd -Q` shows the instant
+  synthesized NXDOMAIN. A per-Mac `/etc/resolver/home.arpa` override exists,
+  but iPhones/Apple TVs have no equivalent — so the internal domain was
+  renamed to **`kaermorhen.internal`** (ICANN-reserved for private use, 2024).
+  Renamed in: both Pi-holes (`dns.revServers` + `dns.hosts` via
+  `pihole-FTL --config`), both nodes (`/etc/resolv.conf`, `/etc/hosts`,
+  postfix `myhostname=`), and ciri's cloud-init `--searchdomain` (full
+  `qm stop && qm start` to regenerate the cloud-init ISO). LXCs created
+  without `--searchdomain` inherit the node's on their next restart.
 
 ## Backups
 
@@ -154,13 +169,25 @@ Both containers are covered automatically by the existing PBS `--all 1` jobs
 (geralt 04:00, yennefer 04:30 → datastore `vault`); `101` is geralt's first
 backed-up guest. See [backups.md](backups.md).
 
+## List sync & local DNS records (2026-07-12)
+
+- **nebula-sync** — compose stack on ciri
+  ([as-built](../configs/ciri/nebula-sync/README.md)): full Teleporter sync
+  pihole-1 → pihole-2 hourly, on-demand via
+  `docker compose run --rm sync-now` in the VM. Consequence: **pihole-1 is
+  the only place to edit** — lists, records, and config changed on pihole-2
+  are overwritten within the hour.
+- **Local DNS records** — every entry of [network.md](network.md)'s registry
+  as `<name>.kaermorhen.internal` (switch, geralt, yennefer, pihole-1,
+  uptime-kuma, ciri, pbs, pihole-2, beszel), set on pihole-1 via
+  `pihole-FTL --config dns.hosts '[...]'` and synced to 201. Records coexist
+  with conditional forwarding: dnsmasq answers locally-defined names itself
+  and forwards only *unknown* `kaermorhen.internal` names to the router.
+
 ## Next steps
 
-- **nebula-sync** to keep the two instances in lockstep (adlists, allowlists,
-  local DNS records) — deferred until the docker VM (150) exists. **Until then,
-  any list change must be made in both UIs by hand.**
-- **Local DNS records** (lab hostnames → IPs) deferred to land together with
-  nebula-sync, so they sync rather than drift.
+- **nebula-sync + local DNS records: done (2026-07-12)** — see the section
+  above; the edit-both-UIs-by-hand tax is gone.
 - **Failover acceptance test — partially done (2026-07-11)**: stopping each
   container in turn (101, then 201) left new-site browsing working. Still
   pending: the **node-reboot** variant — a stopped container fails fast

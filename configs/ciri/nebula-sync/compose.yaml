@@ -1,0 +1,21 @@
+x-sync-env: &sync-env
+  FULL_SYNC: "true"
+  RUN_GRAVITY: "true"
+  TZ: Asia/Kolkata
+
+services:
+  nebula-sync:
+    image: ghcr.io/lovelaze/nebula-sync:v0.11.2
+    container_name: nebula-sync
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      <<: *sync-env
+      CRON: "0 * * * *"
+
+  sync-now:
+    image: ghcr.io/lovelaze/nebula-sync:v0.11.2
+    profiles: ["manual"]
+    env_file: .env
+    environment: *sync-env
+

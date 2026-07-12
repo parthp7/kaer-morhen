@@ -181,13 +181,15 @@ Layered — guest-level and app-level are different problems:
   Pi-hole + public-resolver primary/secondary split caused intermittent
   house-wide DNS hangs (clients race resolvers rather than failing over) — the
   fix is two blocking resolvers, redundancy from the second Pi-hole. list-sync
-  (nebula-sync) and local DNS records deferred to the docker VM (150). As-built:
-  [dns.md](../dns.md).
+  (nebula-sync) and local DNS records deferred to the docker VM (150) — both
+  done 2026-07-12 as ciri's first compose stack; internal domain renamed to
+  `kaermorhen.internal` the same day (Apple clients refuse `home.arpa` — see
+  dns.md gotchas). As-built: [dns.md](../dns.md).
 - **Docker VM: base built (2026-07-11).** VM 150 `ciri` on geralt — Ubuntu
   26.04 LTS cloud image, q35/OVMF (GPU passthrough stays a config change; the
   iGPU-vs-GTX 1060 call is deferred to Jellyfin's turn), 6 vCPU / 8 GB fixed,
-  64 G on `silver`, Docker + Compose, Beszel agent with Docker stats. App
-  stacks pending — nebula-sync first, then apps per §3. As-built:
+  64 G on `silver`, Docker + Compose, Beszel agent with Docker stats. First
+  stack nebula-sync running 2026-07-12; app stacks per §3 pending. As-built:
   [docker-vm.md](../docker-vm.md).
 - **Uptime-Kuma: done (2026-07-11).** LXC 103 on geralt — service-level checks
   (Pi-hole DNS, Beszel hub, PBS, yennefer, router) complementing Beszel, alerts

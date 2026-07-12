@@ -20,7 +20,7 @@ guardian. VM name = guest hostname = login user = `ciri`.
 | Resources | 6 vCPU (`cpu: host`), **8192 MB fixed** (`balloon: 0`) |
 | Disks | **scsi0 64 G = OS**; **scsi1 32 G = `/data`** (Docker + app data) — both sparse zvols on `silver-guests`, `discard=on,iothread=1,ssd=1`, virtio-scsi-single; see "Storage layout" |
 | Docker config | `data-root: /data/docker`; `local` log driver capped **100 MB × 5 files per container** (`/etc/docker/daemon.json`); containerd `root = /data/containerd` (`/etc/containerd/config.toml`) — image layers live *there*, not in data-root (containerd image store, see gotchas) |
-| Network | virtio on `vmbr0`, static `<LAN_PREFIX>.150/24` via cloud-init, DNS `.101`/`.201` (the Pi-holes), search `kaermorhen.home.arpa` |
+| Network | virtio on `vmbr0`, static `<LAN_PREFIX>.150/24` via cloud-init, DNS `.101`/`.201` (the Pi-holes), search `kaermorhen.internal` (renamed from `….home.arpa` 2026-07-12 — see [dns.md](dns.md) gotchas) |
 | Login | user `ciri`, SSH-key only (keys inherited from geralt's `/root/.ssh/authorized_keys`); no password unless set via `sudo passwd ciri` |
 | Docker | Engine 29.6.1 + Compose v5.3.1 from Docker's official apt repo; `ciri` in the `docker` group |
 | Monitoring | Beszel agent (binary, `beszel-agent.service`) → hub on `.204`; per-container Docker stats on the same dashboard. **Auto-update timer disabled** (house policy) |
@@ -109,7 +109,7 @@ qm set 150 --ide2 silver-guests:cloudinit --boot order=scsi0
 qm set 150 --ciuser ciri --sshkeys /root/.ssh/authorized_keys \
   --ipconfig0 ip=<LAN_PREFIX>.150/24,gw=<LAN_PREFIX>.1 \
   --nameserver "<LAN_PREFIX>.101 <LAN_PREFIX>.201" \
-  --searchdomain kaermorhen.home.arpa
+  --searchdomain kaermorhen.internal
 qm start 150
 ```
 
@@ -288,11 +288,19 @@ old `/var/lib/docker` removed, hello-world runs, hub showing `/data`.
 Containerd root move verified 2026-07-12: config set, services active,
 hello-world layers landing in `/data/containerd`.
 
+## Stacks
+
+Convention (also in `CLAUDE.md`): each stack lives at `/data/stacks/<stack>/`
+in the VM — `compose.yaml` + git-ignored `.env` — and is mirrored in this
+repo at `configs/ciri/<stack>/` (compose scp'd verbatim after every change,
+plus `.env.example` + README).
+
+| Stack | Since | Purpose |
+|---|---|---|
+| nebula-sync | 2026-07-12 | hourly Pi-hole sync 101 → 201 + on-demand `sync-now`; cleared both deferred items in [dns.md](dns.md) ([as-built](../configs/ciri/nebula-sync/README.md)) |
+
 ## Next steps (not yet built)
 
-- **First compose stack: nebula-sync** + Pi-hole local DNS records — clears
-  the two deferred items in [dns.md](dns.md) and ends the
-  edit-both-UIs-by-hand tax. Do this before any apps.
 - **App stacks**: sure, memos, paperless-ngx; Jellyfin last.
 - **Jellyfin prerequisites**: GPU decision (iGPU QuickSync vs GTX 1060
   passthrough — also unblocks the Beszel GPU panel, see

@@ -1,7 +1,8 @@
 # Homelab Hardware Inventory
 
 Cluster **kaermorhen** — repurposed laptops running Proxmox VE.
-FQDN pattern: `<node>.kaermorhen.home.arpa`
+FQDN pattern: `<node>.kaermorhen.internal` (renamed from `….home.arpa`
+2026-07-12 — Apple resolvers refuse `home.arpa`, see [dns.md](dns.md) gotchas)
 
 Real IPs/serials/UUIDs referenced below are placeholders (`<NAME>`) resolved in the
 git-ignored `secrets.local.yaml` at the repo root, per `CLAUDE.md`.
