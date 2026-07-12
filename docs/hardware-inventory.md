@@ -32,9 +32,14 @@ each node over SSH).
 - **Role**: Proxmox VE node
 - **Model**: MSI GP63 Leopard 8RE (15.6" gaming laptop chassis, Coffee Lake generation)
 - **Serial / Product UUID**: `<GERALT_SERIAL>` / `<GERALT_UUID>`
-- **Firmware**: E16P5IMS.110 (2019-05-20), UEFI boot
+- **Firmware**: E16P5IMS.110 (2019-05-20), UEFI boot; EC firmware 16P5EMS1.109 (read
+  from EC RAM offset 0xA0). Secure Boot disabled 2026-07-12 — it forced kernel lockdown
+  `integrity`, which blocks raw EC access (`ec_sys write_support=1`); Proxmox doesn't
+  need it. BIOS "Wake up On LAN S5" enabled the same day, but WoL does not work on this
+  node — see notes below.
 - **Battery**: MSI BIF0_9, Li-ion, 64% of design capacity remaining (3150/4902 mAh),
-  0 charge cycles reported, currently reports "Full" — verified 2026-07-08
+  0 charge cycles reported, currently reports "Full" — verified 2026-07-08. No charge
+  cap possible on this hardware — see battery note below
 
 **CPU**
 - Intel(R) Core(TM) i7-8750H @ 2.20GHz — 6 cores / 12 threads, max 4.1 GHz, 9 MiB L3
@@ -68,7 +73,9 @@ each node over SSH).
 - **Serial / Product UUID**: `<YENNEFER_SERIAL>` / `<YENNEFER_UUID>`
 - **Firmware**: F.52 (2019-03-04), UEFI boot
 - **Battery**: HP PABAS0241231, Li-ion, 86% of design capacity remaining (2440/2850 mAh),
-  0 charge cycles reported, currently reports "Full" — verified 2026-07-08
+  0 charge cycles reported, currently reports "Full" — verified 2026-07-08. No charge
+  cap possible on this hardware — see battery note below. Battery is externally
+  removable (bottom latch) if it ever degrades badly
 
 **CPU**
 - Intel(R) Core(TM) i3-6006U @ 2.00GHz — 2 cores / 4 threads, fixed 2.0 GHz (no Turbo), 3 MiB L3
@@ -122,6 +129,13 @@ true NVMe drives.
 - Neither node has out-of-band management (no IPMI/BMC/iDRAC) — being consumer laptops,
   remote power-cycling depends on OS-level tools (WoL if enabled) or physical access.
   Keep this in mind for outage runbooks.
+- WoL tested 2026-07-12: **geralt cannot be woken remotely.** With BIOS "Wake up On LAN
+  S5" enabled and ERP disabled, a magic packet from yennefer did not wake it from a
+  clean shutdown. Root cause: the Killer E2400's `alx` driver has no WoL support in
+  mainline kernels (removed years ago over spurious-wake bugs), so the OS never arms
+  the PHY, and the firmware doesn't arm it on its own. geralt is physical-access-only
+  for power-on. yennefer is untested but its Realtek NIC (`r8169`) has proper WoL
+  support — test and record next time it's down for maintenance.
 - Both nodes use LVM-thin (`pve` VG) for the boot/root pool. Data disks were rebuilt
   2026-07-09: geralt runs single-disk ZFS pools `silver` (500 GB NVMe, guests) and
   `steel` (1 TB HDD, bulk); yennefer's 1 TB HDD is ext4 at `/mnt/backup` (backup
@@ -133,6 +147,19 @@ true NVMe drives.
   UPS, though geralt's is down to 64% of design capacity (yennefer 86%) — worth
   monitoring for further degradation but not an immediate concern (0 charge cycles
   logged on both, consistent with sitting on AC power as servers).
+- Battery charge cap (80%) investigated 2026-07-12: **not achievable in software on
+  either node**; accepted the batteries sitting at 100% as the cost of the incidental
+  UPS. Details, so this isn't re-litigated:
+  - geralt: neither battery exposes `charge_control_end_threshold` in sysfs. The
+    in-kernel `msi-ec` driver doesn't list EC firmware `16P5EMS1`; the upstream
+    [msi-ec](https://github.com/BeardOverflow/msi-ec) project knows the MS-16P5 EC
+    family (`16P5EMS1.103`, GE63 Raider 8RE) and marks `charge_control_address` as
+    unsupported. Both known MSI threshold registers (`0xEF`, `0xD7`) read 0x00 in an
+    EC dump. Untried fallback: booting Windows once and setting Dragon Center
+    "Battery Master" (stores its setting in the EC; may not survive full power drain).
+  - yennefer: consumer HP firmware has no charge-limit mechanism — `hp-bioscfg`
+    exposes only `Sure_Start`, no Battery Health Manager (business lines only), and
+    `hp_wmi` has no threshold support. Physical fallback: the battery is removable.
 - Lid-switch suspend risk: verified both nodes already set
   `HandleLidSwitch=ignore`, `HandleLidSwitchExternalPower=ignore`, and
   `HandleLidSwitchDocked=ignore` in `/etc/systemd/logind.conf` — closing the lid will
