@@ -65,6 +65,7 @@ runs as the Beszel agent here.
 
 - DNS name on pihole-1 (nebula-sync mirrors to pihole-2)
 - Uptime-Kuma HTTP monitor on `:3000`
-- `backup` profile enabled 2026-07-13; first dump lands at the next
-  UTC midnight — verify a `.sql.gz` appears in `backups/daily/`, then fold
+- `backup` profile enabled 2026-07-13; dumps land daily at midnight
+  (IST since the 2026-07-14 TZ standardization; the first ran at UTC
+  midnight) — verify `.sql.gz` files appear in `backups/daily/`, then fold
   offsite copies into the restic phase of `docs/backups.md`

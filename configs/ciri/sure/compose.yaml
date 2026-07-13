@@ -11,6 +11,7 @@ x-db-env: &db_env
 
 x-rails-env: &rails_env
   <<: *db_env
+  TZ: Asia/Kolkata
   SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set in .env}
   SELF_HOSTED: "true"
   RAILS_FORCE_SSL: "false"
@@ -74,6 +75,7 @@ services:
       - ./postgres-data:/var/lib/postgresql/data
     environment:
       <<: *db_env
+      TZ: Asia/Kolkata
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
       interval: 5s
@@ -110,6 +112,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-sure_production}
       POSTGRES_USER: ${POSTGRES_USER:-sure_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      # TZ makes @daily fire at IST midnight, not UTC.
+      TZ: Asia/Kolkata
       SCHEDULE: "@daily"
       BACKUP_KEEP_DAYS: "7"
       BACKUP_KEEP_WEEKS: "4"

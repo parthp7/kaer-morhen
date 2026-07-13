@@ -1,0 +1,106 @@
+# Paperless-ngx — document management system (scan/OCR/tag/archive).
+# Upstream example: https://github.com/paperless-ngx/paperless-ngx/blob/main/docker/compose/docker-compose.postgres.yml
+# No tika/gotenberg: images/PDF ingestion only, saves ~1G RAM for future apps.
+# Lab adaptations: pinned image tags, bind mounts under /data/stacks/paperless/,
+# secrets required from .env (no insecure defaults), postgres 16 + redis
+# 7.4-alpine for lab consistency (images already on the host), optional daily
+# pg backup via `--profile backup`.
+
+x-db-env: &db_env
+  POSTGRES_USER: ${POSTGRES_USER:-paperless}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+  POSTGRES_DB: ${POSTGRES_DB:-paperless}
+
+services:
+  webserver:
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+    container_name: paperless
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/usr/src/paperless/data
+      - ./media:/usr/src/paperless/media
+      - ./export:/usr/src/paperless/export
+      - ./consume:/usr/src/paperless/consume
+    environment:
+      PAPERLESS_REDIS: redis://broker:6379
+      PAPERLESS_DBHOST: db
+      PAPERLESS_DBNAME: ${POSTGRES_DB:-paperless}
+      PAPERLESS_DBUSER: ${POSTGRES_USER:-paperless}
+      PAPERLESS_DBPASS: ${POSTGRES_PASSWORD:?set in .env}
+      PAPERLESS_SECRET_KEY: ${PAPERLESS_SECRET_KEY:?set in .env}
+      PAPERLESS_TIME_ZONE: ${PAPERLESS_TIME_ZONE:-Asia/Kolkata}
+      TZ: Asia/Kolkata
+      PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE:-eng}
+      # Set only if served behind a reverse proxy / real hostname (CSRF origin).
+      PAPERLESS_URL: ${PAPERLESS_URL:-}
+    networks:
+      - paperless_net
+
+  db:
+    image: postgres:16
+    container_name: paperless-db
+    restart: unless-stopped
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    environment:
+      <<: *db_env
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - paperless_net
+
+  broker:
+    image: redis:7.4-alpine
+    container_name: paperless-redis
+    restart: unless-stopped
+    volumes:
+      - ./redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - paperless_net
+
+  # Opt-in daily pg_dump: docker compose --profile backup up -d
+  # NOTE: covers the DB only — originals/archive PDFs live in ./media and need
+  # file-level backup too (see README).
+  backup:
+    profiles:
+      - backup
+    image: prodrigestivill/postgres-backup-local:16
+    container_name: paperless-backup
+    restart: unless-stopped
+    volumes:
+      - ./backups:/backups
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:-paperless}
+      POSTGRES_USER: ${POSTGRES_USER:-paperless}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      # TZ makes @daily fire at IST midnight, not UTC.
+      TZ: Asia/Kolkata
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: "7"
+      BACKUP_KEEP_WEEKS: "4"
+      BACKUP_KEEP_MONTHS: "6"
+    depends_on:
+      - db
+    networks:
+      - paperless_net
+
+networks:
+  paperless_net:
+    driver: bridge

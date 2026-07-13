@@ -10,3 +10,4 @@ services:
     environment:
       MEMOS_PORT: 5230
       MEMOS_DRIVER: sqlite
+      TZ: Asia/Kolkata
