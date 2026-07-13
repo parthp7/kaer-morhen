@@ -248,6 +248,11 @@ IP (`.150:5230`) loads. `tailscale-1.kaermorhen.internal` → `.203` answered by
 both Pi-holes (record set on pihole-1, nebula-sync propagated to 201).
 Split-DNS name path verified from LTE same day (`ciri.kaermorhen.internal`).
 
+SSH client path verified 2026-07-13: MacBook joined the tailnet (macOS
+accepts subnet routes automatically — no `--accept-routes` needed) and SSH
+to the nodes over the subnet route works from LTE with the existing
+`ssh lab-<name>` config unchanged; no server-side changes were made.
+
 Twin verified 2026-07-13: `tailscale-2` running as 103 on `.103` (`dev0`
 tun, `nesting=1`, `onboot=1`), tailscaled active and online, both
 forwarding sysctls = 1, advertising the `/24` with `CorpDNS=false`, route
