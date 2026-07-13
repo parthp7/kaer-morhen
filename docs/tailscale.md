@@ -47,8 +47,8 @@ last-octet convention from [network.md](network.md).
 - **Split DNS failure domain**: remote name resolution (and remote everything)
   depends on this one container on yennefer, while most services live on
   geralt — a yennefer reboot takes remote access down. Addressed by the
-  `tailscale-2` warm standby (built 2026-07-13, dated section below) —
-  modulo the untested failover, see next steps.
+  `tailscale-2` warm standby (built 2026-07-13, dated section below);
+  automatic failover proven in the same day's outage drill.
 - **What Kuma can't see**: a ping monitor on `.203` proves the LXC is alive,
   not that the tailnet path works — the real end-to-end check is a tailnet
   device off-LAN. The Tailscale admin console's machine "last seen" is the
@@ -190,10 +190,10 @@ key expiry disabled. Deviations & findings:
   tailscaled came back clean.
 - **Route approved rather than left disabled**: the original warm-standby
   plan was a manual console flip, but the route got enabled alongside
-  tailscale-1's. Control keeps tailscale-1 primary (its `PrimaryRoutes` carries
-  the `/24`; tailscale-2's is empty) with tailscale-2 approved-but-idle.
-  Automatic failover is nominally a Premium feature — whether the Personal
-  plan actually fails over is untested (next steps).
+  tailscale-1's. Control designates one router primary (its `PrimaryRoutes`
+  carries the `/24`; the other's is empty) with the twin approved-but-idle
+  — and this turned out to give **automatic failover, proven on the
+  Personal plan** (see the failover test below).
 - **Cosmetic health warning** on both routers now — "Some peers are
   advertising routes but --accept-routes is false": each router sees the
   other's advertisement. A subnet router must not accept the very route it
@@ -201,6 +201,24 @@ key expiry disabled. Deviations & findings:
 - **Wiring**: `tailscale-2.kaermorhen.internal` → `.103` set on pihole-1
   and synced to both (done 2026-07-13). Kuma ping monitor on `.103` still
   pending.
+
+## Failover test (2026-07-13 yennefer outage drill)
+
+Clean `shutdown -h now` on yennefer (taking tailscale-1, pihole-2, PBS, and
+the Beszel hub down at once), phone on LTE watching memos. Results:
+
+- **Automatic failover: PASS, on the Personal plan** — control promoted
+  tailscale-2 to primary (`PrimaryRoutes` gained the `/24`) fast enough
+  that memos kept loading from LTE; no console action, no perceptible gap.
+  The "failover is Premium-only" assumption was wrong in practice.
+- **No failback (by design)**: after yennefer returned, the route **stayed
+  on tailscale-2** — tailscale-1 rejoined as the idle standby. Tailscale
+  doesn't preempt; the route lives wherever it last fled until *that*
+  router fails. Symmetric and harmless — don't "fix" it.
+- Kuma fired all five expected ntfy alerts (yennefer, pihole-2 DNS,
+  beszel-hub, PBS, tailscale-1) and recovery followed `onboot=1` with no
+  hands. Pi-hole node-failover results: [dns.md](dns.md); the WoL verdict
+  from the same drill: [hardware-inventory.md](hardware-inventory.md).
 
 ## Verification (read-only)
 
@@ -240,12 +258,7 @@ same day: rootfs on `silver-guests`, tailscaled active after the move,
 
 ## Next steps (not yet built)
 
-- **Failover acceptance test** (twin built 2026-07-13, behavior unproven):
-  with a phone on LTE watching a `.150` service, `pct stop 203` on yennefer
-  — does the `/24` shift to tailscale-2 on the Personal plan (automatic
-  failover is nominally Premium)? If not, the outage drill is the console
-  route flip (doable from the phone). Record the result here either way,
-  then `pct start 203`.
+- ~~Failover acceptance test~~ **done — see "Failover test" section.**
 - **Optional — exit node** (`--advertise-exit-node`): full-tunnel browsing
   through home (Pi-hole ad-blocking everywhere). Off by default; decide when
   there's a use case.

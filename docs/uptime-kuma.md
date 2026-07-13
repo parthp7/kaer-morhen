@@ -227,6 +227,11 @@ active, UI 302, v2.4.0 on Node 20.19.2, ping working as service user, all six
 monitors green, ntfy test delivered to phone. Runtime footprint ~130 MiB, swap
 untouched.
 
+Outage drill 2026-07-13 (yennefer halted — [tailscale.md](tailscale.md)):
+all five yennefer-side monitors (yennefer, pihole-2 DNS, beszel-hub, PBS,
+tailscale-1) alerted via ntfy during the window and cleared on recovery —
+the exact blind-spot coverage this container exists for, now proven live.
+
 Renumber verified 2026-07-13: running as 104 on `.104` (restored
 from the fresh PBS snapshot, config intact), UI answering 302, old 103
 destroyed.

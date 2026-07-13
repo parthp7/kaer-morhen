@@ -134,8 +134,18 @@ true NVMe drives.
   clean shutdown. Root cause: the Killer E2400's `alx` driver has no WoL support in
   mainline kernels (removed years ago over spurious-wake bugs), so the OS never arms
   the PHY, and the firmware doesn't arm it on its own. geralt is physical-access-only
-  for power-on. yennefer is untested but its Realtek NIC (`r8169`) has proper WoL
-  support — test and record next time it's down for maintenance.
+  for power-on. **yennefer tested 2026-07-13: also cannot be woken.** Opposite failure
+  layer to geralt: the `r8169` driver armed fine (`ethtool -s nic0 wol g`, confirmed
+  `Wake-on: g`) and the PHY stayed powered through S5 (switch link LED lit), but two
+  bursts of magic packets (UDP 7+9, subnet + limited broadcast) did not wake it — the
+  consumer HP firmware simply has no S5 wake path, and F10 setup offers no WoL toggle.
+  One untried long-shot: enabling the BIOS "Network Boot" (PXE) option sometimes
+  powers the wake path on consumer firmware — deliberately skipped, WoL judged not
+  worth another test cycle for this lab. **Accepted: both nodes are
+  physical-access-only for power-on**; remote resilience comes from the service
+  layer instead (Pi-hole pair, Tailscale subnet-router pair — failover of both
+  proven in the same 2026-07-13 outage drill, see [dns.md](dns.md) /
+  [tailscale.md](tailscale.md)).
 - Both nodes use LVM-thin (`pve` VG) for the boot/root pool. Data disks were rebuilt
   2026-07-09: geralt runs single-disk ZFS pools `silver` (500 GB NVMe, guests) and
   `steel` (1 TB HDD, bulk); yennefer's 1 TB HDD is ext4 at `/mnt/backup` (backup

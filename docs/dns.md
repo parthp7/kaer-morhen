@@ -192,12 +192,15 @@ backed-up guest. See [backups.md](backups.md).
 
 - **nebula-sync + local DNS records: done (2026-07-12)** — see the section
   above; the edit-both-UIs-by-hand tax is gone.
-- **Failover acceptance test — partially done (2026-07-11)**: stopping each
-  container in turn (101, then 201) left new-site browsing working. Still
-  pending: the **node-reboot** variant — a stopped container fails fast
-  (connection refused → instant client failover) while a dead node drops
-  packets silently (timeouts, the harder case); a reboot also proves
-  `onboot=1` actually brings Pi-hole back.
+- **Failover acceptance test — done (2026-07-13, node-down variant)**: the
+  container-stop half was done 2026-07-11 (stopping 101, then 201, left
+  new-site browsing working — fail-fast case). The harder silent-drop case
+  was proven in the yennefer outage drill: with the node halted (pihole-2
+  dropping packets, not refusing), a full macOS resolver-stack lookup
+  (`dscacheutil`, not `dig`) answered in ~48 ms via pihole-1 — no
+  multi-second hang. `onboot=1` brought pihole-2 back resolving *and*
+  blocking on power-up, and Kuma's pihole-2 DNS monitor alerted via ntfy
+  through the window.
 - **Uptime-Kuma: done (2026-07-11)** — LXC 104 on geralt (103 until the
   2026-07-13 renumber) runs DNS checks
   against `.101`/`.201` every 60 s, alerting via ntfy. As-built:
