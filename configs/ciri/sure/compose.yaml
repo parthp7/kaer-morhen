@@ -1,0 +1,124 @@
+# Sure (community fork of Maybe Finance) — personal finance app.
+# Upstream example: https://github.com/we-promise/sure/blob/main/compose.example.yml
+# Lab adaptations: pinned image tags, bind mounts under /data/stacks/sure/,
+# secrets required from .env (no insecure defaults), optional daily pg backup
+# via `--profile backup`.
+
+x-db-env: &db_env
+  POSTGRES_USER: ${POSTGRES_USER:-sure_user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+  POSTGRES_DB: ${POSTGRES_DB:-sure_production}
+
+x-rails-env: &rails_env
+  <<: *db_env
+  SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set in .env}
+  SELF_HOSTED: "true"
+  RAILS_FORCE_SSL: "false"
+  RAILS_ASSUME_SSL: "false"
+  DB_HOST: db
+  DB_PORT: 5432
+  REDIS_URL: redis://redis:6379/1
+  # Enabling OpenAI incurs API costs for chat/rules features; leave unset to disable.
+  OPENAI_ACCESS_TOKEN: ${OPENAI_ACCESS_TOKEN:-}
+
+services:
+  web:
+    # ghcr publishes no version tags (only sha-<commit> + stable); stable is a
+    # moving tag, so `docker compose pull` upgrades to the newest release.
+    image: ghcr.io/we-promise/sure:stable
+    container_name: sure
+    volumes:
+      - ./storage:/rails/storage
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    environment:
+      <<: *rails_env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # Upstream workaround: Yahoo Finance sync hangs when DNS returns IPv6 first.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - sure_net
+
+  worker:
+    image: ghcr.io/we-promise/sure:stable
+    container_name: sure-worker
+    command: bundle exec sidekiq
+    volumes:
+      - ./storage:/rails/storage
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      <<: *rails_env
+    networks:
+      - sure_net
+
+  db:
+    image: postgres:16
+    container_name: sure-db
+    restart: unless-stopped
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    environment:
+      <<: *db_env
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sure_net
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: sure-redis
+    restart: unless-stopped
+    volumes:
+      - ./redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sure_net
+
+  # Opt-in daily pg_dump: docker compose --profile backup up -d
+  backup:
+    profiles:
+      - backup
+    image: prodrigestivill/postgres-backup-local:16
+    container_name: sure-backup
+    restart: unless-stopped
+    volumes:
+      - ./backups:/backups
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${POSTGRES_DB:-sure_production}
+      POSTGRES_USER: ${POSTGRES_USER:-sure_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      SCHEDULE: "@daily"
+      BACKUP_KEEP_DAYS: "7"
+      BACKUP_KEEP_WEEKS: "4"
+      BACKUP_KEEP_MONTHS: "6"
+    depends_on:
+      - db
+    networks:
+      - sure_net
+
+networks:
+  sure_net:
+    driver: bridge
