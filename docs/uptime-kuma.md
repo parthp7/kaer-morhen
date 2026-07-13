@@ -1,7 +1,7 @@
 # Uptime-Kuma — service-level checks
 
-As-built runbook, implemented 2026-07-11; renumbered & renamed 2026-07-13
-(103 `uptime-kuma` → **104 `philippa`**, see the dated section below).
+As-built runbook, implemented 2026-07-11; renumbered 2026-07-13
+(103 → **104**, see the dated section below).
 Service-level "is it answering"
 monitoring (DNS, HTTP, ping) complementing Beszel's host-level metrics view —
 see [monitoring.md](monitoring.md) and [Proposal 001 §4](proposals/001-initial-infrastructure-plan.md).
@@ -17,7 +17,7 @@ watchers are inside the house (see next steps).
 
 | Piece | Value |
 |---|---|
-| Container | LXC **104** on **geralt**, `.104`, hostname `philippa` (lore naming per [network.md](network.md) — the owl on night watch, rival-spymaster pair with `dijkstra`/Beszel on 204), rootfs `silver-guests:8` |
+| Container | LXC **104** on **geralt**, `.104`, rootfs `silver-guests:8` |
 | Profile | Debian 13, unprivileged, `nesting=1`, 1 core, **512 MiB RAM / 1024 MiB swap**, `onboot=1` |
 | App | Uptime-Kuma **2.4.0**, non-Docker (git checkout + `npm run setup`), Node v20.19.2 (Debian's stock `nodejs`) |
 | Service | `uptime-kuma.service` (plain systemd unit, runs as user `uptime-kuma`), UI `http://<LAN_PREFIX>.104:3001` |
@@ -40,7 +40,7 @@ one-time `npm run setup` spike is allowed to grind through swap instead
 
 ```bash
 pct create 104 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
-  --hostname philippa --unprivileged 1 --features nesting=1 \
+  --hostname uptime-kuma --unprivileged 1 --features nesting=1 \
   --cores 1 --memory 512 --swap 1024 \
   --rootfs silver-guests:8 \
   --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.104/24,gw=<LAN_PREFIX>.1 \
@@ -50,9 +50,8 @@ pct create 104 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
 
 (Equivalent alternative: create with `--memory 1024` for a faster
 `npm run setup`, then `pct set 104 --memory 512 --swap 1024` — applies live,
-lands on the same config. As originally executed this was
-`pct create 103 … --hostname uptime-kuma`; command updated to what a rebuild
-should use — see the renumber section.)
+lands on the same config. As originally executed this was `pct create 103 …`;
+command updated to what a rebuild should use — see the renumber section.)
 
 ### 2. Install (inside the container)
 
@@ -119,7 +118,8 @@ runuser -u uptime-kuma -- ping -c1 <LAN_PREFIX>.22   # must succeed
 
 ### 6. Monitors
 
-Weighted toward yennefer's side (the blind spot), 60 s default interval:
+Weighted toward yennefer's side (the blind spot), 60 s default interval.
+Full set as of 2026-07-13:
 
 | Monitor | Type | Target | Note |
 |---|---|---|---|
@@ -129,6 +129,18 @@ Weighted toward yennefer's side (the blind spot), 60 s default interval:
 | PBS | HTTPS | `https://<LAN_PREFIX>.200:8007` | "Ignore TLS error" — self-signed cert |
 | yennefer host | Ping | `<LAN_PREFIX>.22` | the blind spot this container exists for |
 | router | Ping | `<LAN_PREFIX>.1` | distinguishes "node down" from "network down" |
+| ciri | Ping | `<LAN_PREFIX>.150` | added 2026-07-11 with the docker VM ([docker-vm.md](docker-vm.md)) |
+| tailscale-1 | Ping | `<LAN_PREFIX>.203` | LXC liveness only — the tailnet path isn't provable from inside ([tailscale.md](tailscale.md)) |
+| tailscale-2 | Ping | `<LAN_PREFIX>.103` | ditto; the warm standby |
+| memos | HTTP | `http://<LAN_PREFIX>.150:5230` | first app-level check — a dead container doesn't stop ciri answering pings |
+
+Rule of thumb for future additions: **one ping per guest** (liveness) +
+**one protocol-level check per user-facing service** (HTTP/DNS/HTTPS —
+"answering" beats "alive"). Deliberate absences: geralt (owned by the
+Beszel hub on yennefer — Kuma dies with geralt), Kuma itself (needs the
+external dead-man heartbeat, see next steps), nebula-sync (no listening
+port; an hourly batch job — its failure mode is Pi-hole drift, not an
+endpoint).
 
 **No geralt-host monitor** — Kuma runs on geralt and dies with it; that alert
 is owned by the Beszel hub on yennefer.
@@ -137,9 +149,9 @@ is owned by the Beszel hub on yennefer.
 
 Built as LXC **103** `uptime-kuma`; renumbered so the watcher pair mirrors
 across nodes (Kuma **104** ↔ Beszel **204**, like the Pi-holes' 101/201),
-freeing 103 for the Tailscale twin `tor-zireael` (↔ `tor-lara` 203), and
-renamed `philippa` under the lore-naming convention
-([network.md](network.md)). PVE has no VMID rename — backup → restore *is*
+freeing 103 for the Tailscale standby (↔ 203). (A same-day lore rename to
+`philippa` was rolled back hours later — LXCs keep functional names,
+[network.md](network.md).) PVE has no VMID rename — backup → restore *is*
 the renumber, and doubles as a live PBS restore drill:
 
 ```bash
@@ -150,8 +162,7 @@ vzdump 103 --storage pbs-vault --mode stopped
 
 pvesm list pbs-vault --content backup | grep ct/103 | tail -1
 pct restore 104 'pbs-vault:backup/ct/103/<TIMESTAMP>' --storage silver-guests
-pct set 104 --hostname philippa \
-  --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.104/24,gw=<LAN_PREFIX>.1
+pct set 104 --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.104/24,gw=<LAN_PREFIX>.1
 pct start 104
 # verify (section below), then:
 pct destroy 103
@@ -202,7 +213,7 @@ when we choose — nothing auto-updates, same policy as Beszel.
 ```bash
 # geralt
 pct status 104
-pct config 104                                    # 512/1024, onboot, nameserver, hostname philippa
+pct config 104                                    # 512/1024, onboot, nameserver
 pct exec 104 -- systemctl is-active uptime-kuma
 curl -s -o /dev/null -w '%{http_code}\n' http://<LAN_PREFIX>.104:3001   # 302 → login
 pct exec 104 -- sysctl net.ipv4.ping_group_range  # 0 65535
@@ -216,7 +227,7 @@ active, UI 302, v2.4.0 on Node 20.19.2, ping working as service user, all six
 monitors green, ntfy test delivered to phone. Runtime footprint ~130 MiB, swap
 untouched.
 
-Renumber verified 2026-07-13: `philippa` running as 104 on `.104` (restored
+Renumber verified 2026-07-13: running as 104 on `.104` (restored
 from the fresh PBS snapshot, config intact), UI answering 302, old 103
 destroyed.
 

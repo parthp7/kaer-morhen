@@ -55,7 +55,7 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 
 | Band | Purpose | Planned/assigned |
 |---|---|---|
-| 100–109 | Core infra LXCs | **101 Pi-hole #1 `jaskier` (built 2026-07-11)** · **103 Tailscale twin `tor-zireael` (built 2026-07-13 — warm standby mirroring tor-lara 203; [tailscale.md](tailscale.md))** · **104 Uptime-Kuma `philippa` (built 2026-07-11 as 103, renumbered 2026-07-13 to mirror Beszel 204 — the right side to watch yennefer/hub from; [uptime-kuma.md](uptime-kuma.md))** · 102 free again (Beszel hub built here 2026-07-10, moved to 204 same day) |
+| 100–109 | Core infra LXCs | **101 Pi-hole #1 (built 2026-07-11)** · **103 Tailscale standby `tailscale-2` (built 2026-07-13 — warm standby mirroring 203; [tailscale.md](tailscale.md))** · **104 Uptime-Kuma (built 2026-07-11 as 103, renumbered 2026-07-13 to mirror Beszel 204 — the right side to watch yennefer/hub from; [uptime-kuma.md](uptime-kuma.md))** · 102 free again (Beszel hub built here 2026-07-10, moved to 204 same day) |
 | 110–149 | Service LXCs | — |
 | 150 | Docker VM (all compose apps) | **150 ciri (built 2026-07-11 — Ubuntu 26.04, Docker; [docker-vm.md](docker-vm.md))** |
 | 151–189 | Future VMs (AI/GPU workloads, OPNsense if VLANs) | — |
@@ -65,7 +65,7 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 
 | Band | Purpose | Planned/assigned |
 |---|---|---|
-| 200–209 | Infra LXCs | **200 PBS `regis` (built 2026-07-10; [backups.md](backups.md))** · **201 Pi-hole #2 `priscilla` (built 2026-07-11)** · 202 reverse proxy (`barnabas` when built) · **203 Tailscale subnet router `tor-lara` (built 2026-07-13 — whole-LAN remote access + split DNS; [tailscale.md](tailscale.md))** · **204 Beszel hub `dijkstra` (moved from geralt 2026-07-10 — a hub can't alert its own host's death, so it watches the busy node from the stable one)** |
+| 200–209 | Infra LXCs | **200 PBS (built 2026-07-10; [backups.md](backups.md))** · **201 Pi-hole #2 (built 2026-07-11)** · 202 reverse proxy · **203 Tailscale subnet router `tailscale-1` (built 2026-07-13 — whole-LAN remote access + split DNS; [tailscale.md](tailscale.md))** · **204 Beszel hub (moved from geralt 2026-07-10 — a hub can't alert its own host's death, so it watches the busy node from the stable one)** |
 | 210–219 | VMs | 210 HAOS (Home Assistant OS; `marlene` when built) |
 | 220–249 | Service LXCs / future | — |
 | 250–254 | Scratch / test | — |
@@ -73,20 +73,15 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 Keep these tables current — they are the allocation registry. Claim an ID here
 when a guest is created.
 
-**Guest naming** (revised 2026-07-13 — lore names are the rule now, not the
-exception): guests take Witcher names *matched to their function* —
-`jaskier`/`priscilla` (101/201), the bards who know every name = the
-resolver pair; `philippa`/`dijkstra` (104/204), the rival spymasters who
-watch each other = the watcher pair; `tor-lara`/`tor-zireael` (203/103),
-the portal-linked towers = the Tailscale pair; `regis` (200), who returns
-from destruction = PBS; `ciri` (150), riding on her guardian `geralt`;
-planned: `barnabas` (202), the Corvo Bianco majordomo = reverse proxy, and
-`marlene` (210), its housekeeper = HAOS. Two guardrails keep this legible:
-each registry row above states the guest's function, and every guest
-carries **two** DNS records — lore name plus functional alias
-(`philippa.` *and* `uptime-kuma.kaermorhen.internal` both resolve; see
-[dns.md](dns.md)). Related rule: **mirror pairs share their last two
-digits across nodes** (101/201, 103/203, 104/204).
+**Guest naming** (settled 2026-07-13, after a same-day full-lore experiment
+was rolled back): **LXCs get functional names** (`pihole-1`, `uptime-kuma`,
+`beszel`, `pbs`, `tailscale-1`/`-2`) — with a growing fleet of
+single-purpose containers, name-recall beats theme. **Lore names belong to
+VMs and PVE nodes only**: the few big, long-lived guests (`ciri` = docker
+VM 150, riding on her guardian `geralt`; a future HAOS VM can be
+`marlene`). Kept from the experiment: the **mirror-pair rule** — paired
+services share their last two digits across nodes (101/201 Pi-holes,
+103/203 Tailscale, 104/204 watchers).
 
 ## Design notes
 

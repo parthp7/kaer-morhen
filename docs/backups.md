@@ -9,7 +9,7 @@ Storage it sits on: [storage.md](storage.md). IDs/IPs follow the
 
 | Piece | Where | Detail |
 |---|---|---|
-| Proxmox Backup Server 4.x | LXC **200** on yennefer (`.200`) | Debian 13, unprivileged, nesting=1, 2 cores / 2 GiB; hostname `regis` since 2026-07-13 (lore naming, [network.md](network.md) — the runbook below shows the original `pbs`) |
+| Proxmox Backup Server 4.x | LXC **200** on yennefer (`.200`) | Debian 13, unprivileged, nesting=1, 2 cores / 2 GiB |
 | Datastore `vault` | `/mnt/backup/pbs` (ext4 HDD) bind-mounted at `/datastore` | ~907 GiB ceiling |
 | Nightly backup job — geralt | PVE job, 04:00 | `--all`: every guest, present and future |
 | Nightly backup job — yennefer | PVE job, 04:30 | offset so both nodes don't hammer the HDD at once |

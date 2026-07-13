@@ -12,8 +12,8 @@ VMID = last octet).
 
 | Piece | Value |
 |---|---|
-| pihole-1 | LXC **101** on **geralt**, `.101`, rootfs `silver-guests:4` — hostname `jaskier` since 2026-07-13 (lore naming, [network.md](network.md); this doc keeps the pihole-1/-2 labels) |
-| pihole-2 | LXC **201** on **yennefer**, `.201`, rootfs `local-lvm:4` — hostname `priscilla`, ditto |
+| pihole-1 | LXC **101** on **geralt**, `.101`, rootfs `silver-guests:4` |
+| pihole-2 | LXC **201** on **yennefer**, `.201`, rootfs `local-lvm:4` |
 | Container profile | unprivileged, `nesting=1`, 1 core, 512 MB RAM / 256 MB swap, `onboot=1` |
 | Container upstream (`--nameserver`) | `1.1.1.1` (so the box resolves for `apt` etc. **without** looping through itself once it becomes the LAN resolver) |
 | Pi-hole upstream DNS | Cloudflare `1.1.1.1` / `1.0.0.1` — set *inside* each Pi-hole, identical on both |
@@ -178,14 +178,13 @@ backed-up guest. See [backups.md](backups.md).
   the only place to edit** — lists, records, and config changed on pihole-2
   are overwritten within the hour.
 - **Local DNS records** — every entry of [network.md](network.md)'s registry
-  as `<name>.kaermorhen.internal`, set on pihole-1 via
-  `pihole-FTL --config dns.hosts '[...]'` and synced to 201. Since the
-  lore-naming convention (2026-07-13, [network.md](network.md)) every guest
-  carries **two** records — lore name + functional alias, both → the same
-  IP: `jaskier`+`pihole-1` → `.101`, `philippa`+`uptime-kuma` → `.104`,
-  `regis`+`pbs` → `.200`, `priscilla`+`pihole-2` → `.201`,
-  `dijkstra`+`beszel` → `.204`; single-record: switch `.20`, geralt `.21`,
-  yennefer `.22`, tor-zireael `.103`, ciri `.150`, tor-lara `.203`. Records coexist
+  as `<name>.kaermorhen.internal`, one record per guest, name = hostname
+  (switch `.20`, geralt `.21`, yennefer `.22`, pihole-1 `.101`,
+  tailscale-2 `.103`, uptime-kuma `.104`, ciri `.150`, pbs `.200`,
+  pihole-2 `.201`, tailscale-1 `.203`, beszel `.204`), set on pihole-1 via
+  `pihole-FTL --config dns.hosts '[...]'` and synced to 201. (A 2026-07-13
+  dual-record lore-alias scheme was rolled back the same day with the
+  naming experiment.) Records coexist
   with conditional forwarding: dnsmasq answers locally-defined names itself
   and forwards only *unknown* `kaermorhen.internal` names to the router.
 
@@ -199,7 +198,7 @@ backed-up guest. See [backups.md](backups.md).
   (connection refused → instant client failover) while a dead node drops
   packets silently (timeouts, the harder case); a reboot also proves
   `onboot=1` actually brings Pi-hole back.
-- **Uptime-Kuma: done (2026-07-11)** — LXC 104 `philippa` on geralt (103
-  until the 2026-07-13 renumber) runs DNS checks
+- **Uptime-Kuma: done (2026-07-11)** — LXC 104 on geralt (103 until the
+  2026-07-13 renumber) runs DNS checks
   against `.101`/`.201` every 60 s, alerting via ntfy. As-built:
   [uptime-kuma.md](uptime-kuma.md).

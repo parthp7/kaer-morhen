@@ -269,7 +269,7 @@ guest-free, datastore holding only `ct/200` and `ct/204` groups.
 ## Next steps (not yet built)
 
 - **yennefer-down blind spot: closed (2026-07-11)** — Uptime-Kuma in LXC 104
-  `philippa` on geralt (103 until the 2026-07-13 renumber) pings yennefer
+  on geralt (103 until the 2026-07-13 renumber) pings yennefer
   and checks its services (hub, PBS, Pi-hole #2)
   directly; see [uptime-kuma.md](uptime-kuma.md). Remaining gap: both nodes
   down simultaneously (power outage) — still needs an external dead-man

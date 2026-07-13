@@ -1,6 +1,9 @@
 # Remote access — Tailscale subnet router
 
-As-built runbook, implemented 2026-07-13. The remote-access piece from [Proposal 001 §4](proposals/001-initial-infrastructure-plan.md),
+As-built runbook, implemented 2026-07-13. (The pair was briefly
+`tor-lara`/`tor-zireael` — reverted the same day with the lore-naming
+rollback; LXCs keep functional names, see [network.md](network.md).)
+The remote-access piece from [Proposal 001 §4](proposals/001-initial-infrastructure-plan.md),
 claiming the **LXC 203** slot reserved in [network.md](network.md). One
 container runs `tailscaled` advertising the whole LAN (`<LAN_PREFIX>.0/24`) to
 the tailnet, so every tailnet device (phone, laptop) reaches every service —
@@ -15,8 +18,8 @@ last-octet convention from [network.md](network.md).
 
 | Piece | Value |
 |---|---|
-| Container | LXC **203** on **yennefer**, `.203`, hostname `tor-lara`, rootfs `local-lvm:4` |
-| Warm standby | LXC **103** `tor-zireael` on **geralt**, `.103` — same profile & config, route approved with tor-lara primary (built 2026-07-13, see dated section) |
+| Container | LXC **203** on **yennefer**, `.203`, hostname `tailscale-1`, rootfs `local-lvm:4` |
+| Warm standby | LXC **103** `tailscale-2` on **geralt**, `.103` — same profile & config, route approved with tailscale-1 primary (built 2026-07-13, see dated section) |
 | Profile | Debian 13, unprivileged, `nesting=1` (for systemd, not tailscaled — see gotchas), 1 core, 512 MB RAM / 256 MB swap, `onboot=1`, `/dev/net/tun` passed through via `--dev0` |
 | Container nameserver | `1.1.1.1` — infra-tier convention ([dns.md](dns.md)): the box remote DNS flows *through* must not depend on the Pi-holes to boot |
 | App | tailscaled from the official Tailscale apt repo (Debian trixie channel); updates manual via `apt` (house policy — nothing auto-updates) |
@@ -36,7 +39,7 @@ last-octet convention from [network.md](network.md).
   Headscale) is fragile-to-impossible here. Tailscale is outbound-only.
 - **SNAT stays on** (the default): LAN devices see subnet-routed traffic as
   coming from `.203`, so no LAN device needs a return route. Cost: Pi-hole
-  dashboards attribute all remote clients' queries to `tor-lara` — accepted.
+  dashboards attribute all remote clients' queries to `tailscale-1` — accepted.
 - **`--accept-dns=false` on the router itself**: tailnet DNS settings will
   point at the Pi-holes *via this container's route* — the router taking its
   own advertised DNS is a loop waiting for a bad moment. It keeps `1.1.1.1`
@@ -44,7 +47,7 @@ last-octet convention from [network.md](network.md).
 - **Split DNS failure domain**: remote name resolution (and remote everything)
   depends on this one container on yennefer, while most services live on
   geralt — a yennefer reboot takes remote access down. Addressed by the
-  `tor-zireael` warm standby (built 2026-07-13, dated section below) —
+  `tailscale-2` warm standby (built 2026-07-13, dated section below) —
   modulo the untested failover, see next steps.
 - **What Kuma can't see**: a ping monitor on `.203` proves the LXC is alive,
   not that the tailnet path works — the real end-to-end check is a tailnet
@@ -59,7 +62,7 @@ Same template as the Pi-holes, already on both nodes.
 
 ```bash
 pct create 203 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
-  --hostname tor-lara --unprivileged 1 --features nesting=1 \
+  --hostname tailscale-1 --unprivileged 1 --features nesting=1 \
   --cores 1 --memory 512 --swap 256 \
   --rootfs local-lvm:4 \
   --net0 name=eth0,bridge=vmbr0,ip=<LAN_PREFIX>.203/24,gw=<LAN_PREFIX>.1 \
@@ -122,9 +125,9 @@ are persisted in tailscaled state; they don't need repeating on restarts.
 
 ### 6. Admin console (https://login.tailscale.com/admin)
 
-- **Machines → tor-lara → Edit route settings** → approve
+- **Machines → tailscale-1 → Edit route settings** → approve
   `<LAN_PREFIX>.0/24`. Until approved, the advertisement does nothing.
-- **Machines → tor-lara → … → Disable key expiry** — otherwise remote
+- **Machines → tailscale-1 → … → Disable key expiry** — otherwise remote
   access silently dies when the node key expires (~180 days), likely
   discovered while traveling. Do the same for any always-on device.
 - **DNS → Nameservers → Add nameserver → Custom**: `<LAN_PREFIX>.101`,
@@ -137,7 +140,7 @@ are persisted in tailscaled state; they don't need repeating on restarts.
 - **Uptime-Kuma** (`http://<LAN_PREFIX>.104:3001`): Ping monitor for `.203`,
   60 s, default ntfy — Kuma sits on geralt, so this survives a yennefer-side
   view loss and vice versa per the watcher split.
-- **pihole-1**: add `tor-lara.kaermorhen.internal` → `.203` to `dns.hosts`
+- **pihole-1**: add `tailscale-1.kaermorhen.internal` → `.203` to `dns.hosts`
   (nebula-sync propagates to 201 within the hour) — keeps the
   [dns.md](dns.md) registry rule "every network.md entry has a name".
 - **network.md**: bold the 203 entry in yennefer's band table (built + date).
@@ -145,14 +148,14 @@ are persisted in tailscaled state; they don't need repeating on restarts.
 ## Gotchas hit (and the fixes)
 
 - **Services unreachable by LAN IP from the phone even though `tailscale
-  status` on tor-lara looked healthy** — the route was advertised but never
+  status` on tailscale-1 looked healthy** — the route was advertised but never
   **approved** in the admin console (step 6's first bullet had been skipped).
   The two states are easy to conflate and nothing shouts about it:
   `tailscale debug prefs` showing `AdvertiseRoutes: [<LAN_PREFIX>.0/24]` only
   proves the container's half. The control-plane truth is
   `tailscale status --json` → `Self.AllowedIPs` / `Self.PrimaryRoutes`: the
   `/24` appears in both **only after console approval** (before it, only the
-  node's own `100.x/32`). Fix: Machines → tor-lara → Edit route settings →
+  node's own `100.x/32`). Fix: Machines → tailscale-1 → Edit route settings →
   enable the route; propagates to connected clients in seconds.
 - **Warning at every container start when built without `nesting=1`.**
   tailscaled itself doesn't need nesting, but Debian 13's systemd in an
@@ -173,13 +176,12 @@ Known sharp edges (not hit, kept for the next build):
   tuning). That targets physical NICs; the LXC veth usually rejects it, and at
   residential-uplink throughput it's a performance nicety, not correctness.
 
-## Warm standby — tor-zireael (built 2026-07-13)
+## Warm standby — tailscale-2 (built 2026-07-13)
 
-Same runbook, run on **geralt** as LXC **103** (`.103` — mirrors tor-lara's
+Same runbook, run on **geralt** as LXC **103** (`.103` — mirrors tailscale-1's
 203 per the pair rule in [network.md](network.md), slot freed by the Kuma
 renumber the same day): advertising the same `/24`, `--accept-dns=false`,
-key expiry disabled. The lore pairing is the point — Tor Lara and Tor
-Zireael are the two portal-linked towers. Deviations & findings:
+key expiry disabled. Deviations & findings:
 
 - **rootfs initially landed on `local-lvm`** — the yennefer create command
   was reused verbatim, but geralt guests live on `silver-guests`. Fixed
@@ -188,15 +190,15 @@ Zireael are the two portal-linked towers. Deviations & findings:
   tailscaled came back clean.
 - **Route approved rather than left disabled**: the original warm-standby
   plan was a manual console flip, but the route got enabled alongside
-  tor-lara's. Control keeps tor-lara primary (its `PrimaryRoutes` carries
-  the `/24`; tor-zireael's is empty) with tor-zireael approved-but-idle.
+  tailscale-1's. Control keeps tailscale-1 primary (its `PrimaryRoutes` carries
+  the `/24`; tailscale-2's is empty) with tailscale-2 approved-but-idle.
   Automatic failover is nominally a Premium feature — whether the Personal
   plan actually fails over is untested (next steps).
 - **Cosmetic health warning** on both routers now — "Some peers are
   advertising routes but --accept-routes is false": each router sees the
   other's advertisement. A subnet router must not accept the very route it
   advertises; ignore it.
-- **Wiring**: `tor-zireael.kaermorhen.internal` → `.103` set on pihole-1
+- **Wiring**: `tailscale-2.kaermorhen.internal` → `.103` set on pihole-1
   and synced to both (done 2026-07-13). Kuma ping monitor on `.103` still
   pending.
 
@@ -224,23 +226,23 @@ Verified 2026-07-13: container running with the profile above (`dev0` tun,
 sysctls = 1, prefs advertising `<LAN_PREFIX>.0/24` with `CorpDNS=false`;
 after route approval the `/24` shows in `Self.AllowedIPs` **and**
 `Self.PrimaryRoutes`, health empty. End-to-end from phone on LTE: memos by
-IP (`.150:5230`) loads. `tor-lara.kaermorhen.internal` → `.203` answered by
+IP (`.150:5230`) loads. `tailscale-1.kaermorhen.internal` → `.203` answered by
 both Pi-holes (record set on pihole-1, nebula-sync propagated to 201).
 Split-DNS name path verified from LTE same day (`ciri.kaermorhen.internal`).
 
-Twin verified 2026-07-13: `tor-zireael` running as 103 on `.103` (`dev0`
+Twin verified 2026-07-13: `tailscale-2` running as 103 on `.103` (`dev0`
 tun, `nesting=1`, `onboot=1`), tailscaled active and online, both
 forwarding sysctls = 1, advertising the `/24` with `CorpDNS=false`, route
-approved with tor-lara primary, key expiry disabled on **both** routers
+approved with tailscale-1 primary, key expiry disabled on **both** routers
 (`KeyExpiry: None` in `tailscale status --json`). Post-fixes re-verified
 same day: rootfs on `silver-guests`, tailscaled active after the move,
-`tor-zireael.kaermorhen.internal` → `.103` from both Pi-holes.
+`tailscale-2.kaermorhen.internal` → `.103` from both Pi-holes.
 
 ## Next steps (not yet built)
 
 - **Failover acceptance test** (twin built 2026-07-13, behavior unproven):
   with a phone on LTE watching a `.150` service, `pct stop 203` on yennefer
-  — does the `/24` shift to tor-zireael on the Personal plan (automatic
+  — does the `/24` shift to tailscale-2 on the Personal plan (automatic
   failover is nominally Premium)? If not, the outage drill is the console
   route flip (doable from the phone). Record the result here either way,
   then `pct start 203`.
