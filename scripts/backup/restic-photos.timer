@@ -1,0 +1,12 @@
+# restic-photos.timer — daily at 05:00 IST: after Immich's in-app DB dump
+# (02:00, so the dump in backups/ is fresh) and after the PBS window
+# (04:00 geralt / 04:30 yennefer — don't fight PBS for yennefer's HDD).
+[Unit]
+Description=Daily restic backup of steel/photos
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

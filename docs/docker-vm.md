@@ -42,6 +42,7 @@ while keeping memory fixed.
 |---|---|---|---|
 | scsi0 → `/` | 64 G | OS only | a full data disk stops containers but leaves SSH, the OS, and monitoring alive |
 | scsi1 → `/data` | 32 G | `/data/docker` (Docker data-root: volumes, container state, logs) + `/data/containerd` (image layers & content) + `/data/stacks` (compose files & bind mounts, owned by `ciri`) | independent online growth; per-disk vzdump policy |
+| virtiofs0 → `/mnt/photos` | — | geralt's `steel/photos` dataset (Immich originals), dir mapping `photos`, added 2026-07-14 | host dataset stays in the future photos backup path, outside PBS/vzdump; costs the VM live migration + `--vmstate` snapshots (disk-only snapshots and PBS backups verified fine) |
 
 Design decisions behind the split (evaluated 2026-07-11):
 
@@ -300,12 +301,18 @@ plus `.env.example` + README).
 | nebula-sync | 2026-07-12 | hourly Pi-hole sync 101 → 201 + on-demand `sync-now`; cleared both deferred items in [dns.md](dns.md) ([as-built](../configs/ciri/nebula-sync/README.md)) |
 | memos | 2026-07-12 | note-taking, port 5230; restored from old-host backup (SQLite DB + assets), historical data verified ([as-built](../configs/ciri/memos/README.md)) |
 | sure | 2026-07-13 | personal finance (we-promise/sure v0.7.2 via `:stable`), port 3000; fresh install, old-host backup deliberately discarded; daily pg_dump via `backup` profile enabled ([as-built](../configs/ciri/sure/README.md)) |
+| paperless | 2026-07-14 | document management (2.20.15), port 8000; images/PDF ingestion only — no tika/gotenberg ([as-built](../configs/ciri/paperless/README.md)) |
+| immich | 2026-07-14 | photo/video library (v3.0.2), port 2283; originals on geralt's `steel/photos` via virtiofs at `/mnt/photos`, thumbs/postgres on `/data` ([as-built](../configs/ciri/immich/README.md)) |
 
 ## Next steps (not yet built)
 
-- **App stacks**: paperless-ngx; Jellyfin last. Memos done 2026-07-12, sure
-  done 2026-07-13 (fresh install — old-host backup discarded, restore
-  abandoned).
+- **App stacks**: Jellyfin is the last one. Memos done 2026-07-12, sure
+  2026-07-13 (fresh install — old-host backup discarded), paperless
+  2026-07-14, immich 2026-07-14.
+- **Immich follow-ups**: backup job done 2026-07-16 (restic → yennefer,
+  [scripts/backup/README.md](../scripts/backup/README.md)) — library
+  import now unblocked; B2 offsite later — see
+  [configs/ciri/immich/README.md](../configs/ciri/immich/README.md).
 - **Memos follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on
   `:5230`.
 - **Sure follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on

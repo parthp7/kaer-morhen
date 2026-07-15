@@ -1,0 +1,11 @@
+# restic-photos-check.timer — 1st of the month, 06:00 IST (after that
+# morning's 05:00 backup run finishes its slot).
+[Unit]
+Description=Monthly restic check of the photos repo
+
+[Timer]
+OnCalendar=*-*-01 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

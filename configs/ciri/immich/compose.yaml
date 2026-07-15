@@ -1,0 +1,83 @@
+# Immich — self-hosted photo/video library (server, machine-learning, valkey,
+# postgres-with-VectorChord).
+# Upstream release compose: https://github.com/immich-app/immich/releases/download/v3.0.2/docker-compose.yml
+# Lab adaptations: pinned image tags (digests stripped per repo policy),
+# originals on geralt's steel/photos via virtiofs (UPLOAD_LOCATION=/mnt/photos
+# in .env), thumbs + postgres + model cache on local NVMe bind mounts,
+# TZ=Asia/Kolkata, container_names for readable docker ps, dedicated bridge
+# network. Service names `database`/`redis` are load-bearing: immich-server's
+# default DB_HOSTNAME/REDIS_HOSTNAME resolve to them — rename containers, not
+# services.
+
+services:
+  immich-server:
+    image: ghcr.io/immich-app/immich-server:v3.0.2
+    container_name: immich
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - database
+    ports:
+      - "2283:2283"
+    volumes:
+      # Originals + encoded video + profile + DB dumps → steel/photos on
+      # geralt, mounted into the VM via virtiofs (see README).
+      - ${UPLOAD_LOCATION:?set in .env}:/data
+      # Override: thumbs are regenerable small-file random reads — keep them
+      # on the local NVMe-backed disk instead of the HDD share.
+      - ./thumbs:/data/thumbs
+      - /etc/localtime:/etc/localtime:ro
+    env_file: .env
+    healthcheck:
+      disable: false
+    networks:
+      - immich_net
+
+  immich-machine-learning:
+    # CPU-only inference; if a GPU ever lands in ciri, switch per
+    # https://docs.immich.app/features/ml-hardware-acceleration
+    image: ghcr.io/immich-app/immich-machine-learning:v3.0.2
+    container_name: immich-ml
+    restart: unless-stopped
+    volumes:
+      # CLIP + facial-recognition models, downloaded on first job (~1G).
+      - ./model-cache:/cache
+    env_file: .env
+    healthcheck:
+      disable: false
+    networks:
+      - immich_net
+
+  redis:
+    # Upstream pins valkey:9 by digest; tag-only per repo pinning policy.
+    image: docker.io/valkey/valkey:9
+    container_name: immich-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Kolkata
+    healthcheck:
+      test: redis-cli ping || exit 1
+    networks:
+      - immich_net
+
+  database:
+    # Immich's own postgres build — needs the VectorChord extension; do NOT
+    # substitute the lab's plain postgres:16.
+    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0
+    container_name: immich-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set in .env}
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_DB: ${DB_DATABASE_NAME:-immich}
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+      TZ: Asia/Kolkata
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    shm_size: 128mb
+    networks:
+      - immich_net
+
+networks:
+  immich_net:
+    driver: bridge

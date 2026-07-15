@@ -1,0 +1,17 @@
+# restic-photos-check.service — monthly repo verification (reads real pack
+# data, not just metadata). This is the bit-rot detector for a repo on plain
+# ext4; without it a rotted chunk is only discovered at restore time.
+# Deploy: install -m 0644 restic-photos-check.{service,timer} /etc/systemd/system/
+#         systemctl daemon-reload && systemctl enable --now restic-photos-check.timer
+[Unit]
+Description=Monthly restic check (10% data read) of the photos repo
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic-photos.env
+ExecStart=/usr/local/bin/restic-photos.sh check
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

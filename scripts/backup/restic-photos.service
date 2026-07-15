@@ -1,0 +1,16 @@
+# restic-photos.service — daily restic backup of steel/photos → yennefer.
+# Deploy: install -m 0644 restic-photos.{service,timer} /etc/systemd/system/
+#         systemctl daemon-reload && systemctl enable --now restic-photos.timer
+[Unit]
+Description=restic backup of steel/photos to yennefer (Immich originals)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/restic-photos.env
+ExecStart=/usr/local/bin/restic-photos.sh backup
+# Keep the HDDs responsive for guests; the backup can take its time.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

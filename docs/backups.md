@@ -23,8 +23,9 @@ geralt's disks dying. It does **not** yet protect against yennefer's HDD dying
 it) or the house burning down. Both are closed by the planned offsite sync
 (Backblaze B2 via rclone) in the next phase. Also outside this skeleton:
 host-side data on geralt's `steel` pool (`media`, `photos`) — guests' bind
-mounts are skipped by vzdump, so `steel/photos` needs its own explicit backup
-job (photos are the only irreplaceable dataset; see storage.md).
+mounts are skipped by vzdump, so `steel/photos` has its own explicit backup
+job since 2026-07-16 (photos are the only irreplaceable dataset; see
+storage.md and the "steel/photos job" section below).
 
 ## Build runbook
 
@@ -198,10 +199,22 @@ LXC disks are filesystem datasets that must mount, unlike VM zvols. Details in
   handled separately).
 - `silver` pool needs a mountpoint for LXC subvols (fixed 2026-07-10).
 
+## steel/photos job (built 2026-07-16)
+
+The explicit job for the irreplaceable dataset: **restic on geralt** →
+SFTP repo at `yennefer:/mnt/backup/photos`, daily 05:00 IST (after
+Immich's 02:00 in-app DB dump and the PBS window), retention 7d/4w/6m,
+monthly `check --read-data-subset=10%` (bit-rot detection on the ext4
+target), ntfy on failure + Uptime-Kuma push dead-man on success.
+As-built + runbook: [scripts/backup/README.md](../scripts/backup/README.md).
+Yennefer's disk now carries PBS **and** this repo — the ~600–700 G photo
+watchline from storage.md applies.
+
 ## Next phase (not yet built)
 
 - **Offsite**: rclone sync of the PBS datastore → Backblaze B2, nightly timer —
   closes the "yennefer HDD dies" and disaster gaps.
-- **`steel/photos` job** → yennefer + B2, once Immich data exists.
+- **Photos offsite**: second restic repo on B2 (`restic copy`; init with
+  `--copy-chunker-params`), object lock = ransomware/compromised-node story.
 - **App-level dumps** (postgres etc.) inside the docker VM via restic/borgmatic,
   once apps exist.

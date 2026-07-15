@@ -216,8 +216,9 @@ untouched.
   backup copy of anything on steel). Frees steel to grow as the photo/document disk.
 - **PBS on yennefer** with datastore at `/mnt/backup/pbs`; both nodes back up
   guests to it, then sync offsite (Backblaze B2 via rclone).
-- **Explicit `steel/photos` backup job** → yennefer + B2 (photos are outside VM
-  disks, so PBS guest backups don't cover them).
+- ~~Explicit `steel/photos` backup job → yennefer~~ done 2026-07-16
+  (restic, daily — see [scripts/backup/README.md](../scripts/backup/README.md));
+  the B2 offsite leg is still pending.
 - Capacity watchlines: keep ZFS pools under ~80 %; yennefer's 1 TB backup disk is
   the ceiling — it fills before steel does once the photo library approaches
   ~600–700 GB.
