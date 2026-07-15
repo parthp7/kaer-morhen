@@ -48,8 +48,9 @@ each node over SSH).
 - 16 GB SODIMM DDR4 @ 2667 MT/s
 
 **GPU**
-- NVIDIA GeForce GTX 1060 Mobile (GP106M rev a1, 6 GB GDDR5) — not currently passed
-  through to any VM/LXC; candidate for PCIe passthrough (transcoding/AI workloads)
+- NVIDIA GeForce GTX 1060 Mobile (GP106M rev a1, 6 GB GDDR5) — VFIO-passed to
+  VM 150 (`ciri`) since 2026-07-16 for transcoding/AI workloads; host-side it is
+  bound to `vfio-pci` and invisible to tools. See [gpu-passthrough.md](gpu-passthrough.md)
 - Intel UHD Graphics 630 (integrated, CoffeeLake-H GT2)
 
 **Storage**
@@ -150,8 +151,9 @@ true NVMe drives.
   2026-07-09: geralt runs single-disk ZFS pools `silver` (500 GB NVMe, guests) and
   `steel` (1 TB HDD, bulk); yennefer's 1 TB HDD is ext4 at `/mnt/backup` (backup
   target). Full layout and build runbook: [storage.md](storage.md).
-- geralt's GTX 1060 is a strong candidate for GPU passthrough (Jellyfin/Plex
-  transcoding, local AI inference) — not yet configured as of this writing.
+- geralt's GTX 1060 is passed through to VM 150 (`ciri`) as of 2026-07-16
+  (Jellyfin transcoding, Immich ML, local AI inference) — runbook and gotchas
+  in [gpu-passthrough.md](gpu-passthrough.md).
 - Laptop chassis implies real constraints vs. rack hardware: no redundant PSU, limited
   cooling under sustained load. Both batteries report "Full" and act as an incidental
   UPS, though geralt's is down to 64% of design capacity (yennefer 86%) — worth

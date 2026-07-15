@@ -25,7 +25,7 @@ guest hostname = login user = `ciri`.
 | Docker | Engine 29.6.1 + Compose v5.3.1 from Docker's official apt repo; `ciri` in the `docker` group |
 | Monitoring | Beszel agent (binary, `beszel-agent.service`) → hub on `.204`; per-container Docker stats on the same dashboard. **Auto-update timer disabled** (house policy) |
 | Backups | picked up automatically by geralt's nightly 04:00 `--all 1` PBS job; `qemu-guest-agent` gives `fs-freeze` consistent snapshots |
-| GPU | **deferred** — iGPU (QuickSync) vs GTX 1060 decided when Jellyfin lands; i7-8750H software-transcodes 1080p meanwhile |
+| GPU | **GTX 1060 passed through 2026-07-16** (`hostpci0: 0000:01:00,pcie=1`, driver + container toolkit in guest) — see [gpu-passthrough.md](gpu-passthrough.md) |
 
 **Memory sizing**: geralt budget is 16 G − 2 G ARC cap − ~2 G host/LXCs → 8 G
 fixed leaves ~3–4 G headroom. Unlike LXC caps, VM memory is reserved while the
@@ -317,10 +317,11 @@ plus `.env.example` + README).
   `:5230`.
 - **Sure follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on
   `:3000`.
-- **Jellyfin prerequisites**: GPU decision (iGPU QuickSync vs GTX 1060
-  passthrough — also unblocks the Beszel GPU panel, see
-  [monitoring.md](monitoring.md)), and the media disk as `--scsi2` from
-  steel/USB with `backup=0`.
+- **Jellyfin prerequisites**: GPU done 2026-07-16 — GTX 1060 passed through
+  with NVENC/CUDA available to containers ([gpu-passthrough.md](gpu-passthrough.md));
+  remaining: the media disk as `--scsi2` from steel/USB with `backup=0`, and
+  confirming the Beszel GPU panel picks up ciri's agent
+  ([monitoring.md](monitoring.md)).
 - **App-level backups**: restic/borgmatic dumps to offsite once apps hold
   real data ([backups.md](backups.md) next phase).
 - Optional: `qm set 150 --delete balloon` to restore PVE guest-memory
