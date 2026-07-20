@@ -4,8 +4,9 @@ As-built runbook for passing geralt's NVIDIA GTX 1060 Mobile through to VM
 **150 (`ciri`)**, implemented 2026-07-16. Closes the "iGPU vs GTX 1060"
 decision deferred in [Proposal 001 §3](proposals/001-initial-infrastructure-plan.md)
 and [docker-vm.md](docker-vm.md). Primary consumer: the upcoming Jellyfin
-stack (NVENC transcoding); also unlocks CUDA for Immich ML and future local
-AI workloads.
+stack (NVENC transcoding — client-side compatibility research in
+[jellyfin-clients.md](jellyfin-clients.md)); also unlocks CUDA for Immich ML
+and future local AI workloads.
 
 ## Decision record: GTX 1060 over iGPU
 
