@@ -9,12 +9,16 @@ Hardware transcoding via the GTX 1060 passed through to ciri
 compatibility — including the sideloaded Samsung TV app, the primary consumer —
 is in [jellyfin-clients.md](../../../docs/jellyfin-clients.md).
 
-Deployed and fully configured **2026-07-22**; verified: container healthy on
-`10.11.11`, media disk (ext4) shared into ciri via `virtiofs1`, GTX 1060 + NVENC
-reaching the container, media bind read-only, NVENC/tone-mapping transcoding set
-(AV1 off), DNS `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150` on pihole-1,
-Kuma HTTP monitor on `:8096`, `/data` grown to 64 GB, repo mirror in sync.
-Outstanding: confirm the Beszel GPU panel picks up ciri's agent.
+Deployed and fully configured **2026-07-22**; verified end-to-end: container
+healthy on `10.11.11`, media disk (ext4) shared into ciri via `virtiofs1`,
+media bind read-only, DNS `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150`
+on pihole-1, Kuma HTTP monitor on `:8096`, `/data` grown to 64 GB, repo mirror
+in sync. **Playback proven** with a test movie: Direct Play on iPhone
+(Swiftfin), MacBook (web), and the Samsung TV; forcing a lower quality drove a
+**full hardware NVENC transcode** (CUDA decode → `scale_cuda` → `h264_nvenc`,
+exit 0). One gotcha: the TV must connect **by IP**, not the internal hostname —
+see Troubleshooting. Outstanding: confirm the Beszel GPU panel picks up ciri's
+agent.
 
 ## Files
 
@@ -233,6 +237,36 @@ Verified 2026-07-22: `scsi1 size=64G`, `/data` 63 GB total (28 % used).
 `resize2fs` on a mounted ext4 grows online. No `growpart` step — there is no
 partition between the disk and the filesystem here.
 
+## Troubleshooting
+
+### Samsung TV: browses fine, playback fails ("media not supported")
+
+Hit 2026-07-22. The Tizen app listed the library and metadata but every play
+attempt spun and then errored, on a file (`Inception`, H.264 High/AAC/faststart)
+that Direct Plays everywhere else.
+
+- **Diagnosis from the server log**: the TV authenticated and negotiated
+  PlaybackInfo (`User policy for "tv"`), but **no `/Videos/.../stream` request
+  ever arrived and no ffmpeg spawned** — the TV never fetched a byte. So the
+  media was fine; the TV couldn't reach the *stream URL*.
+- **Cause**: the app was added as `jellyfin.kaermorhen.internal`. Tizen browses
+  via its Chromium web-view (resolves Pi-hole DNS) but plays via native AVPlay,
+  a separate network stack that does **not** resolve the internal name.
+- **Fix**: set the app's server to `http://<LAN_PREFIX>.150:8096` (IP). Reachable
+  remotely too via the Tailscale subnet route. Full write-up in
+  [jellyfin-clients.md](../../../docs/jellyfin-clients.md#known-tizen-client-rough-edges).
+- **Note on `JELLYFIN_PublishedServerUrl`** (set to the hostname in `.env`):
+  harmless for web/Swiftfin, but it's why a hostname-based native client trips.
+  Left in place — connecting the TV by IP is the simpler fix; blanking it is the
+  alternative if more native-player clients arrive.
+
+### Confirming a transcode is really on the GPU
+
+Force a low quality in the client, then on ciri `nvidia-smi` shows an `ffmpeg`
+process. The server log's ffmpeg command should contain `-hwaccel cuda`,
+`scale_cuda`, and `h264_nvenc` (verified 2026-07-22, exit code 0) — that's the
+full decode→scale→encode pipeline on the card, not a CPU fallback.
+
 ## Backup story: none, deliberately
 
 This is the **only storage in the lab with no recovery path**, by decision
@@ -256,10 +290,12 @@ This is the **only storage in the lab with no recovery path**, by decision
 - ~~Uptime-Kuma HTTP monitor on `:8096`~~ done 2026-07-22 (added by IP).
 - ~~Transcoding settings (NVENC + hardware decode + CUDA tone mapping, AV1
   off)~~ done 2026-07-22.
+- ~~End-to-end playback verification~~ done 2026-07-22 — Direct Play on
+  iPhone/MacBook/TV + a proven hardware NVENC transcode (see Troubleshooting).
 - ~~Grow `/data` for trickplay/library headroom~~ done 2026-07-22 (32 → 64 GB).
 - ~~`docs/docker-vm.md` / `docs/storage.md` cross-refs~~ done 2026-07-22.
 - **Confirm the Beszel GPU panel** picks up ciri's agent
-  ([monitoring.md](../../../docs/monitoring.md)) — still open.
+  ([monitoring.md](../../../docs/monitoring.md)) — still open, the last item.
 - `steel/media` (ZFS, empty) is now redundant — the USB disk took its role.
   Leave or `zfs destroy` once the disk is proven.
 - Consider Beszel `EXTRA_FILESYSTEMS` for `/mnt/media` to watch capacity.

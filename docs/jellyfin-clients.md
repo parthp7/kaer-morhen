@@ -18,7 +18,7 @@ git-ignored `secrets.local.yaml`, see [network.md](network.md).
 | iPhone | **Swiftfin** (official, App Store) | Excellent — actively developed, 4K HEVC/HDR10/DV Direct Play |
 | MacBook | Web UI, or Jellyfin Media Player | Good — browser is sufficient for a laptop screen |
 | Windows PC | **Jellyfin Media Player** (official) | Good — install the app over the browser for HEVC/HDR Direct Play |
-| Samsung TV | **Jellyfin for Tizen** (official) | Installed 2026-07-20 by sideload — not in the India app store yet ([runbook](#runbook--sideloading-jellyfin-tizen-done-2026-07-20)) |
+| Samsung TV | **Jellyfin for Tizen** (official) | Sideloaded 2026-07-20; playback verified 2026-07-22 (Direct Play + NVENC transcode) — **connect by IP, not hostname** ([why](#known-tizen-client-rough-edges)) |
 
 ## Samsung TV (primary client)
 
@@ -89,7 +89,9 @@ certificate password); the bare form installs the current default build.
 - **Survives a cold restart** — verified by unplugging at the wall, not just a
   menu reboot. Sideloaded apps can vanish on a full power cycle if developer
   mode was misconfigured, so this is the check that matters.
-- Launching it shows the "Add Server" prompt.
+- Launching it shows the "Add Server" prompt. **Add the server by IP
+  (`http://<LAN_PREFIX>.150:8096`), not the `jellyfin.kaermorhen.internal`
+  hostname** — see the DNS gotcha under rough edges below.
 
 ### Maintenance caveats
 
@@ -117,6 +119,20 @@ remuxes) and styled subtitles — both cheap with NVENC, so no buffering risk.
 
 ### Known Tizen client rough edges
 
+- **Add the server by IP, not the internal DNS hostname** (hit 2026-07-22).
+  With the server added as `jellyfin.kaermorhen.internal`, the app *browsed*
+  fine but every playback failed — spinner, then "media not supported by this
+  client" — on a file that Direct Plays on every other client. Cause: the Tizen
+  app browses through its Chromium **web-view** (which resolves Pi-hole DNS) but
+  plays through Samsung's native **AVPlay** player, which uses a separate
+  network stack that does *not* resolve the internal name. The server logs the
+  giveaway: PlaybackInfo negotiated, but **no `/Videos/.../stream` request ever
+  arrives** — the TV can't reach the stream URL. Fix: set the app's server entry
+  to `http://<LAN_PREFIX>.150:8096`. The IP is reachable remotely too (the
+  Tailscale subnet router advertises the whole LAN), so IP is the universal
+  choice. Related: the server's `JELLYFIN_PublishedServerUrl` is a hostname —
+  fine for web/Swiftfin, but a trap for native-player clients; connecting by IP
+  sidesteps it.
 - UI (embedded web client) is sluggish on the AU7000's budget SoC —
   navigation only, playback is fine.
 - Mid-playback audio/subtitle track switching is flaky

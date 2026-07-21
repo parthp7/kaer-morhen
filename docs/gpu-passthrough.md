@@ -131,7 +131,7 @@ Consumers:
 
 | App | Use | Wiring |
 |---|---|---|
-| Jellyfin (next stack) | NVENC/NVDEC transcode, CUDA HDR→SDR tone mapping | reservation above + enable NVENC in Playback settings |
+| Jellyfin (**live** 2026-07-22) | NVENC/NVDEC transcode, CUDA HDR→SDR tone mapping | reservation above + NVENC in Playback settings — **verified**: CUDA decode → `scale_cuda` → `h264_nvenc` ([stack](../configs/ciri/jellyfin/README.md)) |
 | Immich | ML (smart search, faces) on CUDA; NVENC for video previews | swap ML image to the `-cuda` tag + reservation; NVENC in video-transcoding settings — optional, CPU is coping meanwhile |
 | Future | Ollama (7–8B Q4 fits in 6 GB), Frigate + TensorRT, Whisper | per-stack |
 
@@ -200,9 +200,10 @@ passing.
 
 ## Next steps
 
-- **Jellyfin stack** on ciri (`configs/ciri/jellyfin/`) — the GPU prerequisite
-  is done; remaining prerequisite is the media disk as `--scsi2` from
-  steel/USB with `backup=0` ([docker-vm.md](docker-vm.md)).
+- ~~**Jellyfin stack** on ciri~~ done 2026-07-22
+  ([configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md)) —
+  NVENC transcode verified. Media landed on an external USB HDD via virtiofs,
+  not the `--scsi2` originally sketched here.
 - **Beszel GPU panel** — confirm ciri's agent picks up `nvidia-smi` and the
   panel appears on the hub ([monitoring.md](monitoring.md)).
 - **Immich CUDA** (optional) — switch the ML container to the `-cuda` image
