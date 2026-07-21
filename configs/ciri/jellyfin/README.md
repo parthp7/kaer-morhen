@@ -9,10 +9,12 @@ Hardware transcoding via the GTX 1060 passed through to ciri
 compatibility — including the sideloaded Samsung TV app, the primary consumer —
 is in [jellyfin-clients.md](../../../docs/jellyfin-clients.md).
 
-Deployed **2026-07-22**; verified same day: container healthy on `10.11.11`,
-media disk (ext4) shared into ciri via `virtiofs1`, GTX 1060 + NVENC reaching
-the container, media bind read-only, repo mirror in sync. Remaining items are
-web-UI/DNS follow-ups (transcoding settings, Pi-hole record, Kuma monitor).
+Deployed and fully configured **2026-07-22**; verified: container healthy on
+`10.11.11`, media disk (ext4) shared into ciri via `virtiofs1`, GTX 1060 + NVENC
+reaching the container, media bind read-only, NVENC/tone-mapping transcoding set
+(AV1 off), DNS `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150` on pihole-1,
+Kuma HTTP monitor on `:8096`, `/data` grown to 64 GB, repo mirror in sync.
+Outstanding: confirm the Beszel GPU panel picks up ciri's agent.
 
 ## Files
 
@@ -189,25 +191,28 @@ docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner -encoders \
   | grep nvenc
 ```
 
-### 6. First run (web UI)
+### 6. First run (web UI) — done 2026-07-22
 
 - `http://<LAN_PREFIX>.150:8096` → create the admin account.
 - Add libraries: **Movies** → `/media/movies`, **Shows** → `/media/tv`.
-- Dashboard → Playback → **Transcoding**:
-  - Hardware acceleration: **NVIDIA NVENC**
-  - Enable HEVC, and **enable hardware decoding** for H.264/HEVC
-  - Enable **tone mapping** (CUDA) — this is what makes HDR10 → SDR cheap, and
-    the AU7000 needs it for Dolby Vision profile 5 files
-  - **Do not** enable AV1 encoding — Pascal has no AV1 encoder
+- Dashboard → Playback → **Transcoding** — configured and verified in
+  `config/encoding.xml`:
+  - Hardware acceleration: **NVIDIA NVENC** (`HardwareAccelerationType=nvenc`)
+  - Hardware decoding + enhanced NVDEC on, HEVC 10-bit decode on
+    (`EnableHardwareEncoding`, `EnableEnhancedNvdecDecoder`,
+    `EnableDecodingColorDepth10Hevc` = true)
+  - **Tone mapping** on (`EnableTonemapping=true`, bt2390) — makes HDR10 → SDR
+    cheap, and the AU7000 needs it for Dolby Vision profile 5 files
+  - **AV1 encoding off** (`AllowAv1Encoding=false`) — Pascal has no AV1 encoder
     ([gpu-passthrough.md](../../../docs/gpu-passthrough.md) known ceilings)
-- Leave **trickplay** off initially — it is the main way `/config` grows.
-  `/data` reached 55 % (17/32 GB) right after deploy, so `scsi1` is being grown
-  32 → 64 GB (`qm resize` + `resize2fs`, online) for headroom — see below.
-- Play something on the TV, then confirm on ciri: `nvidia-smi` shows an
-  `ffmpeg` process during a forced transcode, and Dashboard → Playback shows
-  "Transcoding (hardware)" rather than software.
+- **Trickplay** left off — it is the main way `/config` grows. `/data` reached
+  55 % (17/32 GB) right after deploy, so `scsi1` was grown 32 → 64 GB
+  (`qm resize` + `resize2fs`, online) on 2026-07-22 for headroom — see below.
+- Verify a real transcode: play something on the TV, then on ciri `nvidia-smi`
+  shows an `ffmpeg` process and Dashboard → Playback reads "Transcoding
+  (hardware)".
 
-### Growing `/data` (scsi1) — online, no downtime
+### Growing `/data` (scsi1) — online, no downtime (done 2026-07-22, 32 → 64 GB)
 
 `/data` is the whole disk `/dev/sdb` in ciri (ext4, no partition table), backed
 by `scsi1 = silver-guests:vm-150-disk-2`. virtio-scsi grows online, so no
@@ -222,6 +227,8 @@ qm resize 150 scsi1 64G
 sudo resize2fs /dev/sdb
 df -h /data                                        # now ~63 GB total
 ```
+
+Verified 2026-07-22: `scsi1 size=64G`, `/data` 63 GB total (28 % used).
 
 `resize2fs` on a mounted ext4 grows online. No `growpart` step — there is no
 partition between the disk and the filesystem here.
@@ -242,14 +249,17 @@ This is the **only storage in the lab with no recovery path**, by decision
 
 ## Follow-ups
 
-- DNS record `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150` on **pihole-1**
-  (nebula-sync mirrors to pihole-2; pihole-1 is the only place to edit).
-  This one record serves LAN *and* tailnet — the subnet router (LXC 203) plus
-  split DNS means no Jellyfin-side remote-access config at all.
-- Uptime-Kuma HTTP monitor on `:8096`.
-- `docs/docker-vm.md` — stacks table row, and correct the stale `--scsi2`
-  media-disk plan to point here.
-- `docs/storage.md` — move the USB HDD out of Future work into as-built.
+- ~~DNS record `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150` on
+  **pihole-1**~~ done 2026-07-22 (nebula-sync mirrors to pihole-2; pihole-1 is
+  the only place to edit). This one record serves LAN *and* tailnet — the subnet
+  router (LXC 203) plus split DNS means no Jellyfin-side remote-access config.
+- ~~Uptime-Kuma HTTP monitor on `:8096`~~ done 2026-07-22 (added by IP).
+- ~~Transcoding settings (NVENC + hardware decode + CUDA tone mapping, AV1
+  off)~~ done 2026-07-22.
+- ~~Grow `/data` for trickplay/library headroom~~ done 2026-07-22 (32 → 64 GB).
+- ~~`docs/docker-vm.md` / `docs/storage.md` cross-refs~~ done 2026-07-22.
+- **Confirm the Beszel GPU panel** picks up ciri's agent
+  ([monitoring.md](../../../docs/monitoring.md)) — still open.
 - `steel/media` (ZFS, empty) is now redundant — the USB disk took its role.
   Leave or `zfs destroy` once the disk is proven.
 - Consider Beszel `EXTRA_FILESYSTEMS` for `/mnt/media` to watch capacity.

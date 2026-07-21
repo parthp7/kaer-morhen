@@ -321,12 +321,13 @@ plus `.env.example` + README).
   `:5230`.
 - **Sure follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on
   `:3000`.
-- **Jellyfin**: deployed 2026-07-22 ([as-built](../configs/ciri/jellyfin/README.md)).
-  GPU done 2026-07-16 — GTX 1060 passed through with NVENC/CUDA
-  ([gpu-passthrough.md](gpu-passthrough.md)); media on an external USB HDD via
-  virtiofs (not the raw `--scsi2` originally planned). Remaining: web-UI
-  transcoding settings, DNS record, Kuma monitor, and confirming the Beszel GPU
-  panel picks up ciri's agent ([monitoring.md](monitoring.md)).
+- **Jellyfin**: deployed + configured 2026-07-22
+  ([as-built](../configs/ciri/jellyfin/README.md)). GPU done 2026-07-16 — GTX
+  1060 passed through with NVENC/CUDA ([gpu-passthrough.md](gpu-passthrough.md));
+  media on an external USB HDD via virtiofs (not the raw `--scsi2` originally
+  planned); transcoding (NVENC + tone mapping, AV1 off), DNS record, Kuma
+  monitor, and the `/data` grow to 64 GB all done. Remaining: confirm the Beszel
+  GPU panel picks up ciri's agent ([monitoring.md](monitoring.md)).
 - **App-level backups**: restic/borgmatic dumps to offsite once apps hold
   real data ([backups.md](backups.md) next phase).
 - Optional: `qm set 150 --delete balloon` to restore PVE guest-memory
