@@ -1,0 +1,54 @@
+# Jellyfin — media server, NVENC/NVDEC via the GTX 1060 passed through to ciri.
+# Lab adaptations: pinned image tag, media read-only from the external USB HDD
+# on geralt via virtiofs, config/cache on local NVMe, TZ=Asia/Kolkata, dedicated
+# bridge network (not host networking — see README).
+#
+# NVIDIA_DRIVER_CAPABILITIES is load-bearing: the toolkit's default
+# (utility,compute) does NOT include `video`, and without it NVENC/NVDEC are
+# invisible inside the container even though nvidia-smi works.
+
+services:
+  jellyfin:
+    image: jellyfin/jellyfin:10.11.11
+    container_name: jellyfin
+    restart: unless-stopped
+    ports:
+      - "8096:8096"
+    volumes:
+      # DB, artwork, trickplay — small-file random I/O, keep on NVMe.
+      - ./config:/config
+      # Transcode scratch + image cache; regenerable.
+      - ./cache:/cache
+      # Media, read-only. create_host_path:false is the missing-mount guard:
+      # if the USB disk failed to mount on geralt (nofail) or the virtiofs
+      # share is empty, this path does not exist and the container refuses to
+      # start — instead of Jellyfin scanning an empty library and evicting
+      # every item from its database.
+      - type: bind
+        source: /mnt/media/library
+        target: /media
+        read_only: true
+        bind:
+          create_host_path: false
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      TZ: Asia/Kolkata
+      # Needed for NVENC — see header note.
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+      NVIDIA_VISIBLE_DEVICES: all
+      # Advertised to clients for redirects/discovery. One name serves both
+      # LAN and tailnet (split DNS → Pi-hole), so there is no second URL.
+      JELLYFIN_PublishedServerUrl: ${JELLYFIN_PUBLISHED_URL:?set in .env}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - jellyfin_net
+
+networks:
+  jellyfin_net:
+    driver: bridge

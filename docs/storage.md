@@ -15,12 +15,13 @@ resolved in the git-ignored `secrets.local.yaml`.
 | 256 GB NVMe (boot) | LVM `pve` VG | `local` (dir) + `local-lvm` (thin) | Proxmox root/swap; overflow/scratch guest space |
 | 500 GB NVMe (Kingston) | ZFS pool **`silver`** | `silver-guests` (zfspool) | All VM/LXC disks (docker VM etc.) |
 | 1 TB HDD (Seagate) | ZFS pool **`steel`** | datasets below | Bulk payloads + dumps |
+| 1 TB USB HDD (Seagate BUP Slim) | ext4, label `media`, `/mnt/media` | shared to ciri via **virtiofs** (`dirid=media`) | Jellyfin library — disposable, **no backup** (see below) |
 
 `steel` datasets:
 
 | Dataset | recordsize | Purpose |
 |---|---|---|
-| `steel/media` | 1M | Jellyfin library (replaceable — migrates to future 2 TB USB disk) |
+| `steel/media` | 1M | **Superseded** — the Jellyfin library moved to the external USB HDD (below), 2026-07-22. Empty; kept for now, safe to `zfs destroy` once the USB disk is proven. |
 | `steel/photos` | 1M | Immich originals (irreplaceable — must be in backup path) |
 | `steel/dump` | 128K (default) | `steel-dump` dir storage: vzdump, ISOs, templates |
 
@@ -211,9 +212,15 @@ untouched.
 
 ## Future work
 
-- **2 TB USB HDD on geralt** (permanent): ext4, mounted by-id with `nofail`, takes
-  over `steel/media` contents (replaceable data only — never photos, never the
-  backup copy of anything on steel). Frees steel to grow as the photo/document disk.
+- ~~USB HDD on geralt takes over `steel/media`~~ done 2026-07-22 — a **1 TB
+  Seagate BUP Slim** (not the 2 TB originally sketched), ext4, `LABEL=media`,
+  `/mnt/media` with `nofail`, shared into ciri via virtiofs for Jellyfin
+  ([configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md)).
+  Holds replaceable data only — no backup. `steel/media` is now empty and can
+  be destroyed once the USB disk is proven. `steel` is thereby freed to grow as
+  the photo/document disk. Note: the drive enumerates reliably only at USB 2.0
+  (drops on USB 3.0), and shipped NTFS-preformatted — reformatted after
+  confirming contents were disposable.
 - **PBS on yennefer** with datastore at `/mnt/backup/pbs`; both nodes back up
   guests to it, then sync offsite (Backblaze B2 via rclone).
 - ~~Explicit `steel/photos` backup job → yennefer~~ done 2026-07-16

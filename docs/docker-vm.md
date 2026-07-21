@@ -70,10 +70,13 @@ Design decisions behind the split (evaluated 2026-07-11):
   reinstall buys the same nothing at higher cost.
 - **Sizing**: caps on sparse zvols, not allocations. Growing is online and
   trivial (`qm disk resize` + `resize2fs`); shrinking is effectively
-  impossible — grow on evidence. Bulk media never goes here: it later arrives
-  as **`--scsi2`** backed by steel/USB with **`backup=0`**, so replaceable
-  terabytes never inflate the nightly PBS job protecting the irreplaceable
-  app data on scsi0+scsi1 (both backed up by default).
+  impossible — grow on evidence. Bulk media never goes here: it lands on an
+  external USB HDD on geralt, shared into ciri via **virtiofs** (like
+  `steel/photos`), so replaceable terabytes never touch a VM disk or inflate
+  the nightly PBS job protecting the irreplaceable app data on scsi0+scsi1
+  (both backed up by default). (Originally planned as a raw `--scsi2` with
+  `backup=0`; virtiofs superseded it once ciri gained virtiofs + the GPU —
+  rationale in [configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md).)
 
 ## Runbook (as executed)
 
@@ -303,12 +306,13 @@ plus `.env.example` + README).
 | sure | 2026-07-13 | personal finance (we-promise/sure v0.7.2 via `:stable`), port 3000; fresh install, old-host backup deliberately discarded; daily pg_dump via `backup` profile enabled ([as-built](../configs/ciri/sure/README.md)) |
 | paperless | 2026-07-14 | document management (2.20.15), port 8000; images/PDF ingestion only — no tika/gotenberg ([as-built](../configs/ciri/paperless/README.md)) |
 | immich | 2026-07-14 | photo/video library (v3.0.2), port 2283; originals on geralt's `steel/photos` via virtiofs at `/mnt/photos`, thumbs/postgres on `/data` ([as-built](../configs/ciri/immich/README.md)) |
+| jellyfin | 2026-07-22 | media server (10.11.11), port 8096; NVENC via GTX 1060, media on an external USB HDD (ext4) on geralt via virtiofs at `/mnt/media`, config/cache on `/data` ([as-built](../configs/ciri/jellyfin/README.md)) |
 
 ## Next steps (not yet built)
 
-- **App stacks**: Jellyfin is the last one. Memos done 2026-07-12, sure
-  2026-07-13 (fresh install — old-host backup discarded), paperless
-  2026-07-14, immich 2026-07-14.
+- **App stacks**: all deployed. Memos 2026-07-12, sure 2026-07-13 (fresh
+  install — old-host backup discarded), paperless 2026-07-14, immich
+  2026-07-14, jellyfin 2026-07-22.
 - **Immich follow-ups**: backup job done 2026-07-16 (restic → yennefer,
   [scripts/backup/README.md](../scripts/backup/README.md)) — library
   import now unblocked; B2 offsite later — see
@@ -317,11 +321,12 @@ plus `.env.example` + README).
   `:5230`.
 - **Sure follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on
   `:3000`.
-- **Jellyfin prerequisites**: GPU done 2026-07-16 — GTX 1060 passed through
-  with NVENC/CUDA available to containers ([gpu-passthrough.md](gpu-passthrough.md));
-  remaining: the media disk as `--scsi2` from steel/USB with `backup=0`, and
-  confirming the Beszel GPU panel picks up ciri's agent
-  ([monitoring.md](monitoring.md)).
+- **Jellyfin**: deployed 2026-07-22 ([as-built](../configs/ciri/jellyfin/README.md)).
+  GPU done 2026-07-16 — GTX 1060 passed through with NVENC/CUDA
+  ([gpu-passthrough.md](gpu-passthrough.md)); media on an external USB HDD via
+  virtiofs (not the raw `--scsi2` originally planned). Remaining: web-UI
+  transcoding settings, DNS record, Kuma monitor, and confirming the Beszel GPU
+  panel picks up ciri's agent ([monitoring.md](monitoring.md)).
 - **App-level backups**: restic/borgmatic dumps to offsite once apps hold
   real data ([backups.md](backups.md) next phase).
 - Optional: `qm set 150 --delete balloon` to restore PVE guest-memory
