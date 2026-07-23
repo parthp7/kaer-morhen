@@ -21,7 +21,7 @@ resolved in the git-ignored `secrets.local.yaml`.
 
 | Dataset | recordsize | Purpose |
 |---|---|---|
-| `steel/media` | 1M | **Superseded** — the Jellyfin library moved to the external USB HDD (below), 2026-07-22. Empty; kept for now, safe to `zfs destroy` once the USB disk is proven. |
+| ~~`steel/media`~~ | — | **Destroyed 2026-07-23** — the Jellyfin library moved to the external USB HDD (below); dataset removed once the disk was proven. |
 | `steel/photos` | 1M | Immich originals (irreplaceable — must be in backup path) |
 | `steel/dump` | 128K (default) | `steel-dump` dir storage: vzdump, ISOs, templates |
 
@@ -128,7 +128,7 @@ zpool create -o ashift=12 \
   -O mountpoint=/steel \
   steel /dev/disk/by-id/ata-ST1000LM049-2GH172_<GERALT_HDD_SERIAL>
 
-zfs create -o recordsize=1M steel/media
+zfs create -o recordsize=1M steel/media    # destroyed 2026-07-23 — moved to USB HDD
 zfs create -o recordsize=1M steel/photos
 zfs create steel/dump
 
@@ -216,9 +216,9 @@ untouched.
   Seagate BUP Slim** (not the 2 TB originally sketched), ext4, `LABEL=media`,
   `/mnt/media` with `nofail`, shared into ciri via virtiofs for Jellyfin
   ([configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md)).
-  Holds replaceable data only — no backup. `steel/media` is now empty and can
-  be destroyed once the USB disk is proven. `steel` is thereby freed to grow as
-  the photo/document disk. Note: the drive enumerates reliably only at USB 2.0
+  Holds replaceable data only — no backup. `steel/media` was destroyed
+  2026-07-23 once the USB disk was proven, freeing `steel` to grow as the
+  photo/document disk. Note: the drive enumerates reliably only at USB 2.0
   (drops on USB 3.0), and shipped NTFS-preformatted — reformatted after
   confirming contents were disposable.
 - **PBS on yennefer** with datastore at `/mnt/backup/pbs`; both nodes back up

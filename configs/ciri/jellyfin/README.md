@@ -332,8 +332,8 @@ This is the **only storage in the lab with no recovery path**, by decision
 
 Optional / housekeeping only (no open build work):
 
-- `steel/media` (ZFS, empty) is now redundant — the USB disk took its role.
-  Leave or `zfs destroy` once the disk is proven.
+- ~~`steel/media` (ZFS) redundant — leave or destroy~~ destroyed 2026-07-23
+  (the USB disk took its role).
 - Consider Beszel `EXTRA_FILESYSTEMS` for `/mnt/media` to watch capacity.
 - Optional later: *arr stack writing into `downloads/`, hardlinking into
   `library/`.
