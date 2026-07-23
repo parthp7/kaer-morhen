@@ -17,8 +17,8 @@ via the OpenSubtitles plugin added 2026-07-23 (see Subtitles). **Playback proven
 (Swiftfin), MacBook (web), and the Samsung TV; forcing a lower quality drove a
 **full hardware NVENC transcode** (CUDA decode → `scale_cuda` → `h264_nvenc`,
 exit 0). One gotcha: the TV must connect **by IP**, not the internal hostname —
-see Troubleshooting. Outstanding: confirm the Beszel GPU panel picks up ciri's
-agent.
+see Troubleshooting. **Build complete** — Beszel shows the GPU on ciri's view
+(power/utilization/memory, verified 2026-07-23); no open items.
 
 ## Files
 
@@ -326,8 +326,12 @@ This is the **only storage in the lab with no recovery path**, by decision
   iPhone/MacBook/TV + a proven hardware NVENC transcode (see Troubleshooting).
 - ~~Grow `/data` for trickplay/library headroom~~ done 2026-07-22 (32 → 64 GB).
 - ~~`docs/docker-vm.md` / `docs/storage.md` cross-refs~~ done 2026-07-22.
-- **Confirm the Beszel GPU panel** picks up ciri's agent
-  ([monitoring.md](../../../docs/monitoring.md)) — still open, the last item.
+- ~~Confirm the Beszel GPU panel picks up ciri's agent~~ done 2026-07-23 — GPU
+  shows on ciri's view with power/utilization/memory
+  ([monitoring.md](../../../docs/monitoring.md)). **Last build item — closed.**
+
+Optional / housekeeping only (no open build work):
+
 - `steel/media` (ZFS, empty) is now redundant — the USB disk took its role.
   Leave or `zfs destroy` once the disk is proven.
 - Consider Beszel `EXTRA_FILESYSTEMS` for `/mnt/media` to watch capacity.

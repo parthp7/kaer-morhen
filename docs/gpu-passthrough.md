@@ -170,8 +170,8 @@ paperless / memos / sure / nebula-sync have no GPU use.
 - **The host can no longer see the 1060** (it's vfio-bound) — GPU monitoring
   must come from *inside ciri*, where the driver now lives. This is the
   "nvidia drivers wherever the GPU lives" fork anticipated in
-  [monitoring.md](monitoring.md); the Beszel GPU panel is now unblocked via
-  ciri's agent.
+  [monitoring.md](monitoring.md); the Beszel GPU panel is live via ciri's agent
+  (verified 2026-07-23 — power draw, utilization, memory).
 - **PBS backups of ciri: unaffected.** Live migration was already off the
   table (virtiofs mount); hostpci doesn't change the backup story.
 - **Guest RAM is now VFIO-pinned** — already priced into the 8 G fixed /
@@ -204,7 +204,7 @@ passing.
   ([configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md)) —
   NVENC transcode verified. Media landed on an external USB HDD via virtiofs,
   not the `--scsi2` originally sketched here.
-- **Beszel GPU panel** — confirm ciri's agent picks up `nvidia-smi` and the
+- ~~**Beszel GPU panel**~~ done 2026-07-23 — ciri's agent picks up `nvidia-smi`; the
   panel appears on the hub ([monitoring.md](monitoring.md)).
 - **Immich CUDA** (optional) — switch the ML container to the `-cuda` image
   when convenient; not urgent while CPU keeps up.

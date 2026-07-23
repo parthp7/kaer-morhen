@@ -278,10 +278,10 @@ guest-free, datastore holding only `ct/200` and `ct/204` groups.
   [docker-vm.md](docker-vm.md)); per-container metrics on the dashboard.
   Gotcha: the agent install script offers daily auto-updates — decline (house
   policy); if accepted, `systemctl disable --now beszel-agent-update.timer`.
-- **GPU panel**: unblocked 2026-07-16 — the GTX 1060 is passed through to
-  ciri with the nvidia driver in the guest ([gpu-passthrough.md](gpu-passthrough.md)),
-  so GPU stats come from *ciri's* agent (the host can no longer see the card).
-  Remaining: confirm the agent detects `nvidia-smi` and the panel appears on
-  the hub.
+- **GPU panel**: **live** (verified 2026-07-23). The GTX 1060 is passed through
+  to ciri with the nvidia driver in the guest
+  ([gpu-passthrough.md](gpu-passthrough.md)), so GPU stats come from *ciri's*
+  agent (the host can no longer see the card). Beszel shows the card on ciri's
+  view with power draw, utilization, and memory.
 - **Grafana + Prometheus** (optional, later): compose stack in VM 150 if
   custom dashboards become wanted; coexists with Beszel, agents stay.
