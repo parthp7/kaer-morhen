@@ -130,9 +130,9 @@ remuxes) and styled subtitles — both cheap with NVENC, so no buffering risk.
   arrives** — the TV can't reach the stream URL. Fix: set the app's server entry
   to `http://<LAN_PREFIX>.150:8096`. The IP is reachable remotely too (the
   Tailscale subnet router advertises the whole LAN), so IP is the universal
-  choice. Related: the server's `JELLYFIN_PublishedServerUrl` is a hostname —
-  fine for web/Swiftfin, but a trap for native-player clients; connecting by IP
-  sidesteps it.
+  choice. Root cause was `JELLYFIN_PublishedServerUrl` (a hostname): fine for
+  web/Swiftfin, a trap for native-player clients. It was removed from the server
+  compose 2026-07-22, so connecting by IP is now the complete fix.
 - UI (embedded web client) is sluggish on the AU7000's budget SoC —
   navigation only, playback is fine.
 - Mid-playback audio/subtitle track switching is flaky

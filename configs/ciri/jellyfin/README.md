@@ -11,9 +11,9 @@ is in [jellyfin-clients.md](../../../docs/jellyfin-clients.md).
 
 Deployed and fully configured **2026-07-22**; verified end-to-end: container
 healthy on `10.11.11`, media disk (ext4) shared into ciri via `virtiofs1`,
-media bind read-only, DNS `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150`
-on pihole-1, Kuma HTTP monitor on `:8096`, `/data` grown to 64 GB, repo mirror
-in sync. **Playback proven** with a test movie: Direct Play on iPhone
+DNS `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150` on pihole-1, Kuma HTTP
+monitor on `:8096`, `/data` grown to 64 GB, repo mirror in sync. Auto-subtitles
+via the OpenSubtitles plugin added 2026-07-23 (see Subtitles). **Playback proven** with a test movie: Direct Play on iPhone
 (Swiftfin), MacBook (web), and the Samsung TV; forcing a lower quality drove a
 **full hardware NVENC transcode** (CUDA decode → `scale_cuda` → `h264_nvenc`,
 exit 0). One gotcha: the TV must connect **by IP**, not the internal hostname —
@@ -83,7 +83,7 @@ Costs nothing if the *arr stack never happens.
 
 ```
 /mnt/media/                    (geralt, ext4, USB)
-├── library/                   ← Jellyfin sees only this, read-only
+├── library/                   ← Jellyfin sees only this (read-write, subs)
 │   ├── movies/
 │   └── tv/
 └── downloads/                 ← future *arr writes here, hardlinks into library/
@@ -237,6 +237,38 @@ Verified 2026-07-22: `scsi1 size=64G`, `/data` 63 GB total (28 % used).
 `resize2fs` on a mounted ext4 grows online. No `growpart` step — there is no
 partition between the disk and the filesystem here.
 
+## Subtitles — auto-fetch via OpenSubtitles (added 2026-07-23)
+
+Jellyfin downloads subtitles automatically; nothing is fetched by hand.
+
+- **Plugin**: Dashboard → Plugins → Catalog → **Open Subtitles** (v24.0.0.0
+  installed) → restart. Configured with a free **opensubtitles.com** account
+  (the plugin carries its own API key) — the account reports a **20
+  downloads/day** cap, ample for a home library.
+- **Per library** (Movies, Shows): *Manage* → **Subtitle Downloads** → pick
+  download language(s). Fetches on library scan for items missing subs, plus the
+  "Download missing subtitles" scheduled task; also on-demand per item or mid-
+  playback. Verified 2026-07-23: subtitles download and display in playback.
+- **Samsung TV**: downloaded **SRT** Direct Plays as soft subs; **ASS/SSA**
+  forces a cheap NVENC burn-in. Embedded subs in `.mkv` rips need no download.
+
+### Why the media bind is read-write (decision, 2026-07-23)
+
+The plugin has `SaveSubtitlesWithMedia=true`, so it writes `.srt` sidecars **next
+to each video** — which needs write access to `/media`. Two ways to allow that:
+
+- **A** — keep the bind read-only, set `SaveSubtitlesWithMedia=false` so subs
+  land in `/config` (NVMe, PBS-backed).
+- **B** — make the `/media` bind read-write; subs sidecar next to the media. **← chosen.**
+
+**Chose B**: subtitles should live and die with the media (a disposable,
+re-obtainable, unbacked library), so sidecars on the same disk are the natural
+fit and want no PBS coverage. Accepted trade-off: Jellyfin can now write/delete
+files on the media disk (delete-from-UI, metadata writes) and writes land as
+root via virtiofs — all acceptable for disposable content. The
+`create_host_path: false` missing-mount guard is unaffected (it's independent of
+read-only). Implemented by dropping `read_only: true` from the `/media` bind.
+
 ## Troubleshooting
 
 ### Samsung TV: browses fine, playback fails ("media not supported")
@@ -255,10 +287,10 @@ that Direct Plays everywhere else.
 - **Fix**: set the app's server to `http://<LAN_PREFIX>.150:8096` (IP). Reachable
   remotely too via the Tailscale subnet route. Full write-up in
   [jellyfin-clients.md](../../../docs/jellyfin-clients.md#known-tizen-client-rough-edges).
-- **Note on `JELLYFIN_PublishedServerUrl`** (set to the hostname in `.env`):
-  harmless for web/Swiftfin, but it's why a hostname-based native client trips.
-  Left in place — connecting the TV by IP is the simpler fix; blanking it is the
-  alternative if more native-player clients arrive.
+- **`JELLYFIN_PublishedServerUrl` is now unset** (2026-07-22). It was harmless
+  for web/Swiftfin but is exactly what trips a hostname-based native client, so
+  it was removed from `compose.yaml` — clients now stream from the address they
+  connected on. Connect the TV by IP.
 
 ### Confirming a transcode is really on the GPU
 
@@ -312,7 +344,10 @@ This is the **only storage in the lab with no recovery path**, by decision
   convention.
 - **`NVIDIA_DRIVER_CAPABILITIES: compute,video,utility`** — the toolkit
   default omits `video`, which silently disables NVENC/NVDEC.
-- **Media bind is `read_only` with `create_host_path: false`** — see the guard
-  note in `compose.yaml`.
+- **Media bind is read-write** (was `read_only` until 2026-07-23) so the
+  OpenSubtitles plugin can save subtitle sidecars next to each video — see
+  Subtitles. `create_host_path: false` (the missing-mount guard) is independent
+  of rw and stays.
+- **`JELLYFIN_PublishedServerUrl` removed** (2026-07-22) — see Troubleshooting.
 - **TZ=Asia/Kolkata**, `container_name`, `restart: unless-stopped` — lab
   conventions.
