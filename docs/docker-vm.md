@@ -313,7 +313,13 @@ plus `.env.example` + README).
 
 - **App stacks**: all deployed. Memos 2026-07-12, sure 2026-07-13 (fresh
   install — old-host backup discarded), paperless 2026-07-14, immich
-  2026-07-14, jellyfin 2026-07-22.
+  2026-07-14, jellyfin 2026-07-22, servarr (TV + Movies) 2026-07-25.
+- **Audiobooks — deferred (gated on stability)**: hold until the servarr stack
+  has run stably for ≥1 week — re-evaluate **on/after 2026-08-02**. Readarr was
+  dropped (EOL, can't authenticate to qBittorrent 5.x), so this needs a
+  maintained grabber + an Audiobookshelf server. Scaffolding for the
+  `audiobookshelf` stack exists locally but is intentionally **uncommitted**
+  until it's built and verified.
 - **Immich follow-ups**: backup job done 2026-07-16 (restic → yennefer,
   [scripts/backup/README.md](../scripts/backup/README.md)) — library
   import now unblocked; B2 offsite later — see
