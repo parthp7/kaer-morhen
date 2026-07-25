@@ -133,6 +133,19 @@ Full set as of 2026-07-13:
 | tailscale-1 | Ping | `<LAN_PREFIX>.203` | LXC liveness only — the tailnet path isn't provable from inside ([tailscale.md](tailscale.md)) |
 | tailscale-2 | Ping | `<LAN_PREFIX>.103` | ditto; the warm standby |
 | memos | HTTP | `http://<LAN_PREFIX>.150:5230` | first app-level check — a dead container doesn't stop ciri answering pings |
+| jellyfin | HTTP | `http://<LAN_PREFIX>.150:8096` | media server, added 2026-07-22 ([jellyfin](../configs/ciri/jellyfin/README.md)) |
+| prowlarr | HTTP-Keyword | `http://<LAN_PREFIX>.150:9696/ping` → `OK` | servarr, added 2026-07-26 ([servarr](../configs/ciri/servarr/README.md)) |
+| sonarr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8989/ping` → `OK` | servarr (TV) |
+| radarr | HTTP-Keyword | `http://<LAN_PREFIX>.150:7878/ping` → `OK` | servarr (Movies) |
+| bazarr | HTTP-Keyword | `http://<LAN_PREFIX>.150:6767/` → `Bazarr` | servarr (subtitles) |
+| jellyseerr | HTTP-Keyword | `http://<LAN_PREFIX>.150:5055/api/v1/status` → `version` | servarr (requests) |
+| qbittorrent | HTTP | `http://<LAN_PREFIX>.150:8080/` | servarr; **doubles as gluetun liveness** — the port is published through gluetun, so it reddens if the VPN container dies |
+| flaresolverr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8191/` → `FlareSolverr is ready` | servarr (Cloudflare solver) |
+
+servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
+liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's
+per-container view (and gluetun indirectly by the qbittorrent monitor). Note these are
+liveness only: **they cannot see a VPN leak or port-forwarding degraded to 0** — see Next steps.
 
 Rule of thumb for future additions: **one ping per guest** (liveness) +
 **one protocol-level check per user-facing service** (HTTP/DNS/HTTPS —
@@ -242,5 +255,22 @@ destroyed.
   can't do it — Kuma is inside the failure domain. Something *outside* the
   house must notice silence. Closes the "whole-house outage" gap.
 - **Add monitors as services land**: docker VM 150 apps, HAOS, reverse proxy.
+- **servarr VPN leak + port-forward health monitor** (functional, not liveness): the 7
+  servarr HTTP monitors and Beszel only prove the containers answer — they **cannot** see two
+  failures that matter:
+  - **VPN leak** — if qBittorrent ever egressed via the home IP instead of Proton, every
+    monitor stays green. This is the one failure most worth alerting on and is currently invisible.
+  - **Port forwarding degraded to 0** — Proton drops the forwarded port server-side
+    intermittently (NAT-PMP refused); qBit keeps working but inbound seeding is degraded, and
+    nothing flags a prolonged 0.
+  **Possible fix**: a **Kuma Push monitor** fed by a small script on ciri
+  (`scripts/monitoring/servarr-vpn-health.sh` + a systemd timer, following the
+  `smartd-ntfy.sh` / restic-timer patterns; `.env.example` for the Kuma push URL). Logic:
+  read qBit's public IP via its API through gluetun's netns and the host's public IP; **push
+  UP only while they differ** (no leak) and qBit is reachable — a match (leak) or unreachable
+  qBit stops the heartbeat → Kuma reddens → ntfy. Treat a **leak as a hard alert** (must never
+  happen); treat transient **PF=0 as soft/logged** (self-heals on gluetun reconnect — see
+  [servarr README](../configs/ciri/servarr/README.md) caveats) to avoid noise, escalating only
+  if it stays 0 across N consecutive checks.
 - **Pi-hole node-reboot failover test** still pending ([dns.md](dns.md)) — the
   pihole DNS monitors here will provide the alerting evidence during it.

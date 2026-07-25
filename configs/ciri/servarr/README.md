@@ -239,9 +239,15 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
 - **DNS** (edit **pihole-1 / LXC 101 only**; nebula-sync mirrors to pihole-2 hourly): add
   A-records → `<LAN_PREFIX>.150` for the UIs you want named, e.g.
   `prowlarr / sonarr / radarr / qbittorrent / jellyseerr.kaermorhen.internal`.
-- **Uptime-Kuma** (LXC 104): one HTTP monitor per UI (`http://<LAN_PREFIX>.150:<port>`),
-  following the memos pattern. Beszel already agents inside ciri — the new containers show
-  up automatically.
+- **Uptime-Kuma** (LXC 104): 7 monitors added 2026-07-26 (full table in
+  [uptime-kuma.md](../../../docs/uptime-kuma.md)) — HTTP-Keyword on the `/ping` endpoints for
+  prowlarr/sonarr/radarr, keyword checks for bazarr/jellyseerr/flaresolverr, and a plain HTTP
+  check on qbittorrent `:8080` that **doubles as gluetun liveness**. `gluetun` and
+  `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel. These are **liveness only**:
+  they can't see a VPN leak or port-forwarding stuck at 0 — a functional "servarr VPN health"
+  push monitor is a tracked next item ([uptime-kuma.md](../../../docs/uptime-kuma.md) Next steps).
+- **Beszel**: agents inside ciri, so all 9 servarr containers appear automatically with
+  per-container CPU/mem/net.
 - **Backups:** these `./config` dirs live on ciri's `/data` disk → already covered by the
   nightly PBS `--all` job. The media on `/mnt/media` stays unbacked/disposable by design.
 
