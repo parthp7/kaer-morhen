@@ -306,7 +306,8 @@ plus `.env.example` + README).
 | sure | 2026-07-13 | personal finance (we-promise/sure v0.7.2 via `:stable`), port 3000; fresh install, old-host backup deliberately discarded; daily pg_dump via `backup` profile enabled ([as-built](../configs/ciri/sure/README.md)) |
 | paperless | 2026-07-14 | document management (2.20.15), port 8000; images/PDF ingestion only — no tika/gotenberg ([as-built](../configs/ciri/paperless/README.md)) |
 | immich | 2026-07-14 | photo/video library (v3.0.2), port 2283; originals on geralt's `steel/photos` via virtiofs at `/mnt/photos`, thumbs/postgres on `/data` ([as-built](../configs/ciri/immich/README.md)) |
-| jellyfin | 2026-07-22 | media server (10.11.11), port 8096; NVENC via GTX 1060, media on an external USB HDD (ext4) on geralt via virtiofs at `/mnt/media`, config/cache on `/data` ([as-built](../configs/ciri/jellyfin/README.md)) |
+| jellyfin | 2026-07-22 | media server (10.11.11), port 8096; NVENC via GTX 1060, media on an external USB HDD (ext4) on geralt via virtiofs at `/mnt/media`, config/cache on `/data`. Media bind now **read-only** (subtitles delegated to Bazarr) ([as-built](../configs/ciri/jellyfin/README.md)) |
+| servarr | 2026-07-25 | TV + Movies download/import stack: gluetun (Proton WireGuard **kill-switch verified**) + qBittorrent, Prowlarr, Sonarr, Radarr, Bazarr, Jellyseerr, FlareSolverr. Writers run as dedicated non-root `jaskier` (13000); imports **hardlink** into `/mnt/media/library`. Ports 8080/9696/8989/7878/6767/5055/8191. Open follow-up: Proton port-forward → qBit. Audiobooks (Readarr) dropped as EOL ([as-built](../configs/ciri/servarr/README.md)) |
 
 ## Next steps (not yet built)
 

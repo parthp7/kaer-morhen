@@ -83,11 +83,15 @@ Costs nothing if the *arr stack never happens.
 
 ```
 /mnt/media/                    (geralt, ext4, USB)
-├── library/                   ← Jellyfin sees only this (read-write, subs)
+├── library/                   ← Jellyfin sees only this (read-only)
 │   ├── movies/
-│   └── tv/
-└── downloads/                 ← future *arr writes here, hardlinks into library/
+│   ├── tv/
+│   └── audiobooks/            ← (audiobooks deferred — see servarr README)
+└── downloads/                 ← qBittorrent writes here; *arr hardlink into library/
 ```
+
+The `servarr` stack ([configs/ciri/servarr](../servarr)) now fills this tree — writers run
+as the dedicated non-root account `jaskier` (13000); Jellyfin and Audiobookshelf are read-only.
 
 ### The disk, as-built (Seagate BUP Slim, 932 GiB)
 
@@ -252,22 +256,24 @@ Jellyfin downloads subtitles automatically; nothing is fetched by hand.
 - **Samsung TV**: downloaded **SRT** Direct Plays as soft subs; **ASS/SSA**
   forces a cheap NVENC burn-in. Embedded subs in `.mkv` rips need no download.
 
-### Why the media bind is read-write (decision, 2026-07-23)
+### Media bind: read-write → read-only (2026-07-23 → 2026-07-24)
 
-The plugin has `SaveSubtitlesWithMedia=true`, so it writes `.srt` sidecars **next
-to each video** — which needs write access to `/media`. Two ways to allow that:
+Briefly (2026-07-23) the `/media` bind was **read-write** so the OpenSubtitles plugin
+(`SaveSubtitlesWithMedia=true`) could sidecar `.srt` files next to each video. That was the
+only root-write path onto the media disk — Jellyfin runs as root, and the disk is now
+shared with the `servarr` download stack.
 
-- **A** — keep the bind read-only, set `SaveSubtitlesWithMedia=false` so subs
-  land in `/config` (NVMe, PBS-backed).
-- **B** — make the `/media` bind read-write; subs sidecar next to the media. **← chosen.**
+**Reverted to read-only (2026-07-24)** when the `servarr` stack landed: **Bazarr** (running
+as the dedicated non-root account `jaskier`, uid 13000) now writes subtitle sidecars, so Jellyfin
+no longer needs write access. This restores least privilege — Jellyfin can read the library
+but, root process or not, physically cannot modify or delete media. Sidecars still live on
+the media disk (written by Bazarr), so the "subs live and die with the disposable library"
+property is kept; only the writer changed.
 
-**Chose B**: subtitles should live and die with the media (a disposable,
-re-obtainable, unbacked library), so sidecars on the same disk are the natural
-fit and want no PBS coverage. Accepted trade-off: Jellyfin can now write/delete
-files on the media disk (delete-from-UI, metadata writes) and writes land as
-root via virtiofs — all acceptable for disposable content. The
-`create_host_path: false` missing-mount guard is unaffected (it's independent of
-read-only). Implemented by dropping `read_only: true` from the `/media` bind.
+**Operational note:** turn OFF the OpenSubtitles plugin's "save alongside media" (or disable
+the plugin) so Jellyfin doesn't attempt writes to the now read-only bind — Bazarr is the
+single subtitle writer. The `create_host_path: false` missing-mount guard is independent of
+read-only and stays. Implemented by re-adding `read_only: true` to the `/media` bind.
 
 ## Troubleshooting
 
@@ -348,10 +354,10 @@ Optional / housekeeping only (no open build work):
   convention.
 - **`NVIDIA_DRIVER_CAPABILITIES: compute,video,utility`** — the toolkit
   default omits `video`, which silently disables NVENC/NVDEC.
-- **Media bind is read-write** (was `read_only` until 2026-07-23) so the
-  OpenSubtitles plugin can save subtitle sidecars next to each video — see
-  Subtitles. `create_host_path: false` (the missing-mount guard) is independent
-  of rw and stays.
+- **Media bind is read-only** — Jellyfin runs as root, so read-only is what keeps
+  it from being able to write/delete on the shared media disk. (It was briefly rw
+  2026-07-23 for OpenSubtitles sidecars; Bazarr now writes subs — see Subtitles.)
+  `create_host_path: false` (the missing-mount guard) is independent and stays.
 - **`JELLYFIN_PublishedServerUrl` removed** (2026-07-22) — see Troubleshooting.
 - **TZ=Asia/Kolkata**, `container_name`, `restart: unless-stopped` — lab
   conventions.

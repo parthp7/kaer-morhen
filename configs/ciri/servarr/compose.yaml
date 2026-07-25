@@ -1,0 +1,218 @@
+# servarr — automated acquisition + import pipeline feeding Jellyfin (movies, TV).
+# Audiobooks are deferred: Readarr was removed (EOL, can't auth to qBittorrent 5.x)
+# and will be revisited separately. qBittorrent runs INSIDE gluetun's network
+# namespace so every torrent packet exits through the Proton VPN (WireGuard +
+# port forwarding); if the tunnel drops, qBittorrent loses all connectivity
+# (kill-switch) — no home-IP leak.
+#
+# THE HARDLINK CONTRACT (do not break):
+#   The *arr mount /mnt/media at /data (seeing /data/downloads AND /data/library);
+#   qBittorrent mounts /mnt/media/downloads at /data/downloads (downloads only).
+#   Both therefore see the completed file at the SAME path /data/downloads/... , so
+#   when an *arr imports it into /data/library/{movies,tv,audiobooks} — one ext4
+#   filesystem (the USB HDD) — it is an instant hardlink (0 extra bytes) instead of
+#   a slow copy on the ~40 MB/s USB 2.0 disk. Keep downloads and library on the one
+#   /data mount inside each *arr; never split them into separate volumes there.
+#
+# Lab conventions: pinned image tags (verified current 2026-07-24 — bump
+# deliberately, read release notes, then `docker compose pull && up -d`),
+# container_name on every service, restart: unless-stopped, TZ=Asia/Kolkata,
+# dedicated bridge network, secrets only from .env (${VAR:?} fails loudly).
+#
+# Least-privilege ownership: every writer runs as a DEDICATED non-root service
+# account `jaskier` (uid/gid 13000, the bard = media/entertainment) — not root,
+# and not the human `ciri` user (1000).
+# The media tree is chown'd 13000:13000 once (see README). Reader apps (Jellyfin,
+# Audiobookshelf) mount the library READ-ONLY. qBittorrent is scoped to
+# downloads/ only — it never touches the library (the *arr do the import).
+
+x-arr-env: &arr_env
+  PUID: ${PUID:-13000}
+  PGID: ${PGID:-13000}
+  UMASK: "002"
+  TZ: Asia/Kolkata
+
+services:
+  # ---- VPN egress + kill-switch -------------------------------------------
+  gluetun:
+    image: qmcgaw/gluetun:v3.41.1
+    container_name: gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      # qBittorrent WebUI is published HERE (qBit shares this netns), not on qbit.
+      - "8080:8080"
+      # BitTorrent listen port (also set as qBit's incoming port).
+      - "6881:6881"
+      - "6881:6881/udp"
+    environment:
+      TZ: Asia/Kolkata
+      VPN_SERVICE_PROVIDER: protonvpn
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: ${PROTON_WG_PRIVATE_KEY:?set in .env}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-10.2.0.2/32}
+      SERVER_COUNTRIES: ${VPN_COUNTRIES:-Netherlands}
+      # Only connect to servers that support port forwarding, then request one.
+      PORT_FORWARD_ONLY: "on"
+      VPN_PORT_FORWARDING: "on"
+      VPN_PORT_FORWARDING_PROVIDER: protonvpn
+      # The forwarded port is applied to qBittorrent by the qbit-port-sync sidecar
+      # (a durable poll — Proton rotates the port, so a one-shot up-command here
+      # didn't hold). See that service and the README.
+    networks:
+      - servarr_net
+
+  # ---- Torrent client (no own network — lives in gluetun's netns) ----------
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13
+    container_name: qbittorrent
+    restart: unless-stopped
+    # All traffic goes through gluetun; dies with the tunnel (kill-switch).
+    network_mode: "service:gluetun"
+    depends_on:
+      - gluetun
+    environment:
+      <<: *arr_env
+      WEBUI_PORT: "8080"
+    volumes:
+      - ./qbittorrent:/config
+      # Scoped to downloads ONLY (no library access). Same sub-path the *arr see
+      # under /data/downloads, so the hardlink source path matches with no remote
+      # path mapping.
+      - /mnt/media/downloads:/data/downloads
+    # NB: no `ports:` and no `networks:` here — both come from gluetun.
+
+  # ---- Port-forward sync: gluetun's rotating Proton port → qBittorrent ------
+  # Shares gluetun's netns, so it reaches gluetun's control server
+  # (127.0.0.1:8000) AND qBittorrent's WebUI (127.0.0.1:8080) on localhost. The
+  # qBit API call is unauthenticated ONLY because it comes from localhost — so
+  # qBittorrent MUST have "Bypass authentication for clients on localhost" = ON
+  # (see README step 6). Polls every 30s and only writes when the port changes.
+  # Endpoint is /v1/portforward (gluetun v3.5 301-redirects the old
+  # /v1/openvpn/portforwarded here; busybox wget won't follow the redirect).
+  # NEVER pushes 0/empty: Proton PF drops to 0 server-side intermittently
+  # (NAT-PMP refused) — on a 0 we KEEP qBit's last good port instead of zeroing it.
+  qbit-port-sync:
+    image: alpine:3.21
+    container_name: qbit-port-sync
+    restart: unless-stopped
+    network_mode: "service:gluetun"
+    depends_on:
+      - gluetun
+      - qbittorrent
+    environment:
+      TZ: Asia/Kolkata
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -u
+        last=""
+        while true; do
+          p="$$(wget -qO- http://127.0.0.1:8000/v1/portforward 2>/dev/null | grep -o '"port":[0-9]*' | grep -o '[0-9]*')"
+          if [ -n "$${p:-}" ] && [ "$$p" != "0" ] && [ "$$p" != "$$last" ]; then
+            if wget -qO- --post-data="json={\"listen_port\":$$p}" http://127.0.0.1:8080/api/v2/app/setPreferences >/dev/null 2>&1; then
+              echo "$$(date '+%F %T') qbit-port-sync: set qBittorrent listen_port=$$p"; last="$$p"
+            else
+              echo "$$(date '+%F %T') qbit-port-sync: qBit not ready or localhost-bypass off; will retry"
+            fi
+          fi
+          sleep 30
+        done
+
+  # ---- Indexer manager -----------------------------------------------------
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:version-2.5.2.5491
+    container_name: prowlarr
+    restart: unless-stopped
+    environment:
+      <<: *arr_env
+    volumes:
+      - ./prowlarr:/config
+    ports:
+      - "9696:9696"
+    networks:
+      - servarr_net
+
+  # ---- TV ------------------------------------------------------------------
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:version-4.0.19.2979
+    container_name: sonarr
+    restart: unless-stopped
+    environment:
+      <<: *arr_env
+    volumes:
+      - ./sonarr:/config
+      - /mnt/media:/data          # identical path to qBittorrent → hardlink
+    ports:
+      - "8989:8989"
+    networks:
+      - servarr_net
+
+  # ---- Movies --------------------------------------------------------------
+  radarr:
+    image: lscr.io/linuxserver/radarr:version-6.3.0.10514
+    container_name: radarr
+    restart: unless-stopped
+    environment:
+      <<: *arr_env
+    volumes:
+      - ./radarr:/config
+      - /mnt/media:/data
+    ports:
+      - "7878:7878"
+    networks:
+      - servarr_net
+
+  # ---- Cloudflare solver (proxy for Prowlarr indexers behind Cloudflare) ---
+  # Stateless; no media, no /config, no PUID. Prowlarr proxies challenge-protected
+  # indexer requests through it (Settings → Indexers → Proxies → FlareSolverr,
+  # host http://flaresolverr:8191). See README.
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.0
+    container_name: flaresolverr
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Kolkata
+      LOG_LEVEL: info
+    ports:
+      - "8191:8191"
+    networks:
+      - servarr_net
+
+  # ---- Subtitles -----------------------------------------------------------
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:version-v1.6.0
+    container_name: bazarr
+    restart: unless-stopped
+    environment:
+      <<: *arr_env
+    volumes:
+      - ./bazarr:/config
+      - /mnt/media:/data          # reads the library alongside Sonarr/Radarr
+    ports:
+      - "6767:6767"
+    networks:
+      - servarr_net
+
+  # ---- Request UI (wired to Jellyfin + Sonarr + Radarr in its own web setup)-
+  jellyseerr:
+    image: fallenbagel/jellyseerr:2.7.3
+    container_name: jellyseerr
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Kolkata
+      LOG_LEVEL: info
+    volumes:
+      - ./jellyseerr:/app/config
+    ports:
+      - "5055:5055"
+    networks:
+      - servarr_net
+
+networks:
+  servarr_net:
+    driver: bridge

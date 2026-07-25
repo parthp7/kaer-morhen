@@ -1,5 +1,5 @@
 # Jellyfin — media server, NVENC/NVDEC via the GTX 1060 passed through to ciri.
-# Lab adaptations: pinned image tag, media (read-write) from the external USB
+# Lab adaptations: pinned image tag, media (read-only) from the external USB
 # HDD on geralt via virtiofs, config/cache on local NVMe, TZ=Asia/Kolkata,
 # dedicated bridge network (not host networking — see README).
 #
@@ -19,17 +19,20 @@ services:
       - ./config:/config
       # Transcode scratch + image cache; regenerable.
       - ./cache:/cache
-      # Media, read-WRITE (2026-07-23): the OpenSubtitles plugin saves
-      # downloaded subtitle sidecars next to each video. The library is
-      # disposable so subs come and go with the media — no PBS need, and the
-      # least-privilege read-only bind wasn't worth the internal-storage detour.
-      # create_host_path:false is the missing-mount guard (independent of rw):
+      # Media, READ-ONLY (2026-07-24): Jellyfin runs as root, so a rw bind was its
+      # only root-write path onto the (shared) media disk. Subtitle writing moved
+      # to Bazarr (uid 13000) in the servarr stack, so Jellyfin no longer needs to
+      # write — least privilege restored (was rw 2026-07-23 → 2026-07-24; see README).
+      # Turn OFF the OpenSubtitles plugin's "save alongside media" so it doesn't
+      # try to write here; Bazarr is now the single subtitle writer.
+      # create_host_path:false is the missing-mount guard (independent of ro):
       # if the USB disk failed to mount on geralt (nofail) or the share is empty,
       # this path does not exist and the container refuses to start — instead of
       # Jellyfin scanning an empty library and evicting every item from its DB.
       - type: bind
         source: /mnt/media/library
         target: /media
+        read_only: true
         bind:
           create_host_path: false
       - /etc/localtime:/etc/localtime:ro
