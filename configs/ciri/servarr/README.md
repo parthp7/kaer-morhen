@@ -19,6 +19,9 @@ Deployed and serving TV + Movies. Verified:
 - **Indexers** — 1337x (via FlareSolverr proxy) + The Pirate Bay. **Root folders** set:
   Sonarr `/data/library/tv`, Radarr `/data/library/movies`. Prowlarr app-sync live.
 - **FlareSolverr ✓** up on `:8191`.
+- **Missing-mount guards ✓** (2026-07-29) — qBittorrent and the \*arr now refuse to start
+  when the media disk is absent, instead of silently using geralt's boot disk. See
+  Missing-mount guards below; this closes the gap that caused the 2026-07-27 incident.
 
 **Proton port forwarding — `qbit-port-sync` sidecar, verified working 2026-07-26** (replaces
 the non-durable one-shot up-command). Requires qBittorrent's **"Bypass authentication for
@@ -71,6 +74,40 @@ Prowlarr ─(indexers, via FlareSolverr for CF sites)→ Sonarr / Radarr / Jelly
 ```
 
 ---
+
+## Missing-mount guards (added 2026-07-29 — do not remove)
+
+The hardlink contract above assumes `/data` really is the USB media disk. On
+**2026-07-27 it wasn't**, and this stack ran for 16 hours against an empty
+directory on geralt's boot disk: virtiofsd had pinned the placeholder that
+existed 2 seconds before the disk mounted. Docker's default
+`create_host_path: true` then *created* `downloads/` there, qBittorrent attached
+to it, and all 20 torrents went `missingFiles`/`error` while every dashboard
+stayed green. Full write-up in
+[storage.md](../../../docs/storage.md#incident-2026-07-27--28--virtiofs-served-the-wrong-filesystem).
+
+Jellyfin survived that day only because it already had a guard. These are its
+equivalents:
+
+| Service | Guard | Why this shape |
+|---|---|---|
+| qbittorrent | `create_host_path: false` on the `/mnt/media/downloads` bind | it binds a **subpath**, so the guard works directly |
+| sonarr / radarr / bazarr | read-only `/mnt/media/library` → **`/media-guard`**, `create_host_path: false` (the `x-media-guard` anchor) | they bind the **parent** `/mnt/media`, which exists in the VM even with no disk (ciri's own fstab uses `nofail`), so a guard on `/data` would never fire |
+
+`/media-guard` is deliberately mounted **outside `/data`** and read-only. It is a
+start-time assertion and nothing reads it — putting a second mount inside the
+`/data` tree would perturb the one contract this stack depends on. If
+`/mnt/media/library` is absent, the container refuses to start rather than
+writing to the wrong filesystem.
+
+These guards are **load-bearing by design**: the VM 150 hookscript treats
+`/mnt/media` as *advisory* and deliberately lets ciri boot without the USB disk,
+so Immich/Paperless/memos/sure keep running. That means these guards — not the
+hypervisor — are what hold the media stack back. See
+[`scripts/proxmox/vm150-require-virtiofs.sh`](../../../scripts/proxmox/vm150-require-virtiofs.sh).
+
+They prove the path **exists**; proving it's the *right* filesystem is the
+`ciri media mount` Push monitor ([uptime-kuma.md](../../../docs/uptime-kuma.md)).
 
 ## Permissions model (least privilege)
 
@@ -252,9 +289,16 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
   nightly PBS `--all` job. The media on `/mnt/media` stays unbacked/disposable by design.
 
 ## Caveats
-- **USB 2.0 ~40 MB/s, shared** with Jellyfin reads. In qBittorrent cap the global rate and
-  max active torrents so a big download can't starve a live transcode. Disk is
-  **disposable** — a drop means re-download.
+- **Slow shared disk** — bandwidth is shared with Jellyfin reads. In qBittorrent cap the
+  global rate and max active torrents so a big download can't starve a live transcode.
+  Disk is **disposable** — a drop means re-download. *(Corrected 2026-07-29: this said
+  "USB 2.0 ~40 MB/s". The drive has linked at SuperSpeed since 2026-07-22, so the
+  USB-2.0 ceiling no longer applies and the 5400 rpm mechanism is the limit — but it has
+  not been re-measured, so treat the throughput figure as unknown, not improved. See
+  [storage.md](../../../docs/storage.md).)*
+- **The USB bridge drops occasionally** (2026-07-26 23:31 mid-read) and is deliberately
+  **not** mitigated at the driver level — a UAS kernel quirk was tried and reverted for
+  causing boot hangs. What protects the stack is the guard chain below, not the hardware.
 - **Proton dynamic port (handled by `qbit-port-sync`)**: Proton assigns a forwarded port and
   **rotates** it. The `qbit-port-sync` sidecar (in gluetun's netns) polls gluetun's control
   API every 30s and, on change, sets qBittorrent's listen port via
@@ -282,6 +326,19 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
   ```
   (Restart qBittorrent after gluetun — it must re-attach to the fresh netns; the sidecar
   recovers on its own.)
+- **"Always restart qBittorrent after the port-sync sidecar" is too broad** — clarified
+  2026-07-29. The manual restart is needed **only when gluetun alone is restarted**, because
+  that destroys and recreates the network namespace underneath a still-running qBittorrent.
+  A **full stack, VM or host restart needs no manual step** and was verified self-healing on
+  2026-07-27: `network_mode: service:gluetun` + `depends_on` make Docker start gluetun first
+  so qBittorrent joins the *fresh* netns, and the sidecar's `last=""` resets so it re-pushes
+  the current port on its first poll (≤30 s). Observed after that reboot: the sidecar set the
+  port one minute in, unprompted, and gluetun's forwarded port matched qBit's live
+  `listen_port` with `connection_status: connected`.
+- **The sidecar's log timestamps are UTC, not IST**, despite `TZ=Asia/Kolkata` — `alpine:3.21`
+  ships no `/usr/share/zoneinfo`, so the variable is silently ignored. Cosmetic, but it
+  misleads during exactly the kind of forensics you'd be doing when reading those logs.
+  Fix if it ever matters: `apk add --no-cache tzdata` in the sidecar command.
 - **qBittorrent addressed as `gluetun`**: because it shares gluetun's network namespace it
   has no hostname of its own — always point the *arr at `gluetun:8080`, never `qbittorrent:8080`.
 - **FlareSolverr** is only needed for Cloudflare-protected indexers; it's stateless (no

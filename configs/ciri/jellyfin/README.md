@@ -98,13 +98,24 @@ as the dedicated non-root account `jaskier` (13000); Jellyfin and Audiobookshelf
 Two things surfaced plugging it in (2026-07-21), both worth knowing for a
 re-seat or replacement:
 
-- **It enumerates reliably only at USB 2.0.** On USB 3.0 (`SuperSpeed`) it
-  connected and dropped within the same second (`USB disconnect` immediately
-  after enumeration — a bus-power/link brown-out on spin-up). Moved to a port
-  it comes up as `high-speed` and stays stable. **Accepted trade-off**: ~40 MB/s
-  ceiling instead of USB 3.0 — enough for a couple of concurrent video streams,
-  and stable beats fast-but-dropping. If a future port/cable holds USB 3.0, take
-  it, but not at the cost of the drops.
+- **Its link speed is nondeterministic, and it drops occasionally.**
+  *(Rewritten 2026-07-29 — the original note here was wrong.)* It first came up
+  `high-speed` on 2026-07-21 after a SuperSpeed attempt dropped within the same
+  second, and that was recorded as "enumerates reliably only at USB 2.0, moved to
+  a working port." Neither half held up: **every USB port on geralt is 3.0**, the
+  drive was never moved between ports (it was replugged into the same one), and
+  it has linked at **SuperSpeed (5 Gbps) since 2026-07-22 00:32**. What varies is
+  the bridge's negotiation on each replug.
+  It then ran 4.5 days and dropped off the bus on **2026-07-26 23:31** mid-read,
+  which is what set off the
+  [wrong-filesystem incident](../../../docs/storage.md#incident-2026-07-27--28--virtiofs-served-the-wrong-filesystem).
+  A kernel-cmdline UAS quirk was tried on 07-28 to stabilise the bridge and
+  **reverted** — it caused intermittent boot hangs (see that incident's
+  postscript). **Accepted position**: the bridge is not mitigated at the hardware
+  or driver level. The drive is disposable, and the mount guards and hookscript
+  make a drop a bounded outcome — media containers stay down — rather than a
+  silent corruption. Throughput is now bounded by the 5400 rpm mechanism rather
+  than a USB-2.0 ceiling; it has not been re-measured since the link changed.
 - **It shipped NTFS-preformatted with existing data.** Reformatted to ext4 only
   after confirming (2026-07-22) the contents were disposable. The "blank" premise
   was wrong on first inspection — always eyeball an unfamiliar disk before the
@@ -189,6 +200,19 @@ docker compose logs -f jellyfin                    # watch first-run init
 If the container refuses to start with a bind-source error, that is the
 missing-mount guard working — `/mnt/media/library` doesn't exist, meaning the
 USB disk or the virtiofs share is down. Fix the mount, don't remove the guard.
+
+**This is not hypothetical — it fired for real on 2026-07-27** (`exit 127`,
+`failed to fulfil mount request: open /mnt/media/library: no such file or
+directory`) and was the *only* thing that stopped a media app running against
+geralt's boot disk that day. It also protected Jellyfin's database from being
+emptied by a scan of a non-existent library. The servarr stack, which lacked an
+equivalent guard at the time, was not so lucky. Full write-up:
+[storage.md](../../../docs/storage.md#incident-2026-07-27--28--virtiofs-served-the-wrong-filesystem).
+
+Note the guard only proves the path **exists**. Proving it is the *right*
+filesystem is the job of the `ciri media mount` Push monitor
+([uptime-kuma.md](../../../docs/uptime-kuma.md)) — existence alone did not
+discriminate once Docker auto-created a `downloads/` directory on the placeholder.
 
 ### 5. Verify the GPU reached the container
 

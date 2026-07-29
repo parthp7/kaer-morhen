@@ -218,9 +218,17 @@ untouched.
   ([configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md)).
   Holds replaceable data only — no backup. `steel/media` was destroyed
   2026-07-23 once the USB disk was proven, freeing `steel` to grow as the
-  photo/document disk. Note: the drive enumerates reliably only at USB 2.0
-  (drops on USB 3.0), and shipped NTFS-preformatted — reformatted after
+  photo/document disk. It shipped NTFS-preformatted — reformatted after
   confirming contents were disposable.
+  **Correction 2026-07-29**: the earlier note here (and in the Jellyfin README)
+  claimed the drive "enumerates reliably only at USB 2.0" and had been moved to a
+  working port. Both are wrong. Every USB port on geralt is 3.0, the drive was
+  never moved between ports, and it has linked at **SuperSpeed (5 Gbps) since
+  2026-07-22 00:32**. What actually varies is the bridge's link negotiation on
+  each replug — `high-speed` on 2026-07-21, SuperSpeed since — which is
+  nondeterministic, not port-dependent. Treat the drop risk as a property of the
+  bridge, mitigated by architecture rather than by port choice (see the incident
+  below).
 - **PBS on yennefer** with datastore at `/mnt/backup/pbs`; both nodes back up
   guests to it, then sync offsite (Backblaze B2 via rclone).
 - ~~Explicit `steel/photos` backup job → yennefer~~ done 2026-07-16
@@ -229,3 +237,89 @@ untouched.
 - Capacity watchlines: keep ZFS pools under ~80 %; yennefer's 1 TB backup disk is
   the ceiling — it fills before steel does once the photo library approaches
   ~600–700 GB.
+
+## Incident 2026-07-27 / 28 — virtiofs served the wrong filesystem
+
+The most instructive failure the lab has had: **nothing went down, and that was
+the problem.** Recorded in full because every mitigation now in place exists
+because of a specific line in this timeline.
+
+### What happened
+
+| When | Event |
+|---|---|
+| 07-26 23:31:32 | `usb 2-3: USB disconnect` mid-read. `I/O error, dev sdb`, `JBD2: I/O error when updating journal superblock`. The bridge re-enumerated 1 s later — but nothing remounted, so `/mnt/media` was a **stale** mount for ~16 h |
+| 07-27 15:16:55 | Jellyfin: `Input/output error: '/media/tv/Rick.and.Morty.S09E05…'` — the first user-visible symptom |
+| 07-27 15:21 | geralt rebooted to clear it |
+| 07-27 **15:22:17** | `virtiofsd --shared-dir=/mnt/media` starts — the USB disk is **not yet mounted** |
+| 07-27 **15:22:19** | `mnt-media.mount` completes — **2 seconds too late** |
+
+virtiofsd resolves `--shared-dir` **once** and pins that inode for the life of
+the process. It had pinned the empty placeholder directory on `pve-root`, so ciri
+spent the next 16 hours serving a **68 GB** filesystem where the **916 GB** disk
+should have been. A guest-side remount cannot fix this — only a cold VM restart.
+
+`nofail` is what allowed it: `nofail` deliberately drops the mount's ordering
+barrier into `local-fs.target`, so `pve-guests` never waited. The USB disk simply
+happened to be 2 seconds slower than the VM that morning.
+
+### Why nothing alerted
+
+All 18 Uptime-Kuma monitors and every Beszel panel stayed **green throughout**.
+The containers were up and answering; they were just pointed at the wrong disk.
+
+- **Jellyfin refused to start** — `create_host_path: false` on its `/media` bind
+  fired exactly as designed (`exit 127`, `open /mnt/media/library: no such file
+  or directory`), which also protected its database from mass item eviction.
+- **qBittorrent and the \*arr had no such guard.** Docker's default
+  `create_host_path: true` silently created `downloads/` on geralt's **boot
+  disk**; qBittorrent attached to it and marked all 20 torrents
+  `missingFiles`/`error`, and Radarr reported `Missing root folder:
+  /data/library/movies`.
+
+The one saving grace: qBittorrent errored out rather than downloading, so
+`pve-root` was never filled.
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| `x-systemd.before=pve-guests.service,x-systemd.device-timeout=30` on the media mount in geralt's `/etc/fstab` | the 2-second race. Ordering **only**, no `Requires` — an absent disk delays guest start ≤30 s, then everything comes up anyway |
+| [`vm150-require-virtiofs.sh`](../scripts/proxmox/vm150-require-virtiofs.sh) hookscript on VM 150 | the disk dropping while running, then a VM restart — which ordering cannot cover |
+| `create_host_path: false` guards on qBittorrent + a read-only `/media-guard` sentinel on Sonarr/Radarr/Bazarr | the silent-write-to-boot-disk failure. Jellyfin already had this; the others did not |
+| [`media-mount-health.sh`](../scripts/monitoring/media-mount-health.sh) Push monitor | the 16 hours of green dashboards ([uptime-kuma.md](uptime-kuma.md)) |
+
+**The tiers are deliberately asymmetric.** `/steel/photos` (internal SATA,
+irreplaceable Immich originals) is **required** — the hookscript blocks ciri from
+starting without it. `/mnt/media` (external USB, explicitly disposable) is
+**advisory** — ciri starts, and the media containers alone stay down via their
+own bind guards. Holding Immich, Paperless, memos and sure hostage to a USB disk
+would be the wrong trade.
+
+`/steel/photos` needs no fstab ordering of its own: `zfs-mount.service` is
+`Before=local-fs.target`, and `local-fs → sysinit → basic → pve-guests` orders it
+transitively. Media needed the explicit line *precisely because* `nofail` removed
+it from that chain.
+
+### Postscript: the UAS quirk that wasn't (07-28)
+
+An attempt to harden the bridge itself —
+`usb-storage.quirks=0bc2:ab24:u usbcore.autosuspend=-1` on the kernel cmdline —
+caused **intermittent boot hangs**, roughly 3 in 6 attempts, and was reverted.
+
+Worth recording because the evidence is counter-intuitive: the three boots that
+*did* come up carried the parameters and were **completely healthy** — `[sdb]
+Attached SCSI disk`, `mnt-media.mount` mounted, SSH in 7 s, VM 150 started in
+23 s. The hangs left **no journal at all**; they are visible only as gaps between
+boot IDs (15m41s, 6m06s, 2m06s), meaning the hang was **before
+`systemd-journald` started** — GRUB, early kernel, or initramfs. With `quiet` set
+there was nothing on the console either.
+
+The mechanism was never proven and by definition cannot be from the available
+evidence. **`quiet` has been left off** `GRUB_CMDLINE_LINUX_DEFAULT` since: the
+reason this cost a trip to the physical laptop is that the failure was invisible.
+
+**Accepted position:** the bridge stays unmitigated. The drive is disposable and
+the architecture above turns a drop into "media containers stay down" instead of
+"silent writes to the boot disk". It will drop again; that is now a known,
+bounded outcome rather than a corruption.

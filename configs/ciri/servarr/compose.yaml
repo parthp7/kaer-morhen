@@ -32,6 +32,29 @@ x-arr-env: &arr_env
   UMASK: "002"
   TZ: Asia/Kolkata
 
+# Missing-mount guard for the services that bind the PARENT /mnt/media (added
+# 2026-07-28). Those can't use create_host_path:false on /data directly: /mnt/media
+# exists in the VM even when the USB disk is gone, because ciri's own fstab mounts
+# the virtiofs share with `nofail`. So the guard hangs off a subdirectory that
+# exists ONLY on the real media filesystem — no disk (or a virtiofsd pinned to the
+# empty pre-mount dir, the 2026-07-27 boot race) means no /mnt/media/library, and
+# the container refuses to start instead of silently writing to geralt's boot disk.
+#
+# Deliberately mounted OUTSIDE /data and read-only: THE HARDLINK CONTRACT above
+# requires downloads/ and library/ to be reached through the single /data bind, and
+# this assertion must not perturb that. It is a start-time check, nothing reads it.
+#
+# This is load-bearing now: by design the VM 150 hookscript treats /mnt/media as
+# advisory and lets ciri boot without the USB disk, so these guards — not the
+# hypervisor — are what keep the media stack off the wrong filesystem.
+x-media-guard: &media_guard
+  type: bind
+  source: /mnt/media/library
+  target: /media-guard
+  read_only: true
+  bind:
+    create_host_path: false
+
 services:
   # ---- VPN egress + kill-switch -------------------------------------------
   gluetun:
@@ -82,7 +105,18 @@ services:
       # Scoped to downloads ONLY (no library access). Same sub-path the *arr see
       # under /data/downloads, so the hardlink source path matches with no remote
       # path mapping.
-      - /mnt/media/downloads:/data/downloads
+      # create_host_path:false is the missing-mount guard — same one Jellyfin's
+      # /media bind has, added here 2026-07-27 after it was needed. Without it,
+      # Docker's default is to CREATE the source dir: when geralt rebooted and
+      # virtiofsd pinned the empty pre-mount /mnt/media on pve-root, Docker
+      # silently made a root:root `downloads/` on the boot disk, qBittorrent
+      # (uid 13000) attached to it, and all 20 torrents went missingFiles/error.
+      # With the guard the container refuses to start instead — fail loud.
+      - type: bind
+        source: /mnt/media/downloads
+        target: /data/downloads
+        bind:
+          create_host_path: false
     # NB: no `ports:` and no `networks:` here — both come from gluetun.
 
   # ---- Port-forward sync: gluetun's rotating Proton port → qBittorrent ------
@@ -147,6 +181,7 @@ services:
     volumes:
       - ./sonarr:/config
       - /mnt/media:/data          # identical path to qBittorrent → hardlink
+      - *media_guard
     ports:
       - "8989:8989"
     networks:
@@ -162,6 +197,7 @@ services:
     volumes:
       - ./radarr:/config
       - /mnt/media:/data
+      - *media_guard
     ports:
       - "7878:7878"
     networks:
@@ -193,6 +229,7 @@ services:
     volumes:
       - ./bazarr:/config
       - /mnt/media:/data          # reads the library alongside Sonarr/Radarr
+      - *media_guard
     ports:
       - "6767:6767"
     networks:
