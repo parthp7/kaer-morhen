@@ -237,9 +237,25 @@ than one interval can slip through unseen. It is an assurance check, not a packe
 filter — the kill-switch is still the actual protection, and this only tells you
 whether the kill-switch is doing its job.
 
-Note the state at first deploy (2026-07-29): PF was **0** with qBit holding its
-last good port `34936` — i.e. the soft path was live and correct on day one,
-which is exactly the case that would have been noisy without the strike counter.
+**Proven end-to-end on day one (2026-07-29).** At deploy, Proton's forwarded port
+was already **0**, with qBit holding its last good port `34936` — so the soft path
+was live and correct immediately, which is exactly the case that would have been
+pure noise without the strike counter. It stayed 0 for ~90 minutes, the strikes
+climbed 1→6, and at **23:02:56** the monitor escalated to a hard failure and fired
+ntfy. Restarting `gluetun qbittorrent qbit-port-sync` (all three — restarting
+gluetun alone strands qBit in a stale netns, see the
+[servarr README](../configs/ciri/servarr/README.md)) got port `64991`,
+`qbit-port-sync` applied it, and the monitor returned to `ok` at 23:08:25. The
+whole soft→hard→recover cycle ran in production, not just in the
+`MAX_STRIKES=1` simulation.
+
+**Why the provider check matches on `proton`, not an ASN.** That reconnect moved
+the exit from **AS208172** to **AS199218**, both Proton. A check pinned to the
+ASN — the tighter, more obvious design — would have read a routine Proton
+reconnect as a leak and paged at 23:08. Proton renames and renumbers ASNs far
+more often than it stops being Proton, so the substring match is deliberate:
+`EXPECTED_ORG` is loose on purpose, and tightening it would make the monitor
+cry wolf on the stack's normal behaviour.
 
 Rule of thumb for future additions: **one ping per guest** (liveness) +
 **one protocol-level check per user-facing service** (HTTP/DNS/HTTPS —
