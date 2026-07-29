@@ -141,11 +141,45 @@ Full set as of 2026-07-13:
 | jellyseerr | HTTP-Keyword | `http://<LAN_PREFIX>.150:5055/api/v1/status` → `version` | servarr (requests) |
 | qbittorrent | HTTP | `http://<LAN_PREFIX>.150:8080/` | servarr; **doubles as gluetun liveness** — the port is published through gluetun, so it reddens if the VPN container dies |
 | flaresolverr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8191/` → `FlareSolverr is ready` | servarr (Cloudflare solver) |
+| ciri media mount | **Push** (300 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29, see below |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's
 per-container view (and gluetun indirectly by the qbittorrent monitor). Note these are
 liveness only: **they cannot see a VPN leak or port-forwarding degraded to 0** — see Next steps.
+
+### The media-mount Push monitor (added 2026-07-29) — and what it fixes
+
+Every monitor above is a **liveness** check, and on 2026-07-27 that was proven
+insufficient in the most expensive way available: all 18 stayed **green for ~16
+hours** while the media stack ran against the wrong filesystem
+([storage.md](storage.md#incident-2026-07-27--28--virtiofs-served-the-wrong-filesystem)).
+Nothing was down. Jellyfin answered on `:8096`, all six servarr `/ping`
+endpoints returned `OK`, Beszel showed every container healthy — while
+qBittorrent had marked all 20 torrents `missingFiles` and Radarr had lost its
+root folder, because virtiofsd was serving a 68 GB empty directory instead of
+the 916 GB USB disk.
+
+This monitor asks a question liveness cannot: **is the thing it answers about
+the right thing?**
+
+| Field | Value |
+|---|---|
+| Type | Push, heartbeat interval **300 s**, retries 1–2 |
+| Fed by | `scripts/monitoring/media-mount-health.sh` on ciri, systemd timer every 5 min |
+| Push URL | in `/etc/kuma-push.media-mount` on ciri (0600) + `secrets.local.yaml` — never in git |
+| Green when | `/mnt/media` is a real **virtiofs** mount **and** `library/` exists **and** the fs is **≥ 800 GiB** |
+| Red when | any check fails (explicit `status=down` with the reason) **or** the heartbeat stops |
+
+The **size check is the load-bearing one**. Existence alone would not have caught
+the incident: Docker's default `create_host_path` auto-created `downloads/` on
+the placeholder, so the tree looked plausible. Only the 68 G vs 916 G difference
+was unambiguous.
+
+Two independent signals by design: an explicit `down` push gives a fast, labelled
+alert; heartbeat silence covers the script or timer itself dying. Deploy steps,
+unit and timer are in
+[scripts/monitoring/README.md](../scripts/monitoring/README.md#media-mount-healthsh).
 
 Rule of thumb for future additions: **one ping per guest** (liveness) +
 **one protocol-level check per user-facing service** (HTTP/DNS/HTTPS —
@@ -255,6 +289,9 @@ destroyed.
   can't do it — Kuma is inside the failure domain. Something *outside* the
   house must notice silence. Closes the "whole-house outage" gap.
 - **Add monitors as services land**: docker VM 150 apps, HAOS, reverse proxy.
+- ~~**Functional check that the media stack is pointed at the real disk**~~ done
+  2026-07-29 — the `ciri media mount` Push monitor above, built after the
+  2026-07-27 incident proved the liveness-only gap was not hypothetical.
 - **servarr VPN leak + port-forward health monitor** (functional, not liveness): the 7
   servarr HTTP monitors and Beszel only prove the containers answer — they **cannot** see two
   failures that matter:
@@ -264,8 +301,11 @@ destroyed.
     intermittently (NAT-PMP refused); qBit keeps working but inbound seeding is degraded, and
     nothing flags a prolonged 0.
   **Possible fix**: a **Kuma Push monitor** fed by a small script on ciri
-  (`scripts/monitoring/servarr-vpn-health.sh` + a systemd timer, following the
-  `smartd-ntfy.sh` / restic-timer patterns; `.env.example` for the Kuma push URL). Logic:
+  (`scripts/monitoring/servarr-vpn-health.sh` + a systemd timer). The pattern is now
+  established and proven — copy
+  [`media-mount-health.sh`](../scripts/monitoring/media-mount-health.sh): same push
+  helper, same `/etc/kuma-push.<name>` 0600 secret file, same
+  push-`down`-with-a-reason **plus** heartbeat-silence double signal. Logic:
   read qBit's public IP via its API through gluetun's netns and the host's public IP; **push
   UP only while they differ** (no leak) and qBit is reachable — a match (leak) or unreachable
   qBit stops the heartbeat → Kuma reddens → ntfy. Treat a **leak as a hard alert** (must never
