@@ -45,6 +45,43 @@ restore drill passed (full restore, `diff -r` clean).
 
 Retention: `--keep-daily 7 --keep-weekly 4 --keep-monthly 6`.
 
+### Gotcha: the Kuma dead-man ping was dead for 14 days (fixed 2026-07-30)
+
+`KUMA_PUSH_URL` was originally set to
+`http://uptime-kuma.kaermorhen.internal:3001/api/push/<TOKEN>`, and **not one
+push ever arrived** — Kuma's `photos-backup` monitor had zero `up` heartbeats
+between 2026-07-16 and 2026-07-30. Every nightly run logged it:
+
+```
+2026-07-16 05:00:39  curl: (6) Could not resolve host: uptime-kuma.kaermorhen.internal
+2026-07-17 05:00:37  curl: (28) Resolving timed out after 15002 milliseconds
+```
+
+The backups themselves were fine the whole time — only the heartbeat was lost.
+
+**Cause**: this job runs on geralt, and the Proxmox nodes resolve via the
+**router**, deliberately ([dns.md](../../docs/dns.md) "deliberate non-changes" —
+pointing a host at a resolver running on itself creates a boot-order
+chicken-and-egg). `kaermorhen.internal` records live only in the Pi-holes, so
+the name resolves from every host in the lab **except** the one host that runs
+this script. The two error variants are the same fault: the router answers "no
+such name" when it feels like it and simply drops the query otherwise.
+
+**Fix**: address Kuma by IP (`<LAN_PREFIX>.104:3001`) — which is what the two
+working push producers on ciri already do.
+
+**Why it stayed invisible for two weeks** is the more useful half. The push was
+`curl … || true`, so the failure never touched the exit status and never fired
+the ntfy trap. Kuma *did* alert — once, on 2026-07-16, when the monitor first
+went red — and then never again, because `resend_interval=0` means a monitor
+stuck down is a monitor that has stopped talking. A dead-man switch that fails
+dead reads exactly like the thing it watches being fine. The push now logs a
+warning to the journal on failure and retries like the ciri scripts.
+
+General rule, worth applying to every future push producer: **the heartbeat URL
+must be resolvable from the host that sends it, not from your laptop** — verify
+it with `curl` as the service user on the real host, not by eye.
+
 ### Non-negotiables
 
 - **The repo password** (`/etc/restic-photos.pass`) must also live in the

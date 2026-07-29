@@ -141,6 +141,7 @@ Full set as of 2026-07-13:
 | jellyseerr | HTTP-Keyword | `http://<LAN_PREFIX>.150:5055/api/v1/status` → `version` | servarr (requests) |
 | qbittorrent | HTTP | `http://<LAN_PREFIX>.150:8080/` | servarr; **doubles as gluetun liveness** — the port is published through gluetun, so it reddens if the VPN container dies |
 | flaresolverr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8191/` → `FlareSolverr is ready` | servarr (Cloudflare solver) |
+| photos-backup | **Push** (86400 s → **90000 s**) | fed by `restic-photos.sh` on geralt, daily 05:00 IST | dead-man switch for the nightly restic backup ([backups](../scripts/backup/README.md)); silent from 2026-07-16, fixed 2026-07-30 — see below |
 | ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29, see below |
 | servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft, see below |
 
@@ -294,6 +295,51 @@ The general lesson, worth carrying to any future egress check: **assert the
 invariant, not the vendor.** "Traffic must not exit from my own address" is
 permanent; "the exit must belong to company X" is a fact about a business
 relationship that changes without warning.
+
+### The photos-backup Push monitor — silent for 14 days (fixed 2026-07-30)
+
+Configured 2026-07-16 with the restic job and **never received a single push**.
+Kuma's own record is unambiguous — monitor 14, entire history to 2026-07-30:
+
+| status | beats | window |
+|---|---|---|
+| 0 (down) | 11 | 2026-07-16 → 2026-07-26, all `No heartbeat in the time window` |
+| 2 (pending) | 2 | 2026-07-16, at creation |
+| **1 (up)** | **0** | — |
+
+The backups ran correctly every night the whole time; only the heartbeat was
+lost. `KUMA_PUSH_URL` on geralt pointed at
+`http://uptime-kuma.kaermorhen.internal:3001/…`, and **geralt cannot resolve
+that name** — the Proxmox nodes resolve via the router by design
+([dns.md](dns.md)), while `kaermorhen.internal` records exist only in the
+Pi-holes:
+
+| Resolver | `uptime-kuma.kaermorhen.internal` |
+|---|---|
+| `<LAN_PREFIX>.1` (router — what geralt uses) | timed out / NXDOMAIN |
+| `<LAN_PREFIX>.101`, `<LAN_PREFIX>.201` (Pi-holes) | `<LAN_PREFIX>.104` |
+
+Fixed by addressing Kuma by IP, the form both ciri producers already used. Full
+write-up in [scripts/backup/README.md](../scripts/backup/README.md).
+
+**Two lessons that generalise past this monitor:**
+
+- **A push URL must be resolvable from the host that sends it.** Name resolution
+  is not uniform across this lab — it is deliberately different on the Proxmox
+  nodes than on every guest. A URL that works from a laptop proves nothing about
+  the host running the job. Prefer the IP for push URLs; there is no
+  ad-blocking or failover benefit to a name here, only a dependency.
+- **A dead-man switch that fails dead is indistinguishable from health.** The
+  monitor alerted once, on the day it was created, and then went quiet forever
+  (`resend_interval=0`). Two weeks of silence read exactly like two weeks of
+  working backups. Any new push producer should be verified by watching the
+  monitor turn **green** once — a monitor that has never been green has not
+  been tested, it has only been created.
+
+Its interval was also **86400 s, exactly the producer's nominal period** — the
+same mistake as the two monitors above, caught here before it bit: the gap
+between consecutive pushes is 24 h ± the backup's duration, currently ~25 s but
+growing with the library. Raised to **90000 s** (25 h).
 
 Rule of thumb for future additions: **one ping per guest** (liveness) +
 **one protocol-level check per user-facing service** (HTTP/DNS/HTTPS —

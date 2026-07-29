@@ -37,8 +37,20 @@ case "$MODE" in
     restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
     # Dead-man switch: Kuma alerts if this ping stops arriving — catches a
     # silently-disabled timer, which a failure-only alert never would.
+    # KUMA_PUSH_URL must address Kuma by IP, never by hostname: geralt resolves
+    # via the router by design (docs/dns.md), and the router does not serve
+    # kaermorhen.internal records — those live only in Pi-hole. A hostname here
+    # fails on every single run (it did, for 14 days).
+    # --retry: one dropped push is one missed heartbeat, and Kuma cannot tell
+    # that apart from the backup never having run.
     if [[ -n "${KUMA_PUSH_URL:-}" ]]; then
-      curl -fsS --max-time 15 "${KUMA_PUSH_URL}" >/dev/null || true
+      if ! curl -fsS --max-time 15 --retry 2 --retry-delay 3 --retry-connrefused \
+             "${KUMA_PUSH_URL}" >/dev/null; then
+        # Not fatal — the backup itself succeeded and must not be reported as
+        # failed. But it has to be loud in the journal: as a bare `|| true` this
+        # failed unnoticed from 2026-07-16 to 2026-07-30.
+        echo "restic-photos: Kuma push failed — backup OK, heartbeat lost" >&2
+      fi
     fi
     ;;
   check)
