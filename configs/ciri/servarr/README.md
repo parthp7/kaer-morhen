@@ -280,9 +280,16 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
   [uptime-kuma.md](../../../docs/uptime-kuma.md)) — HTTP-Keyword on the `/ping` endpoints for
   prowlarr/sonarr/radarr, keyword checks for bazarr/jellyseerr/flaresolverr, and a plain HTTP
   check on qbittorrent `:8080` that **doubles as gluetun liveness**. `gluetun` and
-  `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel. These are **liveness only**:
-  they can't see a VPN leak or port-forwarding stuck at 0 — a functional "servarr VPN health"
-  push monitor is a tracked next item ([uptime-kuma.md](../../../docs/uptime-kuma.md) Next steps).
+  `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel. These 7 are **liveness only**:
+  they cannot see a VPN leak or port-forwarding stuck at 0.
+- **`servarr vpn health` Push monitor** (added 2026-07-29) closes exactly that gap, fed by
+  [`servarr-vpn-health.sh`](../../../scripts/monitoring/servarr-vpn-health.sh) on a 300 s
+  timer. It makes a real outbound request **from inside gluetun's netns** and compares the
+  answer to ciri's own public IP — a leak or a dead tunnel is a hard alert; a forwarded port
+  of 0 is soft and only escalates after ~30 min, matching the transient-PF caveat above.
+  Details in [uptime-kuma.md](../../../docs/uptime-kuma.md#the-servarr-vpn-push-monitor-added-2026-07-29--and-what-it-actually-proves).
+  It is an assurance check sampling every 5 minutes, **not** a replacement for the
+  kill-switch — the `network_mode: "service:gluetun"` binding is still the actual protection.
 - **Beszel**: agents inside ciri, so all 9 servarr containers appear automatically with
   per-container CPU/mem/net.
 - **Backups:** these `./config` dirs live on ciri's `/data` disk → already covered by the

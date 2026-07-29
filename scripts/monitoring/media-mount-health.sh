@@ -66,7 +66,9 @@ push() {
   url=${url//[$'\t\r\n ']/}
   [[ -n "$url" ]] || { echo "media-mount-health: $KUMA_URL_FILE is empty" >&2; return 0; }
 
-  if ! curl -fsS --max-time 10 --get \
+  # --retry: a single dropped push is a missed heartbeat, and Kuma cannot tell that
+  # apart from the media disk being gone. Observed for real 2026-07-29 22:21:43.
+  if ! curl -fsS --max-time 10 --retry 2 --retry-delay 3 --retry-connrefused --get \
         --data-urlencode "status=$status" \
         --data-urlencode "msg=$msg" \
         "$url" >/dev/null; then

@@ -141,7 +141,8 @@ Full set as of 2026-07-13:
 | jellyseerr | HTTP-Keyword | `http://<LAN_PREFIX>.150:5055/api/v1/status` → `version` | servarr (requests) |
 | qbittorrent | HTTP | `http://<LAN_PREFIX>.150:8080/` | servarr; **doubles as gluetun liveness** — the port is published through gluetun, so it reddens if the VPN container dies |
 | flaresolverr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8191/` → `FlareSolverr is ready` | servarr (Cloudflare solver) |
-| ciri media mount | **Push** (300 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29, see below |
+| ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29, see below |
+| servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft, see below |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's
@@ -165,7 +166,7 @@ the right thing?**
 
 | Field | Value |
 |---|---|
-| Type | Push, heartbeat interval **300 s**, retries 1–2 |
+| Type | Push, heartbeat interval **360 s**, retries **1** — must exceed the 5 min timer's real period, see below |
 | Fed by | `scripts/monitoring/media-mount-health.sh` on ciri, systemd timer every 5 min |
 | Push URL | in `/etc/kuma-push.media-mount` on ciri (0600) + `secrets.local.yaml` — never in git |
 | Green when | `/mnt/media` is a real **virtiofs** mount **and** `library/` exists **and** the fs is **≥ 800 GiB** |
@@ -180,6 +181,65 @@ Two independent signals by design: an explicit `down` push gives a fast, labelle
 alert; heartbeat silence covers the script or timer itself dying. Deploy steps,
 unit and timer are in
 [scripts/monitoring/README.md](../scripts/monitoring/README.md#media-mount-healthsh).
+
+**Both Push monitors flapped red on first deploy (fixed 2026-07-29).** They were
+set to a 300 s heartbeat to match the 300 s timer. A systemd timer's real period
+is always longer than `OnUnitActiveSec`: `AccuracySec=30s` lets systemd defer the
+trigger to batch it with other timers, and `OnUnitActiveSec` counts from the last
+*activation*, so the run's own duration adds on top. Measured periods were 301–330 s
+— every heartbeat arrived after a 300 s window had already closed, so Kuma went
+red on every beat while the checks themselves were passing. **A push monitor's
+heartbeat interval must exceed the producer's worst-case period, never equal its
+nominal one.** Both are now 360 s / retries 1. The scripts also gained
+`curl --retry 2` after a real dropped push at 22:21:43 — one lost push is one
+missed heartbeat, and Kuma cannot tell that apart from the disk being gone.
+
+### The servarr-vpn Push monitor (added 2026-07-29) — and what it actually proves
+
+qBittorrent shares gluetun's network namespace, so gluetun's kill-switch is the
+only thing standing between the torrent client and the home IP. That protection
+is **invisible to every other monitor in this file**: if it stopped working, all
+7 servarr HTTP monitors would stay green and the first symptom would arrive by
+post. Same shape as the media-mount blind spot — liveness cannot see wrong
+egress, only absent egress.
+
+So the check does not ask "is gluetun running". It makes a **real outbound
+request from inside the torrent netns** (`docker exec gluetun wget https://…`)
+and compares where the internet says it came from against ciri's own public IP.
+Running that probe on ciri instead of inside the namespace would measure ciri
+and prove nothing — that distinction is the whole monitor.
+
+**Two severities, deliberately:**
+
+| | Condition | Why |
+|---|---|---|
+| **Hard** (red immediately) | egress IP == ciri's public IP | a leak; must never happen |
+| **Hard** | egress IP not owned by Proton | tunnel up, wrong exit |
+| **Hard** | no egress at all from the netns | tunnel down / kill-switch shut — torrenting stopped |
+| **Hard** | gluetun control server unreachable | can't verify anything |
+| **Hard** | qBittorrent API unreachable | dead client behind a live tunnel |
+| **Soft** (green, reason logged) | forwarded port == 0 | Proton drops PF server-side intermittently; qbit-port-sync keeps the last good port so torrenting continues |
+| **Soft** | forwarded port != qBit's `listen_port` | the sidecar polls every 30 s; a brief mismatch after a rotation is normal |
+
+Soft conditions escalate to a hard alert after **6 consecutive runs** (~30 min at
+the 300 s timer), counted in `/var/lib/servarr-vpn-health/degraded.strikes`. The
+counter lives outside `/tmp` on purpose: a reboot must not reset a genuinely
+stuck port back to zero strikes. A leak pages at once; a missing forwarded port
+only means slower torrents, and only pages once it stops being transient.
+
+**Fail-closed:** "cannot determine" is never treated as "fine". If ciri's public
+IP lookup fails, the IP comparison is impossible and the verdict falls back to
+the provider check; if that can't be made either, the run is a hard failure. The
+one thing this monitor must never do is report green because a lookup broke.
+
+**What it does not prove:** it samples egress every 300 s, so a leak lasting less
+than one interval can slip through unseen. It is an assurance check, not a packet
+filter — the kill-switch is still the actual protection, and this only tells you
+whether the kill-switch is doing its job.
+
+Note the state at first deploy (2026-07-29): PF was **0** with qBit holding its
+last good port `34936` — i.e. the soft path was live and correct on day one,
+which is exactly the case that would have been noisy without the strike counter.
 
 Rule of thumb for future additions: **one ping per guest** (liveness) +
 **one protocol-level check per user-facing service** (HTTP/DNS/HTTPS —
@@ -292,25 +352,9 @@ destroyed.
 - ~~**Functional check that the media stack is pointed at the real disk**~~ done
   2026-07-29 — the `ciri media mount` Push monitor above, built after the
   2026-07-27 incident proved the liveness-only gap was not hypothetical.
-- **servarr VPN leak + port-forward health monitor** (functional, not liveness): the 7
-  servarr HTTP monitors and Beszel only prove the containers answer — they **cannot** see two
-  failures that matter:
-  - **VPN leak** — if qBittorrent ever egressed via the home IP instead of Proton, every
-    monitor stays green. This is the one failure most worth alerting on and is currently invisible.
-  - **Port forwarding degraded to 0** — Proton drops the forwarded port server-side
-    intermittently (NAT-PMP refused); qBit keeps working but inbound seeding is degraded, and
-    nothing flags a prolonged 0.
-  **Possible fix**: a **Kuma Push monitor** fed by a small script on ciri
-  (`scripts/monitoring/servarr-vpn-health.sh` + a systemd timer). The pattern is now
-  established and proven — copy
-  [`media-mount-health.sh`](../scripts/monitoring/media-mount-health.sh): same push
-  helper, same `/etc/kuma-push.<name>` 0600 secret file, same
-  push-`down`-with-a-reason **plus** heartbeat-silence double signal. Logic:
-  read qBit's public IP via its API through gluetun's netns and the host's public IP; **push
-  UP only while they differ** (no leak) and qBit is reachable — a match (leak) or unreachable
-  qBit stops the heartbeat → Kuma reddens → ntfy. Treat a **leak as a hard alert** (must never
-  happen); treat transient **PF=0 as soft/logged** (self-heals on gluetun reconnect — see
-  [servarr README](../configs/ciri/servarr/README.md) caveats) to avoid noise, escalating only
-  if it stays 0 across N consecutive checks.
+- ~~**servarr VPN leak + port-forward health monitor**~~ done 2026-07-29 — the
+  `servarr vpn health` Push monitor above, fed by
+  [`servarr-vpn-health.sh`](../scripts/monitoring/servarr-vpn-health.sh). See
+  the section below for what it does and does not prove.
 - **Pi-hole node-reboot failover test** still pending ([dns.md](dns.md)) — the
   pihole DNS monitors here will provide the alerting evidence during it.

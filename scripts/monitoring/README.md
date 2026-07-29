@@ -117,10 +117,123 @@ class, and the interval is a deliberate choice, not an oversight:
   `statfs`, but the `library/` check stats the mount. 60 s polling is 5× the
   traffic to the least-trusted device in the lab and works against spin-down.
 
-If a faster cadence is ever wanted, 120 s is the sensible floor. Whatever the
-timer uses, Kuma's **Heartbeat Interval** must match it or the monitor reddens
-on schedule instead of on fault. Keep **Retries** at 1–2 so a single missed run
-doesn't page but a genuine outage does.
+If a faster cadence is ever wanted, 120 s is the sensible floor.
+
+### Kuma's heartbeat interval must EXCEED the timer period (corrected 2026-07-29)
+
+This originally said the heartbeat interval should *match* the timer. That is
+wrong, and it made both Push monitors flap red on every beat while the checks
+themselves were passing. A `systemd` timer's real period is **longer** than
+`OnUnitActiveSec`:
+
+- `AccuracySec` lets systemd defer the trigger to batch it with other timers —
+  up to 30 s with the value below.
+- `OnUnitActiveSec` counts from the last **activation**, so each run's own
+  duration is added on top.
+
+Measured on ciri, consecutive `media-mount-health` runs: 301 s, 330 s, 322 s,
+308 s, 330 s — every one over a 300 s heartbeat window, so Kuma reddened every
+time. Set the heartbeat **above the worst-case period, not equal to the timer**:
+
+| Timer `OnUnitActiveSec` | Kuma Heartbeat Interval | Retries |
+|---|---|---|
+| 5 min | **360 s** | **1** |
+
+Retries `1` means two consecutive genuine misses (~12 min) before it pages,
+which is still well inside the 16-hour blind spot this was built to close. If
+`AccuracySec=1s` is set instead of `30s` the period tightens to ~301 s, but keep
+the headroom anyway — it costs nothing and the timer is not the only source of
+delay (a slow push counts too).
+
+## servarr-vpn-health.sh
+
+Uptime-Kuma **Push** monitor proving qBittorrent's traffic still leaves through
+the VPN, and that it can still accept peers. Added 2026-07-29; rationale and the
+full severity table are in
+[docs/uptime-kuma.md](../../docs/uptime-kuma.md#the-servarr-vpn-push-monitor-added-2026-07-29--and-what-it-actually-proves).
+
+The core of it: make a **real outbound request from inside gluetun's netns** and
+compare the answer to ciri's own public IP. Probing from ciri would measure ciri
+and prove nothing — qBittorrent lives in gluetun's namespace, so that is the only
+place the question can be asked honestly.
+
+**Hard** (red at once): egress == ciri's public IP; egress not owned by Proton;
+no egress at all; gluetun control server unreachable; qBittorrent API
+unreachable. **Soft** (green, reason in the heartbeat log): forwarded port `0`,
+or forwarded port ≠ qBit's `listen_port` — both self-heal, and both escalate to
+red after `MAX_STRIKES` (default 6, ≈30 min) consecutive runs.
+
+- **Deployed to**: `/usr/local/bin/servarr-vpn-health.sh` on **ciri** (0755).
+- **Reads** the push URL from `/etc/kuma-push.servarr-vpn` (mode 600). Separate
+  file and separate Kuma monitor from the media one — never share a push token.
+- **Strike counter**: `/var/lib/servarr-vpn-health/degraded.strikes`, deliberately
+  not in `/tmp` so a reboot can't reset a genuinely stuck port to zero strikes.
+- **Needs `docker exec`** — runs as root from the timer, same as the other script.
+- **Fails closed**: if a lookup breaks, the run is a hard failure rather than a
+  green heartbeat. "Cannot determine" is never "fine".
+
+Unit + timer on ciri (same shape as media-mount, including the drop-in — the
+`Type=oneshot` timeout argument applies identically here, and more so: this
+script makes network calls that can hang):
+
+```ini
+# /etc/systemd/system/servarr-vpn-health.service
+[Unit]
+Description=Uptime-Kuma push: qBittorrent egress still goes through the VPN
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=150
+ExecStart=/usr/local/bin/servarr-vpn-health.sh
+```
+
+`TimeoutStartSec` is set directly in the unit here rather than as a drop-in,
+because unlike media-mount this script was written with it from the start. It
+must exceed the internal network timeouts: checks are 10 + 15 + 10 + 10 + 10 =
+55 s worst case, and the retrying push adds up to 36 s more — 91 s total, so the
+original `90` was under the line by a second. **150** leaves real margin.
+
+```ini
+# /etc/systemd/system/servarr-vpn-health.timer
+[Unit]
+Description=Run servarr-vpn-health every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+```
+
+`OnBootSec=3min` (vs media-mount's 2 min) gives gluetun time to bring the tunnel
+up after a reboot, so the first run isn't a spurious "no egress" alert.
+
+Deploy:
+
+```bash
+sudo install -m 0755 servarr-vpn-health.sh /usr/local/bin/
+printf '%s\n' '<KUMA_PUSH_URL>' | sudo tee /etc/kuma-push.servarr-vpn >/dev/null
+sudo chmod 600 /etc/kuma-push.servarr-vpn
+sudo systemctl daemon-reload && sudo systemctl enable --now servarr-vpn-health.timer
+journalctl -u servarr-vpn-health.service -n 10 --no-pager
+```
+
+Kuma monitor: **Push**, name `servarr vpn health`, Heartbeat Interval **360 s**,
+Retries **1** — see the heartbeat-interval note above; 300 s here would flap red
+on every beat. Strip the `?status=up&msg=OK&ping=` query string from the URL
+Kuma displays — the script appends its own parameters.
+
+- **Test the leak path** without breaking anything, by asserting the wrong
+  provider: `sudo EXPECTED_ORG=nonesuch /usr/local/bin/servarr-vpn-health.sh`
+  → hard fail, Kuma reddens, ntfy fires. Re-run clean to clear.
+- **Test the soft path**: `sudo MAX_STRIKES=1 /usr/local/bin/servarr-vpn-health.sh`
+  while the forwarded port is 0 → escalates immediately instead of after 6.
+  Reset afterwards with
+  `sudo rm -f /var/lib/servarr-vpn-health/degraded.strikes`.
 
 - **Test** the failure path without touching the mount:
   `sudo MIN_GIB=99999 /usr/local/bin/media-mount-health.sh` → pushes `down`,
