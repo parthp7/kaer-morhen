@@ -17,10 +17,24 @@
 # Two severities, deliberately
 #   HARD (push down immediately) — things that must never be true:
 #     1. gluetun's control server is unreachable      → can't verify anything
-#     2. no egress at all from the netns              → tunnel down / kill-switch shut
-#     3. LEAK: netns egress IP == ciri's public IP    → traffic is bypassing the VPN
-#     4. LEAK: egress IP is not the VPN provider's    → tunnel up but wrong exit
+#     2. the tunnel interface is gone                 → kill-switch has failed open
+#     3. no egress at all from the netns              → tunnel down / kill-switch shut
+#     4. LEAK: netns egress IP == ciri's public IP    → traffic is bypassing the VPN
 #     5. qBittorrent's API is unreachable             → dead client behind a live tunnel
+#
+#   NOT a hard check: which organisation owns the exit IP. The first version of this
+#   script hard-failed unless the exit's `organization` contained "proton", which
+#   raised a FALSE leak alert across four runs (2026-07-29 23:45 → 2026-07-30 00:01)
+#   when gluetun rotated onto a Proton server whose address block is registered to
+#   its upstream datacenter:
+#       AS208172 Proton AG → AS199218 Proton AG → AS43350 NForce Entertainment B.V.
+#   All three are the same VPN. Proton rents capacity and does not own all the IP
+#   space it exits from, so neither the ASN nor the org string is a stable identity —
+#   pinning either only relocates the whack-a-mole. The exit's org is now reported in
+#   the message for human context and never decides the verdict.
+#
+#   The leak invariant is just: egress != ciri's own public IP. That is the actual
+#   definition of the failure, needs no allowlist, and cannot go stale.
 #
 #   SOFT (push up, message says degraded; escalates to down after $MAX_STRIKES
 #   consecutive runs) — things that self-heal and would otherwise cry wolf:
@@ -38,11 +52,13 @@
 #   Rule of thumb: a leak is never acceptable and always pages. A missing forwarded
 #   port only means slower torrents, and only pages once it stops being transient.
 #
-# Fail-closed
+# Fail-closed, without crying wolf
 #   "Cannot determine" is never treated as "fine". If ciri's own public IP can't be
-#   fetched the IP comparison is impossible, so the verdict falls back to the
-#   provider check — and if that can't be made either, the run is a HARD failure.
-#   The one thing this script must never do is report green because a lookup broke.
+#   fetched, the comparison falls back to the last-known value cached in $STATE_DIR;
+#   if there is no cache either, the run is DEGRADED (soft) rather than a hard page —
+#   so a transient ipify outage can't fake a leak, but a persistent inability to
+#   verify still escalates through the strike counter. The one thing this script must
+#   never do is report a clean green because a lookup broke.
 #
 # Behaviour
 #   Healthy    → push status=up   → Kuma heartbeat green
@@ -63,15 +79,16 @@
 # Requires: curl, jq, docker (must be able to `docker exec gluetun`). The push URL
 #           carries a token, so it lives ONLY in that 0600 file and in
 #           secrets.local.yaml — never here.
-# Env overrides: GLUETUN_CTR, EXPECTED_ORG, MAX_STRIKES, KUMA_URL_FILE, STATE_DIR
+# Env overrides: GLUETUN_CTR, TUN_IF, MAX_STRIKES, KUMA_URL_FILE, STATE_DIR,
+#                HOST_IP_OVERRIDE (test hook — see the leak-path test in the README)
 
 set -euo pipefail
 
 readonly GLUETUN_CTR="${GLUETUN_CTR:-gluetun}"
-# Substring match, case-insensitive, against the `organization` gluetun reports for
-# its own exit IP (currently "AS208172 Proton AG"). Deliberately loose: Proton
-# renames ASNs far more often than it stops being Proton.
-readonly EXPECTED_ORG="${EXPECTED_ORG:-proton}"
+# The WireGuard interface inside gluetun's netns. Its presence is a vendor-neutral
+# proof that the tunnel exists at all — unlike the exit IP's registered owner, this
+# cannot drift when the provider rotates servers or upstream hosts.
+readonly TUN_IF="${TUN_IF:-tun0}"
 # 6 consecutive degraded runs. At the 300s timer that is ~30 minutes — long enough
 # to ride out a Proton PF rotation, short enough to catch a stuck sidecar the same
 # evening.
@@ -79,6 +96,13 @@ readonly MAX_STRIKES="${MAX_STRIKES:-6}"
 readonly KUMA_URL_FILE="${KUMA_URL_FILE:-/etc/kuma-push.servarr-vpn}"
 readonly STATE_DIR="${STATE_DIR:-/var/lib/servarr-vpn-health}"
 readonly STRIKE_FILE="$STATE_DIR/degraded.strikes"
+# Last successfully-resolved public IP of ciri itself. Lets the leak comparison
+# survive a transient outage of the external IP lookup without going blind.
+readonly HOST_IP_CACHE="$STATE_DIR/host-public-ip"
+# Test hook: pretend ciri's public IP is this. Setting it to the CURRENT egress IP
+# simulates a leak exactly, which is how the hard path is exercised without
+# touching the tunnel. See scripts/monitoring/README.md.
+readonly HOST_IP_OVERRIDE="${HOST_IP_OVERRIDE:-}"
 
 # Push a heartbeat to Kuma. A push failure is reported but must NOT change the
 # verdict: "Kuma is unreachable" is a different fault from "the VPN is leaking".
@@ -138,33 +162,48 @@ check() {
     return 1
   fi
 
+  # Informational only — see the header. Never a verdict.
   org=$(printf '%s' "$ctl" | jq -r '.organization // empty')
+  [[ -n "$org" ]] || org="unknown org"
 
-  # 2. Real egress test: an actual outbound request from inside the torrent netns.
+  # 2. Tunnel interface. Vendor-neutral: if this is gone but egress still works,
+  #    the kill-switch has failed open regardless of what the exit IP looks like.
+  if ! in_netns ip -o addr show "$TUN_IF" | grep -q inet; then
+    echo "tunnel interface $TUN_IF is missing from gluetun's netns — kill-switch has failed open"
+    return 1
+  fi
+
+  # 3. Real egress test: an actual outbound request from inside the torrent netns.
   #    This is the heart of the monitor — everything else is corroboration.
   if ! vpn_ip=$(in_netns wget -qO- --timeout=15 https://api.ipify.org) || [[ -z "$vpn_ip" ]]; then
     echo "no egress from gluetun netns — tunnel down or kill-switch engaged (torrenting is stopped)"
     return 1
   fi
 
-  # 3. Compare against ciri's own public IP. If this lookup fails we do NOT get to
-  #    call it healthy — we fall through to the provider check below.
-  host_ip=$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)
-
-  if [[ -n "$host_ip" && "$vpn_ip" == "$host_ip" ]]; then
-    echo "LEAK: torrent egress $vpn_ip is ciri's own public IP — traffic is NOT going through the VPN"
-    return 1
+  # 4. Compare against ciri's own public IP — the whole leak test. On a lookup
+  #    failure fall back to the cached value rather than going blind; only refresh
+  #    the cache from a real lookup, never from the override.
+  if [[ -n "$HOST_IP_OVERRIDE" ]]; then
+    host_ip="$HOST_IP_OVERRIDE"
+  else
+    host_ip=$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)
+    if [[ -n "$host_ip" ]]; then
+      mkdir -p "$STATE_DIR" 2>/dev/null || true
+      echo "$host_ip" > "$HOST_IP_CACHE" 2>/dev/null || true
+    elif [[ -r "$HOST_IP_CACHE" ]]; then
+      host_ip=$(< "$HOST_IP_CACHE")
+    fi
   fi
 
-  # 4. Provider check. Catches a tunnel that is up but exiting somewhere unexpected,
-  #    and is the sole leak evidence when the host-IP lookup above failed.
-  if [[ -z "$org" ]]; then
-    if [[ -z "$host_ip" ]]; then
-      echo "cannot verify egress: gluetun reports no organization AND ciri's public IP lookup failed"
-      return 1
-    fi
-  elif [[ "${org,,}" != *"${EXPECTED_ORG,,}"* ]]; then
-    echo "LEAK: torrent egress $vpn_ip belongs to '$org', expected '$EXPECTED_ORG'"
+  if [[ -z "$host_ip" ]]; then
+    # Soft, not hard: an ipify outage must not fake a leak. The strike counter still
+    # escalates if we stay unable to verify.
+    echo "degraded: cannot verify egress — ciri's public IP lookup failed and no cached value (egress is $vpn_ip, $org)"
+    return 2
+  fi
+
+  if [[ "$vpn_ip" == "$host_ip" ]]; then
+    echo "LEAK: torrent egress $vpn_ip is ciri's own public IP — traffic is NOT going through the VPN"
     return 1
   fi
 

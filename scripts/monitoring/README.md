@@ -157,11 +157,24 @@ compare the answer to ciri's own public IP. Probing from ciri would measure ciri
 and prove nothing — qBittorrent lives in gluetun's namespace, so that is the only
 place the question can be asked honestly.
 
-**Hard** (red at once): egress == ciri's public IP; egress not owned by Proton;
-no egress at all; gluetun control server unreachable; qBittorrent API
-unreachable. **Soft** (green, reason in the heartbeat log): forwarded port `0`,
-or forwarded port ≠ qBit's `listen_port` — both self-heal, and both escalate to
-red after `MAX_STRIKES` (default 6, ≈30 min) consecutive runs.
+**Hard** (red at once): egress == ciri's public IP; the `tun0` interface missing
+from the netns; no egress at all; gluetun control server unreachable; qBittorrent
+API unreachable. **Soft** (green, reason in the heartbeat log): forwarded port
+`0`; forwarded port ≠ qBit's `listen_port`; or the egress comparison being
+unverifiable — all escalate to red after `MAX_STRIKES` (default 6, ≈30 min)
+consecutive runs.
+
+**The exit IP's owner is deliberately NOT a check.** The first version hard-failed
+unless the exit's `organization` contained `proton`, and it raised a false leak
+alert across four consecutive runs (2026-07-29 23:45 → 2026-07-30 00:01) when
+gluetun rotated onto a Proton server whose block is registered to its upstream
+datacenter — `AS208172 Proton AG` → `AS199218 Proton AG` →
+`AS43350 NForce Entertainment B.V.`, all the same VPN.
+Proton rents capacity and does not own all the space it exits from, so neither
+the ASN nor the org string is a stable identity, and pinning either just moves
+the whack-a-mole. The only leak invariant that cannot go stale is
+**egress != ciri's own public IP**; the org is reported for human context and
+never decides the verdict.
 
 - **Deployed to**: `/usr/local/bin/servarr-vpn-health.sh` on **ciri** (0755).
 - **Reads** the push URL from `/etc/kuma-push.servarr-vpn` (mode 600). Separate
@@ -227,9 +240,15 @@ Retries **1** — see the heartbeat-interval note above; 300 s here would flap r
 on every beat. Strip the `?status=up&msg=OK&ping=` query string from the URL
 Kuma displays — the script appends its own parameters.
 
-- **Test the leak path** without breaking anything, by asserting the wrong
-  provider: `sudo EXPECTED_ORG=nonesuch /usr/local/bin/servarr-vpn-health.sh`
-  → hard fail, Kuma reddens, ntfy fires. Re-run clean to clear.
+- **Test the leak path** without touching the tunnel, by telling the script that
+  ciri's public IP *is* the current egress IP — which is exactly what a leak looks
+  like:
+  ```bash
+  VPN_IP=$(docker exec gluetun wget -qO- https://api.ipify.org)
+  sudo HOST_IP_OVERRIDE="$VPN_IP" /usr/local/bin/servarr-vpn-health.sh
+  ```
+  → hard fail, Kuma reddens, ntfy fires. Re-run without the override to clear.
+  `HOST_IP_OVERRIDE` never writes the host-IP cache, so this leaves no residue.
 - **Test the soft path**: `sudo MAX_STRIKES=1 /usr/local/bin/servarr-vpn-health.sh`
   while the forwarded port is 0 → escalates immediately instead of after 6.
   Reset afterwards with

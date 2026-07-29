@@ -109,6 +109,22 @@ hypervisor — are what hold the media stack back. See
 They prove the path **exists**; proving it's the *right* filesystem is the
 `ciri media mount` Push monitor ([uptime-kuma.md](../../../docs/uptime-kuma.md)).
 
+### Acceptance test — executed 2026-07-29 ✓
+
+The whole chain was exercised for real, not just reasoned about: `/mnt/media`
+was unmounted on geralt and VM 150 started without it. Observed exactly as
+designed —
+
+- **ciri booted normally.** The hookscript's *advisory* tier warned and let the
+  VM start, so Immich, Paperless, memos and sure stayed up and green in Kuma.
+- **jellyfin, qbittorrent, sonarr, radarr, bazarr refused to start.** The bind
+  guards held the media stack back rather than letting it attach to the boot
+  disk — the 2026-07-27 failure mode, now impossible to reach silently.
+- **Restoring the mount brought everything back** with no manual repair.
+
+That asymmetry — VM up, media stack down — is the entire point of the advisory
+tier, and it is now verified behaviour rather than a design intention.
+
 ## Permissions model (least privilege)
 
 No app has root write access to the media location. Writers run as one dedicated

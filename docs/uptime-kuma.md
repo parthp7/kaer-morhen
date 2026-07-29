@@ -214,12 +214,13 @@ and prove nothing — that distinction is the whole monitor.
 | | Condition | Why |
 |---|---|---|
 | **Hard** (red immediately) | egress IP == ciri's public IP | a leak; must never happen |
-| **Hard** | egress IP not owned by Proton | tunnel up, wrong exit |
+| **Hard** | `tun0` missing from gluetun's netns | kill-switch failed open (vendor-neutral; replaced a provider check that false-alarmed — see below) |
 | **Hard** | no egress at all from the netns | tunnel down / kill-switch shut — torrenting stopped |
 | **Hard** | gluetun control server unreachable | can't verify anything |
 | **Hard** | qBittorrent API unreachable | dead client behind a live tunnel |
 | **Soft** (green, reason logged) | forwarded port == 0 | Proton drops PF server-side intermittently; qbit-port-sync keeps the last good port so torrenting continues |
 | **Soft** | forwarded port != qBit's `listen_port` | the sidecar polls every 30 s; a brief mismatch after a rotation is normal |
+| **Soft** | egress comparison unverifiable | ciri's public-IP lookup failed *and* no cached value — an ipify outage must not fake a leak |
 
 Soft conditions escalate to a hard alert after **6 consecutive runs** (~30 min at
 the 300 s timer), counted in `/var/lib/servarr-vpn-health/degraded.strikes`. The
@@ -249,13 +250,50 @@ gluetun alone strands qBit in a stale netns, see the
 whole soft→hard→recover cycle ran in production, not just in the
 `MAX_STRIKES=1` simulation.
 
-**Why the provider check matches on `proton`, not an ASN.** That reconnect moved
-the exit from **AS208172** to **AS199218**, both Proton. A check pinned to the
-ASN — the tighter, more obvious design — would have read a routine Proton
-reconnect as a leak and paged at 23:08. Proton renames and renumbers ASNs far
-more often than it stops being Proton, so the substring match is deliberate:
-`EXPECTED_ORG` is loose on purpose, and tightening it would make the monitor
-cry wolf on the stack's normal behaviour.
+**The provider check was removed within a day — it raised a false leak alert.**
+The monitor originally hard-failed unless the exit IP's `organization` contained
+`proton`. Three exits were observed within 24 hours:
+
+```
+AS208172  Proton AG                   matched
+AS199218  Proton AG                   matched
+AS43350   NForce Entertainment B.V.   FALSE LEAK ALERT ×4
+                                      2026-07-29 23:45 → 2026-07-30 00:01
+```
+
+The alert was false: egress was `185.107.44.113` (Breda, NL) while ciri's own
+public IP was unchanged and `tun0` was up at `10.2.0.2/32` — traffic was going
+through the tunnel exactly as intended, from a Proton server on rented address
+space. The fix was verified on **that same exit IP** at 2026-07-30 00:07:08,
+which now reads `ok: egress 185.107.44.113 (AS43350 NForce Entertainment B.V.),
+port-forward 46247 matches qBit, no leak` — same address, same org, correct
+verdict.
+
+All three are the same VPN. **Proton rents capacity and does not own all the IP
+space it exits from**, so blocks stay registered to the upstream datacenter. The
+first version of this doc argued the substring match was the careful choice
+because ASN-pinning would cry wolf — that reasoning was right about ASNs and
+wrong about its own fix: the org string is no more stable than the ASN, and
+pinning either just relocates the whack-a-mole to a less obvious place.
+
+What replaced it:
+
+- **The leak test is now only `egress != ciri's own public IP`** — the actual
+  definition of the failure. It needs no allowlist and cannot go stale.
+- **A tunnel-interface check** (`tun0` present in gluetun's netns) covers the case
+  the org check was reaching for — a kill-switch that has failed open — without
+  depending on any vendor string.
+- **The exit's org is still reported** in the heartbeat message, for human
+  context. It never decides the verdict.
+- **An unverifiable comparison is now soft, not hard.** If ciri's public-IP lookup
+  fails the script falls back to a cached value, and only degrades (escalating via
+  the strike counter) when there is no cache either — so an `api.ipify.org` outage
+  cannot fake a leak, while a persistent inability to verify still pages.
+
+The general lesson, worth carrying to any future egress check: **assert the
+invariant, not the vendor.** "Traffic must not exit from my own address" is
+permanent; "the exit must belong to company X" is a fact about a business
+relationship that changes without warning.
 
 Rule of thumb for future additions: **one ping per guest** (liveness) +
 **one protocol-level check per user-facing service** (HTTP/DNS/HTTPS —
