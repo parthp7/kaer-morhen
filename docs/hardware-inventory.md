@@ -55,10 +55,32 @@ each node over SSH).
 | ChannelB-DIMM0 (BANK 2) | Micron | `16ATF2G64HZ-2G6E1` | 16 GB | 2 | 2667 MT/s |
 
   Mixed vendors but identical spec — both dual-rank DDR4-2667, so the pair runs
-  symmetric in dual channel. This node has **no ECC and no EDAC memory
-  controller** (`EDAC MC: Ver: 3.0.0` loads but registers no MC), so there are
-  no correctable-error counters: memory faults surface only as MCE/oops/crashes,
-  which makes memtest86+ the only real verification tool here.
+  symmetric in dual channel. Note the delivered part is **not** what was ordered
+  (proposal 002 §5 specifies SK Hynix `HMA82GS6CJR8N-VK`); the seller shipped the
+  equivalent Micron module. Functionally interchangeable here.
+
+  This node has **no ECC and no EDAC memory controller** (`EDAC MC: Ver: 3.0.0`
+  loads but registers no MC), so there are no correctable-error counters: memory
+  faults surface only as MCE/oops/crashes, which makes memtest86+ the only real
+  verification tool here.
+
+- **Memory verified 2026-07-31 — memtest86+ 7.20, 2 full passes, 0 errors**
+  across all 32 GB. `memtest86+` is already installed on geralt and GRUB carries
+  the entries, so re-running it needs no setup:
+
+  1. Reboot, hold `Esc`/`Shift` for the GRUB menu (if you land at a bare `grub>`
+     prompt, type `normal` to get back to the menu).
+  2. Choose **`Memory test (memtest86+x64.efi)`** — not `ia32` (32-bit, won't
+     cover 32 GB), not the `serial console` variants (no serial rig on this node).
+  3. Confirm the CPU mode is parallel/all-cores, then let it loop for **≥2 full
+     passes** — roughly 1–1.5 h per pass on 32 GB of DDR4-2667.
+
+  Requires Secure Boot to stay disabled (it is, since 2026-07-12) or the EFI
+  binary won't load. memtest has no network: results are read off the laptop
+  panel, and geralt is physical-access-only for power-on (no WoL). Plan it as a
+  maintenance window — `uptime-kuma` lives on geralt, so monitoring goes blind
+  for the duration, while DNS and Tailscale fail over to yennefer's `pihole-2` /
+  `tailscale-1`.
 
 - **Do not re-diagnose the 2026-07-31 boot hangs as a RAM fault.** Installing
   the second stick coincided with a burst of ~90 s host hangs, which looked
