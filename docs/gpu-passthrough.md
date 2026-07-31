@@ -41,7 +41,7 @@ sessions. Ample for home streaming.
 | Piece | Value |
 |---|---|
 | GPU | NVIDIA GTX 1060 Mobile (GP106M, 6 GB) at host `0000:01:00`, both functions (VGA `10de:1c20` + HDMI audio `10de:10f1`) |
-| Host binding | `vfio-pci` via `/etc/modprobe.d/vfio.conf` (ids + `disable_vga=1`, softdeps beat `nouveau`/`snd_hda_intel` to the device); `nouveau` blacklisted; vfio modules in `/etc/modules` |
+| Host binding | `vfio-pci` via `/etc/modprobe.d/vfio.conf` (ids + `disable_vga=1` + **`disable_idle_d3=1`**, softdeps beat `nouveau`/`snd_hda_intel` to the device); `nouveau` blacklisted; vfio modules in `/etc/modules`. `disable_idle_d3=1` is **not optional** — see the D3cold host-hang gotcha |
 | Kernel cmdline | **unchanged** (`quiet` only) — IOMMU is on by default; `iommu=pt` evaluated and skipped as unneeded |
 | VM attach | `hostpci0: 0000:01:00,pcie=1` — no `.0` suffix = all functions travel together (required: they share IOMMU group 2 and the audio function enables the slot-level bus reset) |
 | Guest driver | `nvidia-driver-580-server` 580.159.03 (Ubuntu 26.04 archive, `ubuntu-drivers` recommendation) |
@@ -55,7 +55,7 @@ sessions. Ample for home streaming.
 
 ```bash
 cat >/etc/modprobe.d/vfio.conf <<'EOF'
-options vfio-pci ids=10de:1c20,10de:10f1 disable_vga=1
+options vfio-pci ids=10de:1c20,10de:10f1 disable_vga=1 disable_idle_d3=1
 softdep nouveau pre: vfio-pci
 softdep snd_hda_intel pre: vfio-pci
 EOF
@@ -139,6 +139,44 @@ paperless / memos / sure / nebula-sync have no GPU use.
 
 ## Gotchas hit (and the explanations)
 
+- **Host hard-hang ~2 min after boot whenever the GPU is left unclaimed —
+  `disable_idle_d3=1` is mandatory (diagnosed and fixed 2026-07-31).**
+  Without it, `vfio-pci` lets the idle 1060 runtime-suspend into **D3cold**.
+  Resuming it makes the kernel evaluate MSI's Optimus power-on AML
+  (`\_SB.PCI0.PGON` via the `\_SB.PCI0.PEG0.PG00` power resource), whose
+  polling loop intermittently never satisfies its exit condition and dies at
+  `AE_AML_LOOP_TIMEOUT` after ~30 s. The GPU is then in an undefined power
+  state; vfio-pci retries the resume ladder (1023 → 2047 → 4095 → 8191 →
+  16383 → 32767 ms) and **the host wedges hard** — no panic, no oops, nothing
+  in `pstore`, and the journal simply stops mid-line because journald never
+  flushes. Diagnostic signature in `journalctl -b <n>`:
+
+  ```
+  ACPI Error: Aborting method \_SB.PCI0.PGON due to previous error (AE_AML_LOOP_TIMEOUT)
+  ACPI Error: Aborting method \_SB.PCI0.PEG0.PG00._ON due to previous error (AE_AML_LOOP_TIMEOUT)
+  vfio-pci 0000:01:00.0: not ready 1023ms after resume; waiting
+  ```
+
+  It is a **race, so it presents as intermittent**: if a VM claims the GPU
+  before it idles (~10 s on this node, `onboot: 1` on VM 150) the box is fine,
+  which is why some boots survive and others die at 68–124 s. Confirmed across
+  12 retained boots — the signature appeared in 6/6 crashes and 0/6 healthy
+  boots. `disable_idle_d3=1` makes vfio-pci hold a runtime-PM reference so the
+  card never leaves D0 and the broken AML path is never entered. Cost: a few
+  idle watts. Note `power/control` still reads `auto` afterwards — that knob is
+  not what changes; `power_state: D0` and a `runtime_suspended_time` stuck at
+  `0 ms` are the proof.
+
+  **Two traps:** (1) the parameter only takes effect through the initramfs, so
+  hand-editing `vfio.conf` without `update-initramfs -u -k all` leaves the live
+  param silently at `N` while the file claims otherwise — always verify
+  `/sys/module/vfio_pci/parameters/disable_idle_d3`. (2) Setting
+  `onboot: 0` on VM 150 *arms* this bug, because nothing then claims the GPU
+  at boot and it idles straight into D3cold. Keep VM 150 on `onboot: 1`.
+
+  This was originally misattributed to a RAM fault — see
+  [hardware-inventory.md](hardware-inventory.md) memory notes.
+
 - **`qm start 150` warns: `error writing '1' to
   '/sys/bus/pci/devices/0000:01:00.0/reset': Inappropriate ioctl for device`.**
   Harmless and permanent — GP106M has no Function-Level Reset; its only
@@ -183,7 +221,13 @@ paperless / memos / sure / nebula-sync have no GPU use.
 # geralt
 lspci -nnk -s 01:00                    # both functions: vfio-pci
 cat /sys/bus/pci/devices/0000:01:00.0/reset_method   # bus
-qm config 150 | grep hostpci           # hostpci0: 0000:01:00,pcie=1
+qm config 150 | grep -E 'hostpci|onboot'  # hostpci0: 0000:01:00,pcie=1 / onboot: 1
+
+# D3cold hang guard (see gotchas) — all four must hold
+cat /sys/module/vfio_pci/parameters/disable_idle_d3          # Y  (live, not just the file)
+cat /sys/bus/pci/devices/0000:01:00.0/power_state            # D0
+cat /sys/bus/pci/devices/0000:01:00.0/power/runtime_suspended_time  # 0   (ms, never suspended)
+journalctl -b 0 | grep -cE 'PGON|PG00\._ON|not ready'        # 0
 
 # ciri (ssh lab-ciri)
 nvidia-smi                             # GTX 1060, P8, ~3 W idle
@@ -197,6 +241,13 @@ docker run --rm --gpus all ubuntu nvidia-smi          # end-to-end smoke test
 Verified 2026-07-16: host binding, VM attach, driver 580.159.03, toolkit
 1.19.1, daemon.json merge, both docker units active, container smoke test
 passing.
+
+Re-verified 2026-07-31 after the `disable_idle_d3=1` fix: clean boot with no
+`PGON`/`not ready`/oops/MCE, host survived 475 s (vs 68–124 s for every prior
+crash), then the decisive isolation test — ciri stopped and the GPU left
+**unclaimed for 13 m 22 s**, staying `D0` with `runtime_suspended_time` at
+`0 ms` throughout (12/12 polled samples), and reattaching in 5 s on
+`qm start 150`. Pre-fix that idle window was reliably fatal.
 
 ## Next steps
 

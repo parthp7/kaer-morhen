@@ -16,7 +16,7 @@ each node over SSH).
 |---|---|---|
 | Model | MSI GP63 Leopard 8RE | HP Laptop 15-bs0xx |
 | CPU | Intel Core i7-8750H @ 2.20GHz (6C/12T) | Intel Core i3-6006U @ 2.00GHz (2C/4T) |
-| Memory | 16 GB SODIMM DDR4 2667 MT/s | 8 GB SODIMM DDR4 2133 MT/s |
+| Memory | 32 GB (2× 16 GB SODIMM DDR4 2667 MT/s) | 8 GB SODIMM DDR4 2133 MT/s |
 | GPU (dGPU) | NVIDIA GeForce GTX 1060 Mobile (GP106M, 6 GB) | none |
 | GPU (iGPU) | Intel UHD Graphics 630 | Intel HD Graphics 520 |
 | Boot storage | 256 GB NVMe SSD | 256 GB SATA SSD |
@@ -45,7 +45,33 @@ each node over SSH).
 - Intel(R) Core(TM) i7-8750H @ 2.20GHz — 6 cores / 12 threads, max 4.1 GHz, 9 MiB L3
 
 **Memory**
-- 16 GB SODIMM DDR4 @ 2667 MT/s
+- **32 GB total** — both SODIMM slots populated, dual-channel, dual-rank,
+  running at the full rated 2667 MT/s with no BIOS downclock (upgraded
+  2026-07-31, verified via `dmidecode -t memory`):
+
+| Slot | Vendor | Part number | Size | Rank | Configured |
+|---|---|---|---|---|---|
+| ChannelA-DIMM0 (BANK 0) | Samsung | `M471A2K43CB1-CTD` | 16 GB | 2 | 2667 MT/s |
+| ChannelB-DIMM0 (BANK 2) | Micron | `16ATF2G64HZ-2G6E1` | 16 GB | 2 | 2667 MT/s |
+
+  Mixed vendors but identical spec — both dual-rank DDR4-2667, so the pair runs
+  symmetric in dual channel. This node has **no ECC and no EDAC memory
+  controller** (`EDAC MC: Ver: 3.0.0` loads but registers no MC), so there are
+  no correctable-error counters: memory faults surface only as MCE/oops/crashes,
+  which makes memtest86+ the only real verification tool here.
+
+- **Do not re-diagnose the 2026-07-31 boot hangs as a RAM fault.** Installing
+  the second stick coincided with a burst of ~90 s host hangs, which looked
+  like a bad DIMM but was not. Root cause was the Optimus dGPU D3cold /
+  ACPI `PGON` bug — full writeup in
+  [gpu-passthrough.md](gpu-passthrough.md) gotchas. Evidence that exonerated the
+  RAM: the identical crash signature had already appeared on **2026-07-28
+  22:13 and 22:20**, three days before the stick arrived; across 12 retained
+  boots there were zero oops / BUG / bad-page / machine-check events and an
+  empty `pstore`; kernel taint stayed `4097` (ZFS out-of-tree + proprietary
+  only, MCE and oops bits clear); and both DIMMs train at full speed. The
+  chassis-opening simply forced enough power cycles to expose an intermittent
+  race that had been latent since at least 07-28.
 
 **GPU**
 - NVIDIA GeForce GTX 1060 Mobile (GP106M rev a1, 6 GB GDDR5) — VFIO-passed to
