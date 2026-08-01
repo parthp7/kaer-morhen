@@ -17,7 +17,7 @@ guest hostname = login user = `ciri`.
 | VM | **150** on **geralt**, `.150`, name/hostname/user `ciri` |
 | OS | Ubuntu Server **26.04 LTS** (Resolute) cloud image, cloud-init provisioned |
 | Machine | **q35 + OVMF**, Secure Boot off (`pre-enrolled-keys=0`) — GPU passthrough later is a `qm set --hostpci0`, not a rebuild; no MOK dance for future NVIDIA DKMS |
-| Resources | 6 vCPU (`cpu: host`), **10240 MB fixed** (`balloon: 0`) — originally provisioned at 8192 MB, raised to 10240 later; live value verified 2026-07-29 and again 2026-07-31 |
+| Resources | 6 vCPU (`cpu: host`), **24576 MB fixed** (`balloon: 0`) — provisioned at 8192 MB, raised to 10240, then to 24576 on 2026-07-31 for the AI stack's MoE tier ([proposals/002](proposals/002-local-ai-stack.md)); live value verified 2026-07-31 |
 | Disks | **scsi0 64 G = OS**; **scsi1 32 G = `/data`** (Docker + app data) — both sparse zvols on `silver-guests`, `discard=on,iothread=1,ssd=1`, virtio-scsi-single; see "Storage layout" |
 | Docker config | `data-root: /data/docker`; `local` log driver capped **100 MB × 5 files per container** (`/etc/docker/daemon.json`); containerd `root = /data/containerd` (`/etc/containerd/config.toml`) — image layers live *there*, not in data-root (containerd image store, see gotchas) |
 | Network | virtio on `vmbr0`, static `<LAN_PREFIX>.150/24` via cloud-init, DNS `.101`/`.201` (the Pi-holes), search `kaermorhen.internal` (renamed from `….home.arpa` 2026-07-12 — see [dns.md](dns.md) gotchas) |
@@ -28,11 +28,15 @@ guest hostname = login user = `ciri`.
 | GPU | **GTX 1060 passed through 2026-07-16** (`hostpci0: 0000:01:00,pcie=1`, driver + container toolkit in guest) — see [gpu-passthrough.md](gpu-passthrough.md) |
 
 **Memory sizing**: geralt has **32 GB** since 2026-07-31
-([hardware-inventory.md](hardware-inventory.md)) — budget is 32 G − 2 G ARC cap
-− ~2 G host/LXCs → the current 10 G fixed leaves ~18 G of headroom. (Before the
+([hardware-inventory.md](hardware-inventory.md)). As-built budget (executed
+2026-07-31, verified live: host shows ~3.4 G available): **24 G ciri** + 2 G
+ARC cap + 1.5 G LXC caps (real use ~0.2 G) + ~1.5 G PVE host → ~3 G slack,
+which also serves the virtiofsd page cache for `/mnt/media` streaming and
+vzdump reads. Inside ciri, 24 G ≈ 4.3 G current stacks + ~15–16 G resident MoE
+model during inference + ~2 G reserved for future apps (Obsidian sync etc.) —
+see [proposals/002](proposals/002-local-ai-stack.md) §7. (Before the RAM
 upgrade the same arithmetic on 16 G left only ~2 G of true slack, which is what
-gated the AI stack's big-model tier — see
-[proposals/002](proposals/002-local-ai-stack.md) §5.) Unlike LXC caps, VM memory
+gated the AI stack's big-model tier.) Unlike LXC caps, VM memory
 is reserved while the VM runs. `balloon: 0` disables dynamic reclaim (databases + page cache hate
 it; the host isn't overcommitted; VFIO pins memory anyway once a GPU is passed
 through) — note it also removes the memory-stats device, so PVE's UI shows
@@ -345,9 +349,9 @@ plus `.env.example` + README).
 - **App-level backups**: restic/borgmatic dumps to offsite once apps hold
   real data ([backups.md](backups.md) next phase).
 - Optional: `qm set 150 --delete balloon` to restore PVE guest-memory
-  reporting (memory stays fixed at 10 G).
-- **RAM headroom unlocked 2026-07-31**: geralt is now 32 GB, so ciri's planned
-  10 G → 24 G bump for the AI stack's MoE tier
-  ([proposals/002](proposals/002-local-ai-stack.md) §5) is no longer gated.
-  Note VFIO pins the whole guest allocation (`balloon: 0`), so size it against
-  real host headroom, not nominal free memory.
+  reporting (memory stays fixed).
+- ~~RAM headroom unlocked 2026-07-31~~ — **executed same day**: ciri raised
+  10 G → 24 G for the AI stack's MoE tier
+  ([proposals/002](proposals/002-local-ai-stack.md) §5/§7). VFIO pins the whole
+  guest allocation (`balloon: 0`), so it was sized against real host headroom
+  (~3 G slack remains).

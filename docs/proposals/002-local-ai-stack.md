@@ -1,9 +1,10 @@
 # Proposal 002 — Local AI stack on ciri (Ollama + Open WebUI + SearXNG)
 
-- **Status**: **Draft** — approved in planning 2026-07-29, nothing deployed yet.
-  The RAM upgrade (§5) is **done: installed and verified 2026-07-31**, so the
-  big-model tier is no longer gated and the as-built docs now read 32 GB.
-  Stack deployment itself is still pending user go-ahead.
+- **Status**: **Implemented 2026-07-31** — RAM upgrade (§5) done, ciri raised to
+  24 G per the §7 budget, stack deployed on ciri, all three models pulled, web
+  search working end-to-end, Sure wired to the local endpoint (§4). Remaining:
+  Uptime-Kuma monitors + DNS name (§6). As-built detail lives in
+  [configs/ciri/ai/README.md](../../configs/ciri/ai/README.md).
 - **Date**: 2026-07-29
 - **Scope**: VM 150 `ciri` on `geralt`; see
   [gpu-passthrough.md](../gpu-passthrough.md) (which already listed Ollama as
@@ -31,16 +32,36 @@ requirement, not an afterthought.
 
 ## 2. Model plan
 
-| Tier | Model | Fit | Expected speed |
+Primary use cases (user, 2026-07-31): **realtime general-purpose chat + web
+research on current data**, plus data analysis and general conversations.
+Mapping (all three pulled; Open WebUI default = qwen3:8b):
+
+| Use case | Model | Fit | Expected speed |
 |---|---|---|---|
-| Now — daily driver | qwen3:8b (Q4_K_M, ~5.2 GB) | fully in 6 GB VRAM | ~20–30 tok/s |
-| Now — long-context web-RAG | qwen3:4b (~2.6 GB) | VRAM + large KV cache | ~45+ tok/s |
-| Optional vision | gemma3:4b | fits | fast |
-| After §5 RAM | **qwen3:30b-a3b MoE** (Q4, ~18.6 GB) | CPU+GPU hybrid, ~3B active/token | ~10–15 tok/s |
-| After §5, dense fallback | qwen3:14b (~9 GB) | ~55% GPU offload | ~5–8 tok/s |
+| Realtime chat / quick search-augmented answers (default) | **qwen3:8b** (Q4_K_M, ~5.2 GB) | fully in 6 GB VRAM | ~20–30 tok/s — the "realtime" model |
+| Fast long-context web-RAG (many pages in context) | qwen3:4b (~2.6 GB) | VRAM + large KV cache | ~45+ tok/s |
+| Deep research / data analysis (quality over latency) | **qwen3:30b-a3b MoE** (Q4, ~18.6 GB) | CPU+GPU hybrid, ~3B active/token | ~10–15 tok/s |
+| Dense fallback if MoE underwhelms | qwen3:14b (~9 GB) | ~55% GPU offload | ~5–8 tok/s |
 
 Pascal note: compute 6.1 still supported by Ollama (driver ≥570), but CUDA 13
 drops Pascal — deprecation will come eventually; llama.cpp is the fallback.
+
+**Measured on first deploy (2026-07-31):** qwen3:30b-a3b sustains **9.4 tok/s**
+(49/49 layers "offloaded" but 40 overflowing to system RAM: 14.3 G CPU-mapped
+vs 4.3 G in VRAM) — at the low end of the 10–15 estimate, usable for research.
+qwen3:8b is interactive (a few seconds to first token) once it fits in VRAM.
+
+⚠️ **Context length is the VRAM lever — the first-run trap.** The planned
+`OLLAMA_CONTEXT_LENGTH=16384` gave qwen3:8b a 2.4 G f16 KV cache; 5.0 G weights
++ KV + compute = 7.8 G against 6 G of VRAM, so llama.cpp silently spilled 34 %
+to CPU and generation collapsed to **4.6 tok/s**. Combined with qwen3's hidden
+thinking block that presents as "the model is frozen" (observed: ~5 minutes for
+one reply), not as slowness. Fix applied: global context 8192 plus
+`OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`, which cut the 8b's KV
+cache to 612 MiB and restored full-GPU residency. The research model gets
+`num_ctx` 16384 per-model in Open WebUI instead, where its KV lives in cheap
+system RAM. **Diagnostic**: `docker exec ollama ollama ps` — the `PROCESSOR`
+column must read `100% GPU` for qwen3:8b; any `% CPU` means it no longer fits.
 
 ## 3. Stack (`configs/ciri/ai/` → `ciri:/data/stacks/ai/`)
 
@@ -80,9 +101,37 @@ mkdir -p /mnt/ai-models/ollama
   Obsidian (Copilot / Text Generator plugins) points here, model `qwen3:8b`.
 - **Open WebUI keyed API**: per-user API keys (Settings → Account),
   OpenAI-compatible under `http://<LAN_PREFIX>.150:8090/api/`.
-- **Sure**: point its OpenAI provider env at the Ollama `/v1` endpoint (verify
-  Sure's exact env var names at implementation; Maybe fork with OpenAI
-  support); update the `configs/ciri/sure` mirror after.
+- **Sure**: done 2026-07-31 — `OPENAI_ACCESS_TOKEN` + `OPENAI_URI_BASE` +
+  `OPENAI_MODEL` (all three required; a custom base with a blank model makes
+  Sure's provider registry return nil silently) plus a 300 s request timeout.
+  Must use the host IP, not `http://ollama:11434`: separate bridge networks and
+  Sure pins `dns: 8.8.8.8`. **Must also use a non-thinking model**
+  (`qwen2.5:7b-instruct`) — see the lesson below.
+  Details: [configs/ciri/sure](../../configs/ciri/sure/README.md).
+
+### Lesson: thinking models are wrong for API consumers
+
+qwen3's hidden reasoning block is a *UI feature*, not a model feature. Open
+WebUI renders it as a collapsible section, so it reads as normal. Every other
+OpenAI-compatible client just waits on it, and 900–1600 thinking tokens at
+local speeds means 2–3 minutes per reply. In Sure that cascaded into silent
+data loss: UI timeout → user retry → retry deletes the pending
+`AssistantMessage` → the still-running job's `tool_calls` insert fails its
+foreign key → the finished reply is discarded with nothing rendered.
+
+Ollama can disable thinking only per request (`think: false`, or
+`reasoning_effort: "none"` on `/v1`); there is no Modelfile parameter for it
+([ollama#14809](https://github.com/ollama/ollama/issues/14809)) and Qwen3's
+`/no_think` text switch is only partially honoured.
+
+**Resolution (2026-08-01):** the constraint turned out to be Sure's *timeout*,
+not thinking as such — it discards any reply older than a hardcoded 60 s
+(server) / 90 s (browser watchdog), with no ENV or Setting to change either,
+and it does so whether or not the user retries. Since the browser only reports
+and the server decides, raising the one server constant via a bind-mounted
+Rails initializer is sufficient and survives image pulls. **Rule for this lab:
+when adding a new consumer of the AI stack, check its response timeout first;
+if it can't be raised, give that client a non-thinking instruct model.**
 
 ## 5. RAM upgrade — **DONE 2026-07-31**
 
@@ -104,14 +153,45 @@ Optimus dGPU D3cold / ACPI `PGON` bug, fixed with `disable_idle_d3=1`
 ([gpu-passthrough.md](../gpu-passthrough.md) gotchas). Recorded here because the
 coincidence in timing was extremely convincing and cost a full diagnostic cycle.
 
-Remaining steps (**not yet executed** — awaiting go-ahead):
+Remaining steps:
 
-1. `qm set 150 --memory 24576`, reboot ciri. New budget: 24 G ciri + 2 G ARC
-   (optionally raise to 3–4 G) + ~2 G host/LXCs + ~2 G slack. Note VFIO pins the
-   entire guest allocation (`balloon: 0`), so this is a hard reservation.
-2. `ollama pull qwen3:30b-a3b` (~19 GB, lands on scsi2); default model for
-   research, qwen3:8b stays for fast chat.
+1. ~~`qm set 150 --memory 24576`, reboot ciri~~ — **done 2026-07-31**, verified
+   (ciri sees 23 Gi, geralt ~3.4 G available). See §7 for the full budget.
+2. `ollama pull qwen3:30b-a3b` (~19 GB, lands on scsi2); research/analysis
+   model, qwen3:8b stays for fast chat.
 3. ~~Update hardware-inventory.md / docker-vm.md to 32 GB~~ — done 2026-07-31.
+
+## 7. Memory budget (as-built 2026-07-31)
+
+**geralt (31.3 GiB usable):**
+
+| Allocation | Size | Notes |
+|---|---|---|
+| ciri VM | **24 G** | hard reservation — VFIO-pinned, `balloon: 0` |
+| ZFS ARC cap | 2 G (unchanged) | `steel` HDD workload is light; not worth host slack |
+| LXC caps 101/103/104 | 1.5 G | cgroup caps, real use ~0.2 G |
+| PVE host + slack | ~3.8 G (~3.4 G measured available) | includes virtiofsd page cache for `/mnt/media` streaming + vzdump reads |
+
+**Inside ciri (24 G):** ~4.3 G current stacks + ~15–16 G resident 30B MoE
+during inference (≈18.6 G weights − ~5 G in VRAM + KV cache) + ~2 G reserved
+for future apps (Obsidian LiveSync/CouchDB etc.) + guest page cache.
+
+Guardrails: `OLLAMA_MAX_LOADED_MODELS=2` (8B in VRAM + 30B in RAM may coexist;
+a second RAM-heavy model may not), `OLLAMA_KEEP_ALIVE=10m`, and a **4 G
+swapfile on ciri** (had none) so an Immich ML burst on top of a resident model
+degrades instead of OOM-killing.
+
+**Observed with the 30B resident (2026-07-31):** ciri reports only ~3.9 G
+"used" but ~18 G in buff/cache, because Ollama **mmaps** the weights — the model
+counts as page cache, not RSS. The kernel evicted ~2.7 G of idle anonymous
+pages from the other stacks into swap to make room. That is the swapfile doing
+exactly its job; it is not memory pressure, and `free -h` "used" understates
+what the AI stack actually occupies. Judge headroom by `available` (~15–19 G
+observed) rather than `used`, and don't be alarmed by non-zero swap here.
+
+**yennefer (7.7 GiB): unchanged.** 1.7 G used; caps 3.5 G. Future proposal-001
+items still fit: HAOS VM 2 G + reverse-proxy LXC 202 at 256–512 M leave
+~1.5 G+ slack.
 
 ## 6. Monitoring, docs, verification (at deploy time)
 

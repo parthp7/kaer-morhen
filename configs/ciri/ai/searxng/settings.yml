@@ -1,0 +1,20 @@
+# SearXNG — minimal overlay on the image defaults (use_default_settings).
+# json format is REQUIRED: Open WebUI's searxng provider queries
+# /search?q=...&format=json and gets 403 without it.
+# Limiter off: instance is internal-only (no published port, LAN-internal
+# consumers on ai_net), so bot rate-limiting is pure friction.
+use_default_settings: true
+
+general:
+  instance_name: "kaermorhen search"
+
+server:
+  # Overridden by SEARXNG_SECRET from the environment (.env); placeholder only.
+  secret_key: "overridden-by-env"
+  limiter: false
+  image_proxy: true
+
+search:
+  formats:
+    - html
+    - json

@@ -1,0 +1,118 @@
+# ai — local LLM stack: Ollama (GPU inference + LAN API), Open WebUI (chat UI,
+# web search, RAG, keyed API), SearXNG (self-hosted metasearch, internal-only).
+# Design + memory budget: docs/proposals/002-local-ai-stack.md.
+#
+# Lab conventions: pinned image tags, container_name on every service,
+# restart: unless-stopped, TZ=Asia/Kolkata, dedicated bridge network, secrets
+# only from .env (${VAR:?} fails loudly).
+#
+# Model VRAM/RAM contract (proposal 002 §2/§7):
+#   qwen3:8b lives in the 1060's 6 GB VRAM (realtime chat, default model);
+#   qwen3:30b-a3b MoE is mostly RAM-resident (~15-16 GB during inference) —
+#   OLLAMA_MAX_LOADED_MODELS=2 lets those two coexist but blocks a second
+#   RAM-heavy model from stacking on top (ciri is 24 GB total, shared with
+#   every other stack). OLLAMA_KEEP_ALIVE=10m frees the GPU for Jellyfin
+#   NVENC transcodes after idle — the 1060 is shared, VRAM contention is real.
+#
+# Model weights live on the dedicated scsi2 disk (backup=0) mounted at
+# /mnt/ai-models: ~19 GB of re-downloadable GGUFs stay OUT of nightly PBS.
+# create_host_path:false is the missing-mount guard (same pattern as
+# jellyfin/servarr): if the disk didn't mount (fstab nofail), ollama refuses
+# to start instead of silently re-pulling models onto the root disk.
+
+services:
+  ollama:
+    image: ollama/ollama:0.32.5
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      # LAN-wide OpenAI-compatible API (/v1) — Obsidian plugins, Sure, etc.
+      # Unauthenticated by design: same flat-LAN exposure as every other
+      # service; revisit when the reverse proxy (LXC 202) gets built.
+      - "11434:11434"
+    volumes:
+      - type: bind
+        source: /mnt/ai-models/ollama
+        target: /root/.ollama
+        bind:
+          create_host_path: false
+    environment:
+      TZ: Asia/Kolkata
+      OLLAMA_KEEP_ALIVE: 10m
+      # 1, not 2 (changed 2026-07-31 after the Sure incident). The original 2
+      # assumed "8B in VRAM + 30B in RAM", but the 30B also pins ~4.3 G of
+      # VRAM for its offloaded layers, so a co-resident 8B gets squeezed off
+      # the GPU and collapses to CPU speed. With 6 G of VRAM only ONE ~5 G
+      # model can be resident at full speed. Cost of this setting: switching
+      # models (Open WebUI ↔ Sure) forces an unload/reload, which is cheap
+      # while the weights are still in the guest page cache.
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      # 16384 was the original value and it BROKE the VRAM fit for qwen3:8b:
+      # 5.0 G weights + 2.4 G f16 KV cache + compute buffers = 7.8 G > 6 G,
+      # so llama.cpp spilled 34% to CPU and generation dropped to ~4.6 tok/s
+      # (first-run incident 2026-07-31). 8192 + q8_0 KV (~0.6 G) fits. The
+      # research model gets its bigger window per-model instead: Open WebUI →
+      # Admin → Models → qwen3:30b-a3b → Advanced → num_ctx 16384 (its KV
+      # lives in system RAM, where 16k is cheap).
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      # Flash attention is required for quantized KV. Pascal runs the FA
+      # fallback kernels — fine for decode; if prompt processing regresses,
+      # revert BOTH lines and drop ctx to 4096 instead.
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_KV_CACHE_TYPE: q8_0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    networks:
+      - ai_net
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.0
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    volumes:
+      # Chats, users, RAG index — on /data, DOES ride the nightly PBS backup.
+      - ./open-webui:/app/backend/data
+    environment:
+      TZ: Asia/Kolkata
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:?}
+      # Web-search wiring (verified against v0.11 docs 2026-07-31). CAVEAT:
+      # these are ConfigVars — persisted into the DB on FIRST boot; edits here
+      # are ignored afterwards. Live source of truth after that:
+      # Admin Panel → Settings → Web Search.
+      ENABLE_WEB_SEARCH: "True"
+      WEB_SEARCH_ENGINE: searxng
+      SEARXNG_QUERY_URL: "http://searxng:8080/search?q=<query>"
+      WEB_SEARCH_RESULT_COUNT: "5"
+      WEB_SEARCH_CONCURRENT_REQUESTS: "10"
+    depends_on:
+      - ollama
+      - searxng
+    networks:
+      - ai_net
+
+  searxng:
+    image: searxng/searxng:2026.7.28-c01178d03
+    container_name: searxng
+    restart: unless-stopped
+    # No published port: only Open WebUI queries it, over ai_net. Publish
+    # deliberately if a second consumer (e.g. Perplexica) ever wants it.
+    volumes:
+      - ./searxng:/etc/searxng
+    environment:
+      TZ: Asia/Kolkata
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?}
+      SEARXNG_BASE_URL: http://searxng:8080/
+    networks:
+      - ai_net
+
+networks:
+  ai_net:
+    driver: bridge
