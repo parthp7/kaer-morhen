@@ -257,3 +257,146 @@ Kuma displays — the script appends its own parameters.
 - **Test** the failure path without touching the mount:
   `sudo MIN_GIB=99999 /usr/local/bin/media-mount-health.sh` → pushes `down`,
   Kuma reddens, ntfy fires; re-run without the override to clear.
+
+## gpu-health.sh
+
+Uptime-Kuma **Push** monitor proving Jellyfin can still **encode on the GPU**.
+Added 2026-08-02 after the [2026-08-01 GPU-loss outage](../../configs/ciri/jellyfin/README.md#all-transcodes-fail-after-a-systemd-daemon-reload-2026-08-01),
+which ran ~21 hours with every monitor green.
+
+That outage is the third instance of the same lesson as
+[`media-mount-health.sh`](#media-mount-healthsh) and
+[`servarr-vpn-health.sh`](#servarr-vpn-healthsh): **liveness cannot see a
+capability that has silently gone missing.** Jellyfin answered on `:8096`
+throughout, its Kuma HTTP monitor stayed green, and Beszel's GPU panel was
+healthy — because Beszel watches the card from the **host**, where nothing was
+wrong. Direct Play kept working, so most playback looked normal; only
+transcodes failed, and only on the TV, as "media is not supported by this
+client".
+
+### Why the check is an encode, not `nvidia-smi`
+
+`nvidia-smi` succeeding proves NVML is reachable. It does **not** prove the
+encoder is usable — under the legacy runtime path, a container missing `video`
+in `NVIDIA_DRIVER_CAPABILITIES` runs `nvidia-smi` happily while NVENC is
+invisible. So the load-bearing check runs a real one-second `h264_nvenc` encode
+with **Jellyfin's own ffmpeg, inside the container**, output to the null muxer:
+
+```bash
+docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner -loglevel error \
+  -f lavfi -i testsrc=duration=1:size=256x256:rate=5 -c:v h264_nvenc -f null -
+```
+
+That exercises CUDA init, NVENC session allocation and an actual encode — every
+step a transcode needs, and the exact step that failed on 08-01. Nothing is
+written to disk.
+
+- **Deployed to**: `/usr/local/bin/gpu-health.sh` on **ciri** (0755).
+- **Reads** the push URL from `/etc/kuma-push.gpu-health` (mode 600).
+- **Exits non-zero** on hard failure as well as pushing `status=down`.
+- **Two independent failure signals**: an explicit `status=down` push, *and*
+  heartbeat silence if the script or timer dies.
+
+### Severities
+
+| | Condition | Why |
+|---|---|---|
+| **Hard** | jellyfin container not running | nothing to check |
+| **Hard** | `nvidia-smi` fails inside jellyfin | the 2026-08-01 fault exactly — host card can be perfectly healthy |
+| **Hard** | `h264_nvenc` missing from ffmpeg | NVML works but the encoder is not exposed |
+| **Hard** | test encode fails with the GPU **idle** | a real fault; there is nothing to blame it on |
+| **Hard** | ollama running but its `nvidia-smi` fails | the other GPU consumer lost access, same fault class |
+| **Soft** | test encode fails with **≥ 3000 MiB VRAM in use** | a resident Ollama model on the shared 6 GB card; `OLLAMA_KEEP_ALIVE=10m` frees it |
+| **Hard** | test encode fails and VRAM is **unreadable** | fail closed — an unreadable `nvidia-smi` is not evidence of innocence |
+
+Soft conditions escalate after **6 consecutive runs** (~30 min at the 5 min
+timer), counted in `/var/lib/gpu-health/degraded.strikes` — outside `/tmp` so a
+reboot cannot reset a genuinely wedged GPU to zero strikes. This encodes the
+same distinction as the jellyfin README's
+[contention-vs-device-loss table](../../configs/ciri/jellyfin/README.md#is-it-the-daemon-reload-or-vram-contention-with-ollama):
+contention fails *after* CUDA initialises and only while a model is loaded;
+lost device access fails before any allocation, with the card idle.
+
+The 3000 MiB threshold only **attributes** a failure, it never causes one. It
+sits above an idle card plus a live transcode session (~115 MiB, measured
+2026-08-02) and below the smallest resident model (~4.3 G).
+
+### Unit + timer on ciri
+
+```ini
+# /etc/systemd/system/gpu-health.service
+[Unit]
+Description=Uptime-Kuma push: Jellyfin can encode on the GPU
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gpu-health.sh
+```
+
+```ini
+# /etc/systemd/system/gpu-health.timer
+[Unit]
+Description=Run gpu-health every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+```
+
+`OnBootSec=3min` (not 2, like media-mount) staggers it off the other timer so
+two `docker exec`-heavy checks don't fire together on a 6-vCPU VM.
+
+**The `TimeoutStartSec` drop-in applies here too** — same reasoning as
+[media-mount](#required-drop-in-timeoutstartsec-do-not-skip): `Type=oneshot`
+defaults to an infinite start timeout, and a wedged container would leave the
+unit `activating` forever, so the timer would never fire again. The script also
+wraps every `docker exec` in `timeout 30`, which turns a hang into a labelled
+failure rather than a silent kill — but keep both.
+
+```bash
+sudo systemctl edit gpu-health.service
+```
+
+```ini
+[Service]
+TimeoutStartSec=90
+```
+
+90 s, not 60: the worst case is four `docker exec` calls each capped at 30 s.
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now gpu-health.timer
+systemctl list-timers gpu-health.timer
+journalctl -u gpu-health.service -n 5
+```
+
+Kuma monitor: **Push**, heartbeat **360 s**, retries **1** — the interval must
+exceed the timer's worst-case period, see
+[the correction above](#kumas-heartbeat-interval-must-exceed-the-timer-period-corrected-2026-07-29).
+
+### Exercising both paths before trusting it
+
+A monitor that has never been red has not been tested. Both paths can be forced
+without touching the GPU:
+
+```bash
+# Hard path: point it at a container that has no GPU
+sudo JELLYFIN_CONTAINER=searxng /usr/local/bin/gpu-health.sh; echo "exit=$?"
+# → nvidia-smi FAILED inside 'searxng' ... , exit 1, Kuma goes red
+
+# Soft path: make any VRAM usage look like contention and any encode fail
+sudo VRAM_CONTENTION_MIB=0 FFMPEG_BIN=/bin/false /usr/local/bin/gpu-health.sh
+# → degraded: ... (strike 1/6), stays green
+# Repeat 6× to watch it escalate to down, then clear the counter:
+sudo rm -f /var/lib/gpu-health/degraded.strikes
+```
+
+Then confirm the monitor goes **green** on a normal run — per the
+[photos-backup lesson](../../docs/uptime-kuma.md#the-photos-backup-push-monitor--silent-for-14-days-fixed-2026-07-30),
+a push monitor that has never been green has only been created, not tested.

@@ -665,9 +665,12 @@ Reopened 2026-08-01 by the GPU-loss incident (see Troubleshooting):
   daemon-reload theory was falsified 2026-08-02 (see Troubleshooting). If it
   recurs, capture `docker inspect` and the cgroup device rules *before*
   recreating the container.
-- [ ] **Kuma check for GPU-in-container** — `docker exec jellyfin nvidia-smi`.
-  Beszel watches the GPU from the host and reported it healthy for the 21 hours
-  the transcoder was dead; nothing watched the container's access to it.
+- ~~**Kuma check for GPU-in-container**~~ built 2026-08-02 —
+  [`gpu-health.sh`](../../../scripts/monitoring/README.md#gpu-healthsh), a Push
+  monitor that runs a real NVENC encode inside the container rather than just
+  `nvidia-smi` (the two can disagree). **Deploy pending** — script + docs are in
+  the repo; the Kuma monitor, push-URL file, unit and timer still need creating
+  on ciri.
 - ~~**Settle the AU7000 AV1 question**~~ **tested 2026-08-02: the TV does NOT
   Direct Play AV1 Main 10-bit.** With subtitles off (no `overlay` filter in the
   command) it still re-encoded video via `h264_nvenc`, so the matrix row that

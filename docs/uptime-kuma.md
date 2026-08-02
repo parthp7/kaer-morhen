@@ -144,6 +144,7 @@ Full set as of 2026-07-13:
 | photos-backup | **Push** (86400 s → **90000 s**) | fed by `restic-photos.sh` on geralt, daily 05:00 IST | dead-man switch for the nightly restic backup ([backups](../scripts/backup/README.md)); silent from 2026-07-16, fixed 2026-07-30 — see below |
 | ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29, see below |
 | servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft, see below |
+| ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — added 2026-08-02; runs a real NVENC encode inside the jellyfin container, see below |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's
@@ -295,6 +296,55 @@ The general lesson, worth carrying to any future egress check: **assert the
 invariant, not the vendor.** "Traffic must not exit from my own address" is
 permanent; "the exit must belong to company X" is a fact about a business
 relationship that changes without warning.
+
+### The gpu-health Push monitor (added 2026-08-02) — the blind spot, third time
+
+On 2026-08-01 the jellyfin container lost its cgroup device access to the GTX
+1060 while still running. Every transcode died instantly at
+`cuInit(0) -> CUDA_ERROR_NO_DEVICE`, and it ran **~21 hours undetected**
+([jellyfin README](../configs/ciri/jellyfin/README.md#all-transcodes-fail-after-a-systemd-daemon-reload-2026-08-01)).
+
+This is the same lesson as the two monitors above, and it is worth naming that
+it has now recurred three times in three different guises:
+
+| Incident | Everything said | Actually broken |
+|---|---|---|
+| 2026-07-27 media mount | all 18 monitors green, 16 h | serving the wrong filesystem |
+| (hypothetical) VPN leak | 7 servarr monitors green | egress bypassing the tunnel |
+| 2026-08-01 GPU loss | jellyfin `:8096` green, 21 h | container could not encode |
+
+The GPU case had an extra trap: **Beszel's GPU panel was healthy the whole
+time**, because it watches the card from the *host*. The host was genuinely
+fine. Only the container had lost access — and Direct Play kept working, so
+most playback was normal and nothing looked wrong.
+
+**The check is an encode, not a `nvidia-smi`.** `nvidia-smi` proves NVML is
+reachable; it does not prove the *encoder* is usable, and those can disagree —
+a container missing `video` in `NVIDIA_DRIVER_CAPABILITIES` runs `nvidia-smi`
+happily with NVENC invisible. So the monitor runs a real one-second
+`h264_nvenc` encode using Jellyfin's own ffmpeg inside the container, to the
+null muxer. Same discipline as the VPN monitor making a real outbound request
+from inside the netns rather than asking "is gluetun running".
+
+| Field | Value |
+|---|---|
+| Type | Push, heartbeat **360 s**, retries **1** |
+| Fed by | `scripts/monitoring/gpu-health.sh` on ciri, systemd timer every 5 min |
+| Push URL | `/etc/kuma-push.gpu-health` on ciri (0600) + `secrets.local.yaml` |
+| Green when | jellyfin runs, `nvidia-smi` works inside it, `h264_nvenc` is present, and a test encode succeeds |
+| Soft (green, strike-counted) | test encode fails with ≥ 3000 MiB VRAM in use — a resident Ollama model on the shared card; escalates after 6 runs (~30 min) |
+| Red when | any hard check fails, the encode fails with the card **idle**, or the heartbeat stops |
+
+The soft path exists because the 1060 is shared with the `ai` stack, and it
+encodes the same distinction as the jellyfin README's
+[contention-vs-device-loss table](../configs/ciri/jellyfin/README.md#is-it-the-daemon-reload-or-vram-contention-with-ollama):
+contention fails *after* CUDA initialises and only while a model is loaded;
+lost device access fails before any allocation, with the card idle. Fail-closed
+throughout — if VRAM usage cannot be read, an encode failure is hard, never
+excused.
+
+Deploy steps, unit, timer, and how to force both the hard and soft paths are in
+[scripts/monitoring/README.md](../scripts/monitoring/README.md#gpu-healthsh).
 
 ### The photos-backup Push monitor — silent for 14 days (fixed 2026-07-30)
 
