@@ -106,19 +106,66 @@ certificate password); the bare form installs the current default build.
 |---|---|---|
 | H.264 up to 4K (L5.1) | yes | Direct Play |
 | HEVC up to 4K (L5.1) | yes | Direct Play — covers most 4K rips |
-| AV1 up to 4K60 | yes | Direct Play (note: the 1060 has no AV1 *encode*, so never transcode *to* AV1) |
+| AV1 up to 4K60 | **unverified** — see below | Assume transcode. The 1060 has no AV1 *decode*, so decode falls to software — measured at **10.1x realtime** for 1080p, so cheap in practice |
 | HDR10 / HDR10+ / HLG | yes | Direct Play |
 | Dolby Vision | no | Plays HDR10 base layer; DV profile 5 files transcode/tone-map (NVENC + CUDA tone mapping) |
 | AAC / AC3 / DD+ audio | yes | Direct Play |
 | DTS / TrueHD / FLAC audio | **no** (Samsung dropped DTS in 2018+) | Audio-only transcode to DD+/AAC — cheap, video untouched |
+| **Opus audio** | **no** | Audio transcode to AAC — cheap in isolation, but see the South Park S1 case |
 | SRT subtitles | yes | Direct Play |
 | ASS/SSA subtitles | partial | Burn-in transcode is the reliable path |
+| **PGS subtitles** (image, from Blu-ray) | **no** | Burn-in — forces a **full video** transcode even when the video codec itself would Direct Play |
 
 Expected transcode triggers in practice: DTS/TrueHD audio tracks (common in
 remuxes) and styled subtitles — both cheap with NVENC, so no buffering risk.
 
+### The AV1 row was never actually proven (corrected 2026-08-01)
+
+This row previously read "yes | Direct Play", carried over from Samsung's
+published 2021 spec sheet. It was never tested against real media, and the
+library's only AV1 title makes it untestable as written: the South Park S1
+release is **AV1 Main 10-bit + Opus + PGS**, and *both* the Opus audio and the
+PGS subtitles independently force a transcode. So a transcode on that file
+proves nothing about AV1 support.
+
+Two things are true regardless of how the row eventually resolves:
+
+- **The AU7000 is entry-level Crystal UHD.** Samsung's AV1 decode rollout in
+  2021 was concentrated in the Neo QLED / 8K lines; a spec-sheet mention for the
+  model year is weak evidence for this panel.
+- **It doesn't much matter, because the 1060 can't help — but that turned out
+  to be cheap.** Pascal's NVDEC has no AV1 block. `jellyfin-ffmpeg` lists an
+  `av1_cuvid` decoder — that is the *ffmpeg build* advertising the codec, not
+  the *card* supporting it. Any AV1 transcode decodes in software (`libdav1d`)
+  on ciri's 6 vCPUs and only the encode side touches the GPU. **Measured
+  2026-08-02** on S01E08: `libdav1d` → `h264_nvenc` at `fps=243`, **10.1x
+  realtime**, clean exit. No buffering risk at 1080p.
+
+**To settle it**, play a S1 episode with subtitles switched off and the audio
+track it wants, then read Dashboard → Playback. "Direct Play" or a
+video-untouched audio-only transcode means the TV really does decode AV1;
+"Transcoding" with `h264_nvenc` in the ffmpeg command means it does not.
+
 ### Known Tizen client rough edges
 
+- **"Media is not supported by this client" is a generic error — it does not
+  mean the media is bad.** The Tizen app shows it whenever the stream fails to
+  start, so it covers at least three unrelated root causes seen so far:
+  1. The TV cannot *reach* the stream URL (the hostname/AVPlay trap below,
+     2026-07-22). Tell: PlaybackInfo negotiated, no `/Videos/.../stream`
+     request, no ffmpeg spawned.
+  2. The server-side transcode **fails to start** (2026-08-01 — Jellyfin had
+     lost the GPU; see the jellyfin README's
+     [Troubleshooting](../configs/ciri/jellyfin/README.md#all-transcodes-fail-after-a-systemd-daemon-reload-2026-08-01)).
+     Tell: ffmpeg spawns and dies within milliseconds, repeatedly, with a
+     non-zero exit code.
+  3. The media genuinely needs a codec the TV lacks *and* the transcode was
+     never attempted.
+  **Always read the server log before touching client settings** — cases 1 and
+  2 are server-side and no amount of quality/codec fiddling on the TV fixes
+  them. Note that lowering the client's quality cap makes case 2 *worse*
+  (it forces a transcode) while appearing to be a codec fix, and raising it to
+  Auto can hide the fault entirely on Direct Play-able files.
 - **Add the server by IP, not the internal DNS hostname** (hit 2026-07-22).
   With the server added as `jellyfin.kaermorhen.internal`, the app *browsed*
   fine but every playback failed — spinner, then "media not supported by this

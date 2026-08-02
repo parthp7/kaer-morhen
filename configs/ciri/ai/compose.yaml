@@ -60,13 +60,15 @@ services:
       # revert BOTH lines and drop ctx to 4096 instead.
       OLLAMA_FLASH_ATTENTION: "1"
       OLLAMA_KV_CACHE_TYPE: q8_0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # CDI device injection, replacing the legacy
+    # `deploy.resources.reservations.devices` block (migrated 2026-08-02, in
+    # lockstep with the jellyfin stack — both share this GPU). CDI writes the
+    # devices into the OCI spec before container creation instead of having a
+    # prestart hook poke them in afterwards. Rationale and the incident behind
+    # it: configs/ciri/jellyfin/README.md, "Making GPU access survive
+    # daemon-reload".
+    devices:
+      - "nvidia.com/gpu=all"
     networks:
       - ai_net
 

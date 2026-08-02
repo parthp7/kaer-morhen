@@ -322,6 +322,293 @@ that Direct Plays everywhere else.
   it was removed from `compose.yaml` — clients now stream from the address they
   connected on. Connect the TV by IP.
 
+### All transcodes fail after a systemd daemon-reload (2026-08-01)
+
+**Symptom.** Direct Play works everywhere, but anything that needs a transcode
+fails instantly. On the Samsung TV this surfaces as "media is not supported by
+this client" — which is why it gets mistaken for a codec problem. The tell that
+it is *not* a codec problem: the failure follows the **transcode**, not the
+file. A file that Direct Plays at Auto quality starts failing the moment you
+lower the client's bitrate cap below its bitrate.
+
+**Diagnosis.**
+
+```bash
+nvidia-smi                       # on ciri: GPU healthy, idle
+docker exec jellyfin nvidia-smi  # in the container: "Failed to initialize NVML: Unknown Error"
+```
+
+The ffmpeg log (`config/log/FFmpeg.Transcode-*.log`) is unambiguous:
+
+```
+[AVHWDeviceContext] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+Device creation failed: -542398533.
+```
+
+→ `FFmpeg exited with code 187`, retried dozens of times per playback attempt
+(each retry writes its own `FFmpeg.Transcode-*.log`, so **a burst of identical
+transcode logs seconds apart is itself the signature**).
+
+Note `ls -la /dev/ | grep nvidia` **still lists the device nodes inside the
+container** — this is not a missing-device problem, it is a *permissions*
+problem. The nodes are visible; every open is denied.
+
+**Cause — mechanism confirmed, trigger NOT.** What is certain: the container's
+cgroup **device allowlist** lost its NVIDIA entries while the container kept
+running. The nodes stayed bind-mounted (hence visible to `ls`) but every open
+was denied. Recreating the container re-ran the injection and fixed it.
+
+What triggered that is **unresolved**. The original write-up blamed a
+`systemctl daemon-reload`, on this timeline:
+
+```
+2026-07-31 15:08:46  jellyfin started (post-reboot)
+2026-07-31 15:45:27  systemd[1]: Reload requested from client PID 64172 ('systemctl')
+2026-07-31 17:07:01  ollama started       ← shares the GPU, never broke
+```
+
+The reasoning was that ciri runs `Cgroup Driver: systemd` on `Cgroup Version: 2`,
+where systemd owns the device rules and rewrites them on reload, dropping
+entries the toolkit's prestart hook had poked in out-of-band
+([nvidia-container-toolkit#48](https://github.com/NVIDIA/nvidia-container-toolkit/issues/48)).
+ollama surviving fit neatly — it started *after* the reload.
+
+**That hypothesis was falsified on 2026-08-02.** With jellyfin recreated and
+still on the legacy path, `systemctl daemon-reload` was run three times
+(08:54–08:55) and `docker exec jellyfin nvidia-smi` kept working. On this stack
+— Docker 29.6.1, containerd 2.2.6, toolkit 1.19.1 — a plain daemon-reload does
+**not** reproduce it. A boot-ordering race was considered next and also looks
+weak: the driver was fully up well before Docker (`nvidia_uvm` loaded 15:08:41,
+persistenced registered the device 15:08:43, containerd 15:08:44, container
+15:08:46).
+
+So: **treat a `daemon-reload` near a GPU container as suspicious, but do not
+trust it as the explanation.** The diagnosis and the fix above are solid
+regardless of trigger; only the attribution is open. If this recurs, capture
+`docker inspect` and the container's cgroup device rules *before* recreating —
+recreating destroys the evidence, which is why this incident cannot be closed.
+
+The one thing the timeline does still establish is what it **rules out**: ollama
+shared the same GPU throughout and never lost access, which excludes the card,
+the driver, and VRAM contention (see below).
+
+**Immediate fix** — restarting re-runs the toolkit hook and re-injects the
+device rules:
+
+```bash
+cd /data/stacks/jellyfin && docker compose up -d --force-recreate jellyfin
+docker exec jellyfin nvidia-smi        # must show the GTX 1060
+```
+
+Then play something that forces a transcode and confirm Dashboard → Playback
+reads "Transcoding (hardware)".
+
+**Permanent fix** — see [Making GPU access survive
+daemon-reload](#making-gpu-access-survive-daemon-reload) below. Until that is
+applied, the operational rule is: **any `systemctl daemon-reload` on ciri means
+restart every GPU container** (`jellyfin`, `ollama`).
+
+**Monitoring gap this exposed.** Beszel watches the GPU from the *host*, where
+it looked perfectly healthy for the 21 hours the transcoder was dead. Nothing
+watched whether the *container* could still reach it. A Kuma push check running
+`docker exec jellyfin nvidia-smi` would catch this same-day.
+
+### Is it the daemon-reload, or VRAM contention with ollama?
+
+The 1060's 6 GB is shared with the `ai` stack, so "Jellyfin can't transcode" now
+has two plausible causes and they are **easy to tell apart** — read the ffmpeg
+log, not the symptom:
+
+| | daemon-reload / cgroup loss | VRAM contention with ollama |
+|---|---|---|
+| ffmpeg error | `cuInit(0) failed -> CUDA_ERROR_NO_DEVICE` — fails *before* any allocation | out-of-memory / `OpenEncodeSessionEx failed` — fails *after* CUDA init succeeds |
+| `docker exec jellyfin nvidia-smi` | fails (NVML Unknown Error) | **succeeds**, and shows the VRAM already consumed |
+| Depends on GPU load? | no — fails with the GPU completely idle | yes — only while a model is resident |
+| Fix | recreate the container | `docker exec ollama ollama stop <model>`, or wait out `OLLAMA_KEEP_ALIVE` |
+
+The 2026-08-01 incident was the **left** column: the GPU was reading
+`0 MiB / 6144 MiB` with no processes and no model loaded (`ollama ps` empty) at
+the moment `nvidia-smi` was failing inside the container. Sharing the GPU did
+not cause it.
+
+Contention is nonetheless a **real** future risk, already anticipated in the
+`ai` stack's compose comments: `qwen3:8b` is ~5 G of weights and even the MoE
+`qwen3:30b-a3b` pins ~4.3 G of VRAM for its offloaded layers, against a 6 G
+card that also needs a few hundred MB per NVENC session plus decode surfaces.
+`OLLAMA_KEEP_ALIVE=10m` and `OLLAMA_MAX_LOADED_MODELS=1` exist to bound it. If
+transcodes start failing *only* right after someone has been chatting, it is
+the right-hand column.
+
+### Making GPU access survive daemon-reload
+
+Background, because the mechanism is the whole point:
+
+A container's access to `/dev/nvidia*` is enforced by a **cgroup v2 device
+allowlist**. Who *owns* that allowlist depends on Docker's cgroup driver:
+
+- **`systemd` driver** (ciri's current setting): each container gets a systemd
+  *scope* unit, and systemd owns the device rules. It considers its own unit
+  files the source of truth, so on `systemctl daemon-reload` it **rewrites the
+  scope's rules from what it knows**.
+- **`cgroupfs` driver**: Docker writes the cgroup files directly and systemd
+  never reconciles them.
+
+The legacy nvidia path (`deploy.resources.reservations.devices` /
+`NVIDIA_VISIBLE_DEVICES`) works via a **prestart hook** that pokes the device
+rules in *after* the container is created — out-of-band, so systemd has no
+record of them. Come the next `daemon-reload`, systemd rewrites the allowlist
+without them and the GPU silently vanishes from the running container. The
+device *nodes* stay bind-mounted and visible, which is why the failure looks so
+confusing: `ls /dev` shows the GPU, `cuInit()` says there is no GPU.
+
+There are two ways out. **Option A is what this lab does** (applied 2026-08-02).
+
+Note the honest framing: because the 2026-08-01 trigger was never confirmed,
+CDI is **hardening, not a proven fix for a proven cause**. It is worth doing on
+its own merits — it removes the entire out-of-band-hook failure class, and the
+legacy hook path is the one NVIDIA is moving away from — but if the symptom
+recurs under CDI, that is informative rather than impossible, and the incident
+notes above should be revisited.
+
+#### Option A — migrate to CDI (adopted 2026-08-02)
+
+The Container Device Interface injects the devices into the **OCI spec before
+the container is created**, so the rules are part of the container's persisted
+config. Docker and systemd both know about them, and a `daemon-reload`
+reconciles *to* them instead of over them. Immune by construction.
+
+Everything needed is already in place on ciri — no daemon.json change, no
+package install:
+
+```bash
+docker info | grep -A3 "CDI spec directories"   # → Discovered Devices: nvidia.com/gpu=all
+systemctl is-enabled nvidia-cdi-refresh.path    # → enabled
+```
+
+`nvidia-cdi-refresh.path`/`.service` (shipped with the driver packages)
+regenerate `/var/run/cdi/nvidia.yaml` automatically whenever the driver
+changes, so the spec needs no manual upkeep. It lives on tmpfs and is rebuilt
+at every boot by design.
+
+The change is compose-side — replace the whole `deploy:` block:
+
+```yaml
+    # REMOVE:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # ADD:
+    devices:
+      - "nvidia.com/gpu=all"
+```
+
+**`NVIDIA_DRIVER_CAPABILITIES` and `NVIDIA_VISIBLE_DEVICES` were removed at the
+same time.** They are load-bearing under the legacy path — the toolkit default
+omits `video`, which silently disables NVENC/NVDEC — but **CDI ignores them
+entirely**. Checked before removing, rather than assumed: the generated spec
+carries the encode/decode libraries unconditionally.
+
+```bash
+grep -oE "lib(nvidia-encode|nvcuvid)[^ \"]*" /var/run/cdi/nvidia.yaml | sort -u
+# → libnvidia-encode.so.1, libnvidia-encode.so.580.173.02,
+#   libnvcuvid.so.1, libnvcuvid.so.580.173.02
+```
+
+If this is ever reverted to the legacy block, **both variables must come back**
+or hardware transcoding breaks in a way that still lets `nvidia-smi` succeed.
+
+Apply to both GPU stacks — they share the card and had identical wiring:
+
+```bash
+cd /data/stacks/jellyfin && docker compose up -d --force-recreate jellyfin
+cd /data/stacks/ai       && docker compose up -d --force-recreate ollama
+
+# devices are now in the OCI spec, not poked in by a hook
+docker inspect jellyfin --format '{{json .HostConfig.DeviceRequests}}'   # → null
+docker exec jellyfin nvidia-smi
+docker exec ollama   nvidia-smi
+
+# regression test
+sudo systemctl daemon-reload
+docker exec jellyfin nvidia-smi                 # must still work
+```
+
+Then prove NVENC specifically — `nvidia-smi` succeeding does **not** prove the
+encoder is reachable, which is exactly the trap the removed
+`NVIDIA_DRIVER_CAPABILITIES` used to guard:
+
+```bash
+docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -hide_banner -encoders \
+  | grep nvenc
+```
+
+Finally force a real transcode from a client and confirm Dashboard → Playback
+reads "Transcoding (hardware)".
+
+**As-built result (2026-08-02)** — South Park S01E08 (AV1 10-bit / Opus / PGS,
+the worst case in the library) played from the Samsung TV:
+
+```
+-i "/media/tv/South Park/South.Park.S01E08...AV1.Opus.AV1D.mkv"
+libdav1d          ← AV1 decode in SOFTWARE (Pascal has no AV1 NVDEC)
+h264_nvenc        ← encode on the GPU
+frame=18718 fps=243 ... speed=10.1x     (clean exit — final Lsize line, no cuInit error)
+```
+
+**10.1x realtime.** The split pipeline — software AV1 decode, hardware H.264
+encode — is comfortable on ciri's 6 vCPUs, so the earlier worry that AV1 would
+be a CPU problem is settled: it is not, at least at 1080p animation bitrates.
+
+#### Option B — switch Docker to the cgroupfs driver
+
+The widely-cited workaround. It doesn't fix the out-of-band hook; it removes
+systemd from the loop so nothing reconciles the rules away. Prefer Option A —
+keep this as the fallback if CDI ever misbehaves.
+
+```bash
+# 1. Back up first — this file also carries data-root and log settings.
+sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
+
+# 2. Add the exec-opts key (merge into the existing JSON, don't overwrite it):
+sudo nano /etc/docker/daemon.json
+```
+
+```json
+{
+    "data-root": "/data/docker",
+    "log-driver": "local",
+    "log-opts": { "max-file": "5", "max-size": "100m" },
+    "exec-opts": ["native.cgroupdriver=cgroupfs"],
+    "runtimes": {
+        "nvidia": { "args": [], "path": "nvidia-container-runtime" }
+    }
+}
+```
+
+```bash
+# 3. Validate the JSON before restarting — a syntax error here means dockerd
+#    will not come back up, taking all ~26 containers with it.
+python3 -m json.tool /etc/docker/daemon.json
+
+# 4. Restart the daemon. THIS RESTARTS EVERY CONTAINER ON ciri — schedule it.
+sudo systemctl restart docker
+
+# 5. Verify
+docker info | grep -i "cgroup driver"           # → cgroupfs
+docker exec jellyfin nvidia-smi
+sudo systemctl daemon-reload && docker exec jellyfin nvidia-smi   # still works
+```
+
+Trade-off: two writers (systemd and Docker) now touch the cgroup tree. That is
+a genuine downside and is why systemd is the upstream default — but on a
+single-node Docker host with no Kubernetes it is a well-trodden configuration.
+Roll back by restoring `daemon.json.bak` and restarting Docker.
+
 ### Confirming a transcode is really on the GPU
 
 Force a low quality in the client, then on ciri `nvidia-smi` shows an `ffmpeg`
@@ -360,6 +647,25 @@ This is the **only storage in the lab with no recovery path**, by decision
   shows on ciri's view with power/utilization/memory
   ([monitoring.md](../../../docs/monitoring.md)). **Last build item — closed.**
 
+Reopened 2026-08-01 by the GPU-loss incident (see Troubleshooting):
+
+- ~~**Migrate `jellyfin` and `ollama` to CDI device syntax**~~ **done and
+  verified 2026-08-02** ([Option A](#option-a--migrate-to-cdi-adopted-2026-08-02)).
+  Both containers now report
+  `DeviceRequests: [{"Driver":"cdi","DeviceIDs":["nvidia.com/gpu=all"]}]`,
+  `nvidia-smi` works in both, `h264_nvenc`/`hevc_nvenc`/`av1_nvenc` are present,
+  and a real South Park S1 transcode ran to completion — see below.
+- [ ] **Root cause of the 2026-08-01 GPU loss remains UNKNOWN** — the
+  daemon-reload theory was falsified 2026-08-02 (see Troubleshooting). If it
+  recurs, capture `docker inspect` and the cgroup device rules *before*
+  recreating the container.
+- [ ] **Kuma check for GPU-in-container** — `docker exec jellyfin nvidia-smi`.
+  Beszel watches the GPU from the host and reported it healthy for the 21 hours
+  the transcoder was dead; nothing watched the container's access to it.
+- [ ] **Settle the AU7000 AV1 question** — the Direct Play matrix row was never
+  actually tested ([jellyfin-clients.md](../../../docs/jellyfin-clients.md#the-av1-row-was-never-actually-proven-corrected-2026-08-01)).
+  Test once the GPU is restored.
+
 Optional / housekeeping only (no open build work):
 
 - ~~`steel/media` (ZFS) redundant — leave or destroy~~ destroyed 2026-07-23
@@ -376,8 +682,12 @@ Optional / housekeeping only (no open build work):
   auto-discovery (UDP 7359) — neither is used here, since every client is
   pointed at an explicit URL. Bridge keeps the lab's one-network-per-stack
   convention.
-- **`NVIDIA_DRIVER_CAPABILITIES: compute,video,utility`** — the toolkit
-  default omits `video`, which silently disables NVENC/NVDEC.
+- **GPU via CDI** (`devices: ["nvidia.com/gpu=all"]`), not the usual
+  `deploy.resources.reservations.devices` block — see
+  [Option A](#option-a--migrate-to-cdi-adopted-2026-08-02). This also drops
+  `NVIDIA_DRIVER_CAPABILITIES: compute,video,utility`, which *was* required
+  under the legacy path (the toolkit default omits `video`, silently disabling
+  NVENC/NVDEC) but is inert under CDI.
 - **Media bind is read-only** — Jellyfin runs as root, so read-only is what keeps
   it from being able to write/delete on the shared media disk. (It was briefly rw
   2026-07-23 for OpenSubtitles sidecars; Bazarr now writes subs — see Subtitles.)

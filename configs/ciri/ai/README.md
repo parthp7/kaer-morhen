@@ -137,6 +137,15 @@ Beszel already graphs the GPU via ciri's agent; sustained 30B runs load all
 - **VRAM contention**: a 4K tone-mapped NVENC transcode + resident model can
   collide; keep-alive mitigates. Pascal has no FLR — a wedged GPU means a full
   geralt reboot ([gpu-passthrough.md](../../../docs/gpu-passthrough.md)).
+  When Jellyfin transcodes fail, **contention is not the default explanation** —
+  distinguish it from a container losing GPU access altogether using the table
+  in the [jellyfin README](../jellyfin/README.md#is-it-the-daemon-reload-or-vram-contention-with-ollama).
+  Short version: contention fails *after* CUDA initialises and only while a
+  model is resident; `docker exec ollama ollama ps` shows what is loaded.
+- **GPU wired in via CDI** (`devices: ["nvidia.com/gpu=all"]`) since
+  2026-08-02, replacing `deploy.resources.reservations.devices` — changed in
+  lockstep with the jellyfin stack because they share the card. Rationale:
+  [jellyfin README](../jellyfin/README.md#making-gpu-access-survive-daemon-reload).
 - Pascal (compute 6.1) still supported by Ollama (driver ≥570), but CUDA 13
   drops Pascal — deprecation eventually; llama.cpp is the fallback.
 - open-webui pinned v0.11.0 (2 days old at pinning) — drop to v0.10.x if flaky.

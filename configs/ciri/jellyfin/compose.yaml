@@ -3,9 +3,19 @@
 # HDD on geralt via virtiofs, config/cache on local NVMe, TZ=Asia/Kolkata,
 # dedicated bridge network (not host networking — see README).
 #
-# NVIDIA_DRIVER_CAPABILITIES is load-bearing: the toolkit's default
-# (utility,compute) does NOT include `video`, and without it NVENC/NVDEC are
-# invisible inside the container even though nvidia-smi works.
+# GPU is wired in via CDI (`devices: nvidia.com/gpu=all`), NOT the legacy
+# `deploy.resources.reservations.devices` block (migrated 2026-08-02). CDI puts
+# the device nodes and driver libraries into the OCI spec *before* the container
+# is created, so they are part of its persisted config rather than being poked
+# in afterwards by a prestart hook. Background + the incident that prompted it:
+# see README "Making GPU access survive daemon-reload".
+#
+# NVIDIA_DRIVER_CAPABILITIES / NVIDIA_VISIBLE_DEVICES are deliberately GONE.
+# They were load-bearing under the legacy path (the toolkit default omits
+# `video`, which silently disables NVENC/NVDEC), but CDI ignores them entirely —
+# the generated spec at /var/run/cdi/nvidia.yaml carries libnvidia-encode and
+# libnvcuvid unconditionally (verified 2026-08-02). If this is ever reverted to
+# the legacy block, BOTH variables must come back or hardware transcoding breaks.
 
 services:
   jellyfin:
@@ -38,20 +48,13 @@ services:
       - /etc/localtime:/etc/localtime:ro
     environment:
       TZ: Asia/Kolkata
-      # Needed for NVENC — see header note.
-      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
-      NVIDIA_VISIBLE_DEVICES: all
       # JELLYFIN_PublishedServerUrl intentionally UNSET (2026-07-22): forcing a
       # hostname broke the Samsung TV's native player, which can't resolve the
       # internal DNS name. With it unset, clients stream from the address they
       # connected on — connect the TV by IP. See README troubleshooting.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # CDI device injection — see header note.
+    devices:
+      - "nvidia.com/gpu=all"
     networks:
       - jellyfin_net
 
