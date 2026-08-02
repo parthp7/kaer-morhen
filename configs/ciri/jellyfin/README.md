@@ -560,9 +560,15 @@ h264_nvenc        ← encode on the GPU
 frame=18718 fps=243 ... speed=10.1x     (clean exit — final Lsize line, no cuInit error)
 ```
 
-**10.1x realtime.** The split pipeline — software AV1 decode, hardware H.264
+**10.1x realtime** with PGS burn-in; **14.4x** (`fps=349`) on the same episode
+with subtitles off. The split pipeline — software AV1 decode, hardware H.264
 encode — is comfortable on ciri's 6 vCPUs, so the earlier worry that AV1 would
 be a CPU problem is settled: it is not, at least at 1080p animation bitrates.
+
+Note this is the *steady state* for South Park S1, not a one-off: the TV cannot
+Direct Play that AV1 stream even with subtitles off
+([tested 2026-08-02](../../../docs/jellyfin-clients.md#av1-the-row-said-yes-the-tv-says-no-tested-2026-08-02)),
+so those episodes always transcode.
 
 #### Option B — switch Docker to the cgroupfs driver
 
@@ -662,9 +668,13 @@ Reopened 2026-08-01 by the GPU-loss incident (see Troubleshooting):
 - [ ] **Kuma check for GPU-in-container** — `docker exec jellyfin nvidia-smi`.
   Beszel watches the GPU from the host and reported it healthy for the 21 hours
   the transcoder was dead; nothing watched the container's access to it.
-- [ ] **Settle the AU7000 AV1 question** — the Direct Play matrix row was never
-  actually tested ([jellyfin-clients.md](../../../docs/jellyfin-clients.md#the-av1-row-was-never-actually-proven-corrected-2026-08-01)).
-  Test once the GPU is restored.
+- ~~**Settle the AU7000 AV1 question**~~ **tested 2026-08-02: the TV does NOT
+  Direct Play AV1 Main 10-bit.** With subtitles off (no `overlay` filter in the
+  command) it still re-encoded video via `h264_nvenc`, so the matrix row that
+  claimed AV1 support was wrong — corrected in
+  [jellyfin-clients.md](../../../docs/jellyfin-clients.md#av1-the-row-said-yes-the-tv-says-no-tested-2026-08-02).
+  Practical impact: every South Park S1 episode is a permanent transcode, which
+  is fine — 14.4x realtime.
 
 Optional / housekeeping only (no open build work):
 

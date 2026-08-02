@@ -106,7 +106,7 @@ certificate password); the bare form installs the current default build.
 |---|---|---|
 | H.264 up to 4K (L5.1) | yes | Direct Play |
 | HEVC up to 4K (L5.1) | yes | Direct Play — covers most 4K rips |
-| AV1 up to 4K60 | **unverified** — see below | Assume transcode. The 1060 has no AV1 *decode*, so decode falls to software — measured at **10.1x realtime** for 1080p, so cheap in practice |
+| AV1 (10-bit tested) | **no** — tested 2026-08-02, see below | Full video transcode to H.264. The 1060 has no AV1 *decode* either, so decode falls to software — but measured **14.4x realtime** at 1080p, so cheap in practice |
 | HDR10 / HDR10+ / HLG | yes | Direct Play |
 | Dolby Vision | no | Plays HDR10 base layer; DV profile 5 files transcode/tone-map (NVENC + CUDA tone mapping) |
 | AAC / AC3 / DD+ audio | yes | Direct Play |
@@ -119,32 +119,47 @@ certificate password); the bare form installs the current default build.
 Expected transcode triggers in practice: DTS/TrueHD audio tracks (common in
 remuxes) and styled subtitles — both cheap with NVENC, so no buffering risk.
 
-### The AV1 row was never actually proven (corrected 2026-08-01)
+### AV1: the row said "yes", the TV says no (tested 2026-08-02)
 
-This row previously read "yes | Direct Play", carried over from Samsung's
-published 2021 spec sheet. It was never tested against real media, and the
-library's only AV1 title makes it untestable as written: the South Park S1
-release is **AV1 Main 10-bit + Opus + PGS**, and *both* the Opus audio and the
-PGS subtitles independently force a transcode. So a transcode on that file
-proves nothing about AV1 support.
+This row read "yes | Direct Play" from 2026-07-17 to 2026-08-02, carried over
+from Samsung's published 2021 spec sheet and never tested against real media.
+It was wrong.
 
-Two things are true regardless of how the row eventually resolves:
+Testing it needed care, because the library's only AV1 title is **AV1 Main
+10-bit + Opus + PGS** and the Opus audio and PGS subtitles each force a
+transcode on their own — so a transcode on that file proves nothing by itself.
+The isolating test is to **switch subtitles off** and then read the *ffmpeg
+command*, not the playback result: with burn-in removed, if the TV could decode
+AV1 the video stream would be copied and only the audio re-encoded.
 
-- **The AU7000 is entry-level Crystal UHD.** Samsung's AV1 decode rollout in
-  2021 was concentrated in the Neo QLED / 8K lines; a spec-sheet mention for the
-  model year is weak evidence for this panel.
-- **It doesn't much matter, because the 1060 can't help — but that turned out
-  to be cheap.** Pascal's NVDEC has no AV1 block. `jellyfin-ffmpeg` lists an
-  `av1_cuvid` decoder — that is the *ffmpeg build* advertising the codec, not
-  the *card* supporting it. Any AV1 transcode decodes in software (`libdav1d`)
-  on ciri's 6 vCPUs and only the encode side touches the GPU. **Measured
-  2026-08-02** on S01E08: `libdav1d` → `h264_nvenc` at `fps=243`, **10.1x
-  realtime**, clean exit. No buffering risk at 1080p.
+Result, S01E08 with subtitles off — no `overlay` filter in the command,
+confirming burn-in was genuinely gone:
 
-**To settle it**, play a S1 episode with subtitles switched off and the audio
-track it wants, then read Dashboard → Playback. "Direct Play" or a
-video-untouched audio-only transcode means the TV really does decode AV1;
-"Transcoding" with `h264_nvenc` in the ffmpeg command means it does not.
+```
+-codec:v:0 h264_nvenc     ← video STILL re-encoded → the TV cannot decode this stream
+-codec:a:0 libfdk_aac     ← Opus → AAC, expected
+frame=18718 fps=349 ... speed=14.4x
+```
+
+**The AU7000 does not Direct Play AV1 Main 10-bit.** Scope the claim honestly:
+this tests 10-bit Main. An 8-bit AV1 stream might behave differently, and no
+8-bit AV1 exists in the library to check. For planning purposes treat AV1 as
+"expect a full transcode".
+
+Consistent with the hardware, in hindsight: the AU7000 is entry-level Crystal
+UHD, and Samsung's 2021 AV1 rollout was concentrated in the Neo QLED / 8K
+lines. A spec-sheet mention for the model year was always weak evidence for
+this panel.
+
+Two useful side results:
+
+- **Software AV1 decode is not a problem.** Pascal's NVDEC has no AV1 block —
+  `jellyfin-ffmpeg` lists an `av1_cuvid` decoder, but that is the *ffmpeg build*
+  advertising the codec, not the *card* supporting it. Decode falls to
+  `libdav1d` on ciri's 6 vCPUs while only the encode side uses the GPU, and it
+  still ran at 14.4x realtime.
+- **PGS burn-in costs about a third of the throughput**: 243 fps / 10.1x with
+  subtitles on, 349 fps / 14.4x with them off, same episode.
 
 ### Known Tizen client rough edges
 
