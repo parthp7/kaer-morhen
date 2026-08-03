@@ -229,6 +229,11 @@ untouched.
   nondeterministic, not port-dependent. Treat the drop risk as a property of the
   bridge, mitigated by architecture rather than by port choice (see the incident
   below).
+  **Correction 2026-08-03**: the drop risk is not a property of the bridge alone.
+  The bare drive is **SMR**, and its write stalls are what expire the UAS command
+  timeout that makes the bridge drop. The bridge is the messenger; sustained
+  writes are the trigger. See the
+  [2026-08-03 incident](#incident-2026-08-03--usb-bus-drop-under-sustained-write-smr).
 - **PBS on yennefer** with datastore at `/mnt/backup/pbs`; both nodes back up
   guests to it, then sync offsite (Backblaze B2 via rclone).
 - ~~Explicit `steel/photos` backup job → yennefer~~ done 2026-07-16
@@ -323,3 +328,200 @@ reason this cost a trip to the physical laptop is that the failure was invisible
 the architecture above turns a drop into "media containers stay down" instead of
 "silent writes to the boot disk". It will drop again; that is now a known,
 bounded outcome rather than a corruption.
+
+> **Superseded 2026-08-03.** "Unmitigated" was accepted on the belief that the
+> fault was an unknowable property of the bridge. It is not — the root cause is
+> now identified as **SMR write stalls** in the bare drive, and the "bounded
+> outcome" assumption failed in practice: the next drop went **undetected for
+> 14 h 43 m**. See the incident below.
+
+## Incident 2026-08-03 — USB bus drop under sustained write (SMR)
+
+The second media outage, and the one that identified the actual root cause. Unlike
+2026-07-27 this was **not** a boot-order race: geralt never rebooted (up 3 d 4 h,
+boot of 07-31 14:39). The disk dropped off the bus **while running**.
+
+### What happened
+
+| When | Event |
+|---|---|
+| 08-03 **00:56:48** | `usb 2-3: USB disconnect` **mid-write** — `phys_seg 57 op WRITE`, then `EXT4-fs (sdb1): failed to convert unwritten extents … potential data loss`, `Aborting journal`, `EXT4-fs (sdb1): shut down requested (2)` |
+| 00:56:49 | systemd: `Unmounted mnt-media.mount` — **and nothing ever remounts it** |
+| 00:56:49 → 00:57:15 | bridge re-enumerates **5 times** in 27 s, settles as **`sdc`** (was `sdb`), left unmounted |
+| **09:11:15** | Jellyfin scheduled library scan fails — `IOException: Input/output error : '/media/movies'`. **First real signal, 6.5 h before anyone noticed** |
+| 14:53:23 | User playback attempt fails with the same `Input/output error` |
+| 15:39:59 | Manual `mount` on geralt — `EXT4-fs (sdc1): recovery complete` (journal replayed) |
+| 15:40:45 | First ciri restart **fails**, `QEMU exited with code 1` |
+| 15:44:04 / 16:19:58 | Second and third restarts succeed; service restored |
+
+`/mnt/media` was down for **14 h 43 m**.
+
+### Root cause: the drive is SMR
+
+The bare drive inside the Backup Plus Slim is **DM-SMR** (shingled) — see the
+[hardware inventory](hardware-inventory.md#node-geralt) for the identification and
+why it is certain despite the exact model not being read directly. The failure
+chain:
+
+**sustained write → small CMR persistent cache fills → continuous read-modify-write
+on shingled tracks → throughput collapses below ~10 MB/s → individual SCSI commands
+stall for seconds → UAS command timeout fires (`uas_zap_pending … inflight: CMD`)
+→ bridge drops off the bus (`cmd cmplt err -108`)**
+
+Two drops match the prediction cleanly: **2026-07-26 23:31** and **2026-08-03
+00:56**, each mid-write with large scatter-gather (`phys_seg 57`).
+
+Two further drops followed the same day — **22:27:44** and **22:35:38** — but
+these were **operator-induced, not spontaneous**: the disk was physically picked
+up and flipped to read its label for the hardware cataloguing above. Three pieces
+of evidence separate them from the real failures:
+
+1. **No bulk write was in flight.** At 00:56:48 the failing command was
+   `op WRITE … phys_seg 57` with `failed to convert unwritten extents … potential
+   data loss` — a large multi-segment data write. At 22:27:44 the only writes are
+   `sector 0 … phys_seg 0` (a flush/barrier) and the journal superblock — i.e.
+   ext4's own shutdown housekeeping *caused by* the disconnect, not a workload
+   preceding it.
+2. **Connector bounce, not a timeout.** Device numbers went **8 → 9 → 10 inside
+   one second**, with device 9 living under a second. A firmware/UAS timeout
+   produces one clean disconnect and one re-enumeration; rapid multi-bounce is the
+   signature of a physical make/break at the connector.
+3. **Timing** matches the label-reading exactly, and the 22:35 repeat is
+   consistent with continued handling while the filesystem was still recovering.
+
+**A tempting corroboration that does NOT hold:** a burst of PCIe AER correctable
+errors appears at 22:25, which looks like chassis disturbance. It is not evidence —
+those errors are **chronic**, ~2,900/hour every hour (376,556 since 08-01) on the
+`alx` NIC. Checked and discarded; noted here so it isn't re-run as a theory.
+
+So the corrected spontaneous-drop history is:
+
+| When | In-flight command | Cause |
+|---|---|---|
+| 2026-07-26 23:31 | write | spontaneous — 16 h stale mount |
+| 2026-08-03 00:56 | `WRITE`, `phys_seg 57` | spontaneous — 14 h 43 m outage |
+| ~~2026-08-03 22:27~~ | flush/journal only | **operator — disk handled** |
+| ~~2026-08-03 22:35~~ | `Read(10)` LBA 2050 | **operator — during recovery** |
+
+**2 spontaneous drops in 13 days, both mid-write.** A first pass over these logs
+read the four events as "3 incidents in 22 hours — the device is degrading."
+**That reading is wrong** and is recorded here so it is not reached again: it
+counted the two operator-induced drops as hardware failures. There is no evidence
+of an accelerating failure rate, and the `Read(10)` at 22:35 is *not* evidence that
+reads trigger drops. The SMR-write mechanism remains the only explanation needed
+for both genuine failures.
+
+**Lesson for future RCA here: this disk is hand-portable and unsecured.** Any drop
+must be checked against physical handling before it is counted as a hardware
+trend.
+
+**This reframes the disk's role.** An SMR drive is a poor target for \*arr imports
+(sustained writes) but perfectly adequate for streaming (sequential reads). Reads
+do not touch the CMR cache and do not trigger the stall.
+
+### Why the 2026-07-27 mitigations did not apply
+
+Neither failed — neither was in scope:
+
+| Mitigation | Why it did not fire |
+|---|---|
+| fstab `x-systemd.before=pve-guests.service` | boot ordering only; **no boot occurred** |
+| [`vm150-require-virtiofs.sh`](../scripts/proxmox/vm150-require-virtiofs.sh) | runs at VM `pre-start` only; the VM was **already running**. When it did run at 15:40:45 it correctly passed both shares |
+
+The hookscript header claims it covers "the disk dropping off the bus while
+running, then a VM restart". True — but only *if* a restart happens, and that
+restart is human-initiated. Nothing detects a drop while the VM runs.
+
+### Why the remount alone did not fix it
+
+Expected, and worth restating: `virtiofsd` resolves `--shared-dir` **once** and
+pins that inode. The manual `mount` created a *new* inode on `sdc1`; virtiofsd was
+still holding the dead `sdb1` one. No guest-side action can reattach it — only a
+cold VM restart. **Host remount + VM restart is the correct and only sequence.**
+
+### Why nothing alerted — again
+
+`media-mount-health.sh`, written after 07-27 specifically to end green-dashboard
+outages, pushed **166 consecutive `ok` heartbeats and 0 failures** across the whole
+14 h 43 m. All three checks passed against a **shut-down filesystem**:
+
+| Check | Result | Why it passed |
+|---|---|---|
+| `findmnt --mountpoint` is `virtiofs` | pass | the guest mount never went away |
+| `/mnt/media/library` exists | pass | virtiofsd's pinned fd + cached dentries |
+| size ≥ 800 GiB | pass | `statfs` on the pinned inode still returned **915 GiB** |
+
+Meanwhile every actual `read()` returned `EIO`, as Jellyfin and Radarr both logged.
+
+**The claim "check 3 is the load-bearing one" is falsified for this failure mode.**
+It holds for 07-27 (wrong filesystem → wrong size) but not here: right identity,
+right size, right fstype, dead filesystem. **Size cannot see this — only a read
+can.** The monitor gained a read check as a direct result (check 4/5).
+
+**Confirmed live, 2026-08-04.** While writing this section the same failure was
+found *in progress*, which is as clean a validation as the design could get:
+
+```
+$ findmnt /mnt/media          → virtiofs                    (check 1 passes)
+$ df -h /mnt/media            → 916G, 259G used             (check 3 passes)
+$ ls -ld /mnt/media/library   → drwxrwsr-x jaskier jaskier  (check 2 passes)
+$ ls -1  /mnt/media/library   → Input/output error (os error 5)   ← check 4 FAILS
+```
+
+The monitor had pushed **57 more consecutive `ok` heartbeats, 0 failures**. On
+geralt the host mount was *healthy* (`/dev/sdb1`, remounted 22:35:53) — the fault
+was purely virtiofsd still holding the **`sdc1`** inode from the 16:19 VM start,
+visible as `EXT4-fs warning (device sdc1) … comm vring_worker: error -5`, with
+`/dev/sdc` no longer existing at all. `vring_worker` is a virtiofsd thread: proof
+the pin, not the disk, was the live fault.
+
+The *trigger* was the operator handling the disk (above), but everything
+downstream was genuine — an unintended and rather valuable fault-injection test.
+It confirms the failure mode reproduces from **any** bus drop, whatever its cause,
+and that checks 1–3 cannot see it while check 4 catches it immediately.
+
+**Gotcha found in the same recovery: `qm reboot 150` does not work here.** It has
+failed on both attempts, in the same way each time — the reboot task returns `OK`,
+then the restart dies with `start failed: QEMU exited with code 1`, and a second
+manual `qm start` succeeds:
+
+| Attempt | Reboot fails | Manual start succeeds |
+|---|---|---|
+| 2026-08-03 | 15:40:45 | 15:44:04 |
+| 2026-08-04 | 00:06:18 | 00:08:25 |
+
+The hookscript passes both shares immediately before the failure, so it is not the
+guard — most likely a virtiofsd socket teardown/re-bind race on this VM. **Use
+`qm stop 150 && qm start 150`, not `qm reboot 150`**, or expect to run the start
+twice and to be briefly misled into thinking the mount is still broken.
+
+### No collateral this time
+
+`pve-root` stayed at 15 % (9.4 G), qBittorrent logged **zero** errors and no
+`missingFiles`, and Radarr failed loudly (`Unable to get free space … I/O error`)
+without writing anything. The asymmetry against 07-27 is instructive: then the
+guest was pointed at a **live empty placeholder** (writable → silent corruption);
+here it was pointed at a **dead filesystem** (hard `EIO` → everything refused). The
+`create_host_path:false` guards were never even exercised.
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| Read check (4/5) in [`media-mount-health.sh`](../scripts/monitoring/media-mount-health.sh) | the 14 h 43 m of green heartbeats — the only check that can see a dead-but-mounted filesystem |
+| `usb-storage.quirks=0bc2:ab24:u` via **`modprobe.d`, not GRUB** | the UAS command timeout. Also clears the vendor-wide `US_FL_NO_ATA_1X`, which may restore SMART. Delivered outside the kernel cmdline because that is the path blamed for the 07-28 boot hangs |
+| `queue_depth=1` (runtime probe) | reduces UAS command concurrency with zero boot risk and instant revert — a test, not a fix |
+| Keep sustained writes off the disk (downloads/imports land on `steel`) | the **root cause**. Targets SMR cache exhaustion directly |
+| Auto-remount on re-enumeration | the host mount sitting dead from 00:57 to 15:39 |
+
+**Still open:** virtiofs pins the inode, so even an auto-remount cannot heal the
+guest without a VM restart. Replacing the media share with **NFS** would remove
+that constraint entirely (an NFS client recovers on its own; export with the
+`mountpoint` option so it refuses to serve the empty placeholder). Filed as future
+work, not yet done.
+
+**Accepted position (revised 2026-08-03):** the drive is SMR and will stall under
+sustained write; the bridge will drop when it does. The lab's job is to (a) stop
+writing to it heavily, (b) detect the drop in minutes rather than hours, and
+(c) make recovery not require a human. A replacement should be **CMR** — swapping
+only the enclosure would leave the root cause in place.

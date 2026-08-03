@@ -108,6 +108,116 @@ each node over SSH).
 | nvme1n1 | NVMe SSD | 256 GB (238.5 GiB) | WDC PC SN520 SDAPNUW-256G | Proxmox boot drive (`pve` VG: root/swap/data-thin) |
 | nvme0n1 | NVMe SSD | 500 GB (465.8 GiB) | KINGSTON SNVSE500G | ZFS pool `silver` — guest (VM/LXC) disks |
 | sda | HDD, SATA | 1 TB (931.5 GiB) | Seagate ST1000LM049-2GH172 | ZFS pool `steel` — media/photos/dumps (see [storage.md](storage.md)) |
+| sdb/sdc¹ | HDD, USB 3.0 | 1 TB (931.5 GiB) | Seagate Backup Plus Slim (SRD00F1) | ext4 `media` at `/mnt/media` — Jellyfin library, virtiofs-shared to ciri. **See the dedicated section below — this disk is the lab's main source of unplanned outages.** |
+
+¹ The device node is **not stable**: the USB bridge re-enumerates on every drop, so
+the disk has appeared as both `sdb` and `sdc`. Always address it by
+`/dev/disk/by-id/usb-Seagate_BUP_Slim_BK_<MEDIA_USB_SERIAL>-0:0` or `LABEL=media`,
+never by `/dev/sdX`.
+
+**External media disk (USB) — full catalogue**
+
+Identified 2026-08-03 while root-causing the second media outage. The two
+label numbers (`SRD00F1`, `1K9AP1-502`) identify the **external assembly only** —
+neither names the bare drive inside, which matters because the bare drive's
+recording technology is the root cause of the outages.
+
+| Field | Value | Source |
+|---|---|---|
+| Product | Seagate Backup Plus Slim 1 TB, Black | retail label |
+| Seagate model | `SRD00F1` | retail label (family-wide designator, 500 GB–5 TB) |
+| Part number | `1K9AP1-502` | retail label (1 TB Black Slim SKU) |
+| Purchased | March 2018 (Amazon) | order history |
+| Chassis | 7 mm "Slim" | device string `BUP Slim BK` |
+| USB VID:PID | `0bc2:ab24` | `lsusb` |
+| Bridge firmware | rev `0304` | `smartctl -i -d scsi` |
+| Serial | `<MEDIA_USB_SERIAL>` | `udevadm info` |
+| Capacity | 1,000,204,885,504 B (931.5 GiB) | `smartctl -i -d scsi` |
+| Sectors | 512 logical / 4096 physical | kernel log |
+| Link | SuperSpeed 5 Gbps, xHCI bus 2 port 3 | `lsusb -t` |
+| Driver | `uas`, `queue_depth 30`, `max_sectors_kb 512` | sysfs |
+| Filesystem | ext4, `LABEL=media`, `errors=remount-ro` | `dumpe2fs -h` |
+| Lifetime writes | 282 GB (as of 2026-08-03) | `dumpe2fs -h` |
+
+**Internal bare drive — CONFIRMED 2026-08-04** by clearing the ATA pass-through
+block (see the UAS quirk below) and reading the drive directly. The earlier
+inference — `ST1000LM035` or `ST1000LM048`, DM-SMR either way — was correct:
+
+| Field | Value |
+|---|---|
+| Device model | **`ST1000LM035-1RK172`** |
+| Model family | Seagate Mobile HDD ("Rosewood") |
+| Recording | **DM-SMR (shingled)** — Rosewood is exclusively SMR |
+| Drive serial | `<MEDIA_HDD_SERIAL>` (distinct from the enclosure serial) |
+| Firmware | `SBM3` |
+| WWN | `5 000c50 0b0497b19` |
+| Rotation / form factor | 5400 RPM, 2.5", 7 mm |
+| SATA | 3.1, 6.0 Gb/s capable (bridge negotiates 3.0 Gb/s) |
+
+**SMART health, first ever reading (2026-08-04) — the media is clean:**
+
+| Attribute | Raw | Reading |
+|---|---|---|
+| Overall self-assessment | — | **PASSED** |
+| `Reallocated_Sector_Ct` | **0** | no bad sectors |
+| `Current_Pending_Sector` | **0** | none awaiting reallocation |
+| `Offline_Uncorrectable` | **0** | — |
+| `Reported_Uncorrect` | **0** | — |
+| `UDMA_CRC_Error_Count` | **0** | SATA link integrity perfect |
+| SMART error log | — | **No Errors Logged** |
+| `Power_On_Hours` | 1687 | ~70 days powered in 8.4 years — barely used |
+| `Power_Cycle_Count` | 311 | — |
+| `Load_Cycle_Count` | 15064 | fine against a ~600k rating |
+| `Temperature_Celsius` | 39 | min/max 26/45 — fine |
+| `Head_Flying_Hours` | 317 | mostly idle/parked |
+| **`Command_Timeout`** | **65557** | **value 100, worst 98 — the one degraded counter** |
+
+**Read this table the right way.** Every *media* health counter is pristine zero,
+while `Command_Timeout` is nonzero and is the only attribute whose `WORST` has
+dropped below 100. That is the diagnosis in one line: **nothing is wrong with the
+platters; commands are failing to complete in time.** It corroborates the SMR-stall
+→ UAS-timeout → bus-drop chain in [storage.md](storage.md) from the drive's own
+telemetry.
+
+**Do not be alarmed by `Raw_Read_Error_Rate` (233696008) or `Seek_Error_Rate`
+(12426425).** On Seagate drives these raw fields are packed counters
+(errors / total operations), not error tallies. Both normalised values sit well
+above their thresholds (084 vs 006, 071 vs 045). They are normal and are recorded
+here so they are not "discovered" and re-investigated later.
+
+**Consequence: the drive does not need replacing on health grounds.** It is young
+(1687 h), unworn, and defect-free. The problem is architectural — SMR write stalls
+meeting a strict UAS command timeout — which is why disabling UAS (below) is the
+targeted fix rather than new hardware.
+
+**Known limitations (do not re-diagnose these):**
+
+- **RESOLVED 2026-08-04 — SMART now works.** `usb-storage.quirks=0bc2:ab24:u`
+  makes `uas` decline the device (it binds `usb-storage`/BOT instead) **and**
+  clears the vendor-wide `US_FL_NO_ATA_1X`, so `smartctl -d sat` works and
+  `smartd` can finally monitor this disk. Verified: `lsusb -t` shows
+  `Driver=usb-storage`, `/sys/module/usb_storage/parameters/quirks` =
+  `0bc2:ab24:u`. The historical limitation is kept below for context.
+- **SMART was blocked by the kernel, not by the enclosure.** Linux commit
+  [`7fee72d`](https://github.com/torvalds/linux/commit/7fee72d5e8f1e7b8d8212e28291b1a0243ecf2f1)
+  applies `US_FL_NO_ATA_1X` to **every** Seagate device by vendor ID
+  (`idVendor == 0x0bc2`), because most Seagate bridges hang on ATA12. So
+  `smartctl -d sat` fails with `unsupported field in scsi command`, and only
+  generic `-d scsi` works (`SMART Health Status: OK`, but
+  `Error Counter logging not supported` and no self-test support). This is
+  overridable — see the runbook in [storage.md](storage.md).
+- **Consequence**: `smartd` (`DEVICESCAN`, both nodes) silently monitors nothing
+  on this disk. There are **no reallocated/pending-sector counters** for it, so
+  its media health is genuinely unobserved.
+- **No per-device UAS quirk**: `0bc2:ab24` is absent from the kernel's
+  `unusual_uas.h` (only `0bc2:331a` "Expansion Desk" is listed), so `uas` always
+  binds and nothing is auto-mitigated.
+- **SMR write behaviour is the root cause** of the 2026-07-26 and 2026-08-03
+  outages: the small CMR persistent cache exhausts under sustained write, forcing
+  read-modify-write on shingled tracks; commands stall for seconds; the UAS
+  command timeout fires (`uas_zap_pending … inflight: CMD`) and the bridge drops
+  off the bus (`cmd cmplt err -108`). Full analysis in
+  [storage.md](storage.md#incident-2026-08-03--usb-bus-drop-under-sustained-write-smr).
 
 **Network**
 - Ethernet: Qualcomm Atheros Killer E2400 Gigabit Ethernet Controller (rev 10) — bridged
