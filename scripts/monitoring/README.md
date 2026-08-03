@@ -24,9 +24,39 @@ Added 2026-07-29 after the [2026-07-27 wrong-filesystem incident](../../docs/sto
 which every liveness monitor in the lab missed for ~16 hours.
 
 Checks, first failure wins: `/mnt/media` is a real **virtiofs** mount point →
-`library/` exists → the filesystem is **≥ 800 GiB**. The size check is the
-load-bearing one — the placeholder on geralt's pve-root reports 68 G, and once
-Docker auto-created `downloads/` on it, existence alone no longer discriminated.
+`library/` exists → the filesystem is **≥ 800 GiB** → `library/` can be
+**enumerated** → `library/.mount-health` can be **read**.
+
+**Checks 1–3 answer 2026-07-27** (wrong filesystem: wrong identity, wrong size).
+The size check is load-bearing *there* — the placeholder on geralt's pve-root
+reports 68 G, and once Docker auto-created `downloads/` on it, existence alone no
+longer discriminated.
+
+**Checks 4–5 answer [2026-08-03](../../docs/storage.md#incident-2026-08-03--usb-bus-drop-under-sustained-write-smr)**
+(dead filesystem: *right* identity, *right* size). When the USB disk drops off the
+bus, virtiofsd keeps serving its pinned inode on a shut-down ext4: `findmnt` still
+says `virtiofs`, `df` still reports 915 GiB, and `stat` still succeeds — while
+every real read returns `EIO`. The monitor pushed **166 consecutive `ok`
+heartbeats over 14 h 43 m** in that state, then **57 more** during a recurrence on
+08-03/04. Only an actual read distinguishes a live filesystem from a dead one:
+
+- **Check 4** enumerates `library/` (`readdir` must reach virtiofsd for anything
+  not in the guest dentry cache — this is exactly what failed for Jellyfin,
+  `Input/output error: '/media/movies'`).
+- **Check 5** reads bytes from `library/.mount-health` with **`O_DIRECT`**, so the
+  guest page cache cannot serve a stale copy. If the kernel rejects the flag
+  (`EINVAL` — virtiofs without O_DIRECT support) it falls back to a buffered read
+  rather than raising a false alarm; that fallback is weaker, which is why check 4
+  is kept as an independent signal.
+
+**Do not "optimise" checks 4–5 back into `stat()` calls** — that reintroduces the
+exact blind spot they exist to close.
+
+The sentinel file must exist on the real disk (create once, at deploy):
+
+```bash
+dd if=/dev/urandom of=/mnt/media/library/.mount-health bs=4096 count=1
+```
 
 - **Deployed to**: `/usr/local/bin/media-mount-health.sh` on **ciri** (0755).
 - **Reads** the push URL from `/etc/kuma-push.media-mount` (mode 600). The URL

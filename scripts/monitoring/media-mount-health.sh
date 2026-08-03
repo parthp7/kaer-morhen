@@ -21,9 +21,28 @@
 #   3. the filesystem is at least $MIN_GIB                — catches 2026-07-27 exactly:
 #                                                           pve-root reports 68 G,
 #                                                           the media disk 916 G
+#   4. $MEDIA_DIR/library can be ENUMERATED (readdir)     — catches 2026-08-03
+#   5. $HEALTH_FILE can be READ (bytes, not metadata)     — catches 2026-08-03
 #
-#   Check 3 is the load-bearing one. Existence alone would NOT have caught the
-#   incident once Docker auto-created `downloads/` on the placeholder.
+#   Checks 1-3 answer 2026-07-27 (wrong filesystem: wrong identity, wrong size).
+#   Checks 4-5 answer 2026-08-03 (dead filesystem: RIGHT identity, RIGHT size).
+#
+#   2026-08-03: the USB disk dropped off the bus mid-write at 00:56:48; the host
+#   unmounted it, but virtiofsd kept serving its pinned inode on a shut-down ext4.
+#   This script pushed 166 CONSECUTIVE `ok` HEARTBEATS over 14 h 43 m while every
+#   real read returned EIO — Jellyfin logged `Input/output error: '/media/movies'`
+#   at 09:11 and Radarr lost its root folder, all while Kuma stayed green.
+#
+#   Why 1-3 all passed against a dead filesystem:
+#     findmnt  → still `virtiofs`  (the guest mount never went away)
+#     -d test  → still succeeded   (virtiofsd's pinned fd + cached dentries)
+#     df       → still 915 GiB     (statfs on the pinned inode returns the real
+#                                   geometry of the detached filesystem)
+#
+#   So the old claim "check 3 is the load-bearing one" is FALSE for this failure
+#   mode. Size cannot distinguish a live filesystem from a dead one — only an
+#   actual read can. That is the entire point of checks 4 and 5; do not "optimise"
+#   them back into stat() calls.
 #
 # Behaviour
 #   All good      → push status=up   → Kuma heartbeat green
@@ -53,6 +72,10 @@ readonly SENTINEL="library"
 # with room for a future larger drive. Not a capacity check — a wrong-disk check.
 readonly MIN_GIB="${MIN_GIB:-800}"
 readonly KUMA_URL_FILE="${KUMA_URL_FILE:-/etc/kuma-push.media-mount}"
+# A small real file that exists ONLY on the media disk. Read for its bytes, not
+# its metadata — see checks 4/5. Created once at deploy time:
+#   dd if=/dev/urandom of=/mnt/media/library/.mount-health bs=4096 count=1
+readonly HEALTH_FILE="${HEALTH_FILE:-$MEDIA_DIR/$SENTINEL/.mount-health}"
 
 # Push a heartbeat to Kuma. A push failure is reported but must NOT change the
 # verdict: "Kuma is unreachable" is a different fault from "the media disk is wrong".
@@ -77,7 +100,7 @@ push() {
 }
 
 check() {
-  local fstype size_kb size_gib
+  local fstype size_kb size_gib dd_err read_mode="O_DIRECT"
 
   # 1. --mountpoint matches EXACTLY. --target would fall back to the parent mount
   #    and cheerfully report the root filesystem as if it were the media disk —
@@ -111,7 +134,40 @@ check() {
     return 1
   fi
 
-  echo "ok: $MEDIA_DIR ${size_gib}GiB $fstype, $SENTINEL present"
+  # 4. Enumerate the directory. readdir must reach virtiofsd for any entry not
+  #    already in the guest dentry cache, so it sees a dead backing store that
+  #    stat() does not. On 2026-08-03 this is precisely what failed for Jellyfin
+  #    (`Input/output error: '/media/movies'`) while checks 1-3 all still passed.
+  if ! ls -1 "$MEDIA_DIR/$SENTINEL" >/dev/null 2>&1; then
+    echo "cannot enumerate $MEDIA_DIR/$SENTINEL — mounted but not readable (host mount likely dropped)"
+    return 1
+  fi
+
+  # 5. Read actual bytes. O_DIRECT bypasses the guest page cache and forces the
+  #    read through virtiofsd to the host filesystem — a cached page would
+  #    otherwise mask a dead backing store. If the kernel rejects the flag itself
+  #    (EINVAL, i.e. this virtiofs does not support O_DIRECT) fall back to a
+  #    buffered read rather than raise a false alarm; the fallback is weaker
+  #    because the page cache can serve it, hence check 4 is kept independent.
+  if [[ ! -e "$HEALTH_FILE" ]]; then
+    echo "$HEALTH_FILE missing — create it on the real disk: dd if=/dev/urandom of=$HEALTH_FILE bs=4096 count=1"
+    return 1
+  fi
+
+  if ! dd_err=$(dd if="$HEALTH_FILE" of=/dev/null bs=4096 count=1 iflag=direct 2>&1); then
+    if [[ "$dd_err" == *"Invalid argument"* ]]; then
+      read_mode="buffered"
+      if ! dd_err=$(dd if="$HEALTH_FILE" of=/dev/null bs=4096 count=1 2>&1); then
+        echo "cannot read $HEALTH_FILE (buffered): ${dd_err%%$'\n'*}"
+        return 1
+      fi
+    else
+      echo "cannot read $HEALTH_FILE (O_DIRECT): ${dd_err%%$'\n'*}"
+      return 1
+    fi
+  fi
+
+  echo "ok: $MEDIA_DIR ${size_gib}GiB $fstype, $SENTINEL readable, bytes read ($read_mode)"
   return 0
 }
 
