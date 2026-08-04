@@ -13,9 +13,13 @@
 # NVIDIA_DRIVER_CAPABILITIES / NVIDIA_VISIBLE_DEVICES are deliberately GONE.
 # They were load-bearing under the legacy path (the toolkit default omits
 # `video`, which silently disables NVENC/NVDEC), but CDI ignores them entirely —
-# the generated spec at /var/run/cdi/nvidia.yaml carries libnvidia-encode and
+# the generated spec at /etc/cdi/nvidia.yaml carries libnvidia-encode and
 # libnvcuvid unconditionally (verified 2026-08-02). If this is ever reverted to
 # the legacy block, BOTH variables must come back or hardware transcoding breaks.
+#
+# The spec path is NOT the shipped default: it was moved off tmpfs /var/run/cdi
+# on 2026-08-04 because dockerd raced the boot-time regeneration and both GPU
+# containers died with "unresolvable CDI devices". See docs/gpu-passthrough.md.
 
 services:
   jellyfin:

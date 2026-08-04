@@ -486,9 +486,19 @@ systemctl is-enabled nvidia-cdi-refresh.path    # → enabled
 ```
 
 `nvidia-cdi-refresh.path`/`.service` (shipped with the driver packages)
-regenerate `/var/run/cdi/nvidia.yaml` automatically whenever the driver
-changes, so the spec needs no manual upkeep. It lives on tmpfs and is rebuilt
-at every boot by design.
+regenerate the spec automatically whenever the driver changes, so it needs no
+manual upkeep.
+
+> **Superseded 2026-08-04 — the spec no longer lives in `/var/run/cdi`.**
+> As shipped it is written to `/var/run/cdi/nvidia.yaml`, which is **tmpfs and
+> wiped every boot**, and `nvidia-cdi-refresh.service` has no
+> `Before=docker.service` — so dockerd and the refresh race on every single
+> boot. When dockerd won, both GPU containers died with
+> `unresolvable CDI devices` while every other container came up fine. The spec
+> was moved to the persistent `/etc/cdi/nvidia.yaml` and Docker ordered after
+> the refresh. Full RCA and the fix:
+> [gpu-passthrough.md](../../../docs/gpu-passthrough.md). Read that before
+> re-deriving any of this — **`/etc/cdi/nvidia.yaml` is the live path**.
 
 The change is compose-side — replace the whole `deploy:` block:
 
@@ -514,7 +524,7 @@ entirely**. Checked before removing, rather than assumed: the generated spec
 carries the encode/decode libraries unconditionally.
 
 ```bash
-grep -oE "lib(nvidia-encode|nvcuvid)[^ \"]*" /var/run/cdi/nvidia.yaml | sort -u
+grep -oE "lib(nvidia-encode|nvcuvid)[^ \"]*" /etc/cdi/nvidia.yaml | sort -u
 # → libnvidia-encode.so.1, libnvidia-encode.so.580.173.02,
 #   libnvcuvid.so.1, libnvcuvid.so.580.173.02
 ```
