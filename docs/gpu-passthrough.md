@@ -196,6 +196,71 @@ paperless / memos / sure / nebula-sync have no GPU use.
   (verified: all prior keys intact, `runtimes.nvidia` added), but eyeball it
   before restarting Docker, and remember the docker.socket resurrection
   gotcha from [docker-vm.md](docker-vm.md).
+- **Jellyfin and Ollama silently fail to start after a guest reboot — the CDI
+  spec race (diagnosed and fixed 2026-08-04).** Every non-GPU container comes up;
+  only the two requesting `nvidia.com/gpu=all` die, with
+  `ExitCode=128`, `CDI device injection failed: unresolvable CDI devices
+  nvidia.com/gpu=all`. Boot timeline that exposed it:
+
+  ```
+  23:06:48      docker.service starts
+  23:06:49.011  dockerd: "CDI directory does not exist, skipping" dir=/var/run/cdi
+  23:06:49.011  dockerd: "CDI directory does not exist, skipping" dir=/etc/cdi
+  23:06:50.13   dockerd: "Refreshing the CDI registry generated errors:
+                          failed to monitor for changes: no such file or directory"
+  23:06:50.32   dockerd: failed to start container — unresolvable CDI devices
+  23:06:50      nvidia-cdi-refresh: "Generated CDI spec with version 0.7.0"  ← ~0.3 s too late
+  ```
+
+  **Two causes compound.** (1) `nvidia-cdi-refresh.service` as shipped declares
+  only `ConditionPathExists` and `WantedBy=multi-user.target` — there is **no
+  `Before=docker.service` anywhere**, so systemd runs it and Docker in parallel
+  and whichever wins, wins. (2) The unit hardcodes
+  `NVIDIA_CTK_CDI_OUTPUT_FILE_PATH=/var/run/cdi/nvidia.yaml`, which is **tmpfs
+  and wiped every boot**, so the race is re-run on *every* boot rather than being
+  one-time setup. Like the D3cold bug above, **it is a race and therefore
+  intermittent** — it had been winning silently since the CDI wiring in `056ea1a`.
+
+  **The aggravator that prevents self-healing:** dockerd tries to set an inotify
+  watch on `/var/run/cdi` *before the directory exists*, and the watch fails
+  (`failed to monitor for changes`). So when the spec appears 0.3 s later, dockerd
+  never notices it. Without that, Docker would have recovered on its own.
+
+  **Fix — both applied 2026-08-04, they are complementary:**
+
+  ```bash
+  # A. Persistent spec: exists on disk before Docker ever starts, killing the race.
+  #    The shipped unit already reads this override file, so no unit editing.
+  mkdir -p /etc/cdi
+  echo 'NVIDIA_CTK_CDI_OUTPUT_FILE_PATH=/etc/cdi/nvidia.yaml' \
+    > /etc/nvidia-container-toolkit/nvidia-cdi-refresh.env
+  systemctl start nvidia-cdi-refresh.service
+
+  # B. The missing ordering — still needed, because a driver upgrade regenerates
+  #    the spec via nvidia-cdi-refresh.path and could race again.
+  mkdir -p /etc/systemd/system/docker.service.d
+  printf '[Unit]\nAfter=nvidia-cdi-refresh.service\nWants=nvidia-cdi-refresh.service\n' \
+    > /etc/systemd/system/docker.service.d/wait-for-cdi.conf
+  systemctl daemon-reload
+  ```
+
+  `Wants`, deliberately **not** `Requires` — a boot with the GPU absent must still
+  bring Docker up rather than take the whole stack down with it. Same asymmetry as
+  the required/advisory tiers in
+  [`vm150-require-virtiofs.sh`](../scripts/proxmox/vm150-require-virtiofs.sh).
+
+  Verify (read-only): `ls /etc/cdi/nvidia.yaml` and
+  `systemctl show docker.service -p After | tr ' ' '\n' | grep nvidia` — the
+  latter must list `nvidia-cdi-refresh.service`.
+
+  **Operational trap: `qm start 150` does not guarantee a working Jellyfin.**
+  The VM comes up, the hookscript passes, `/mnt/media` is fine — and the GPU
+  containers are still dead. After any restart of this stack, check
+  `docker ps -a | grep -E 'jellyfin|ollama'`, not just the VM state. Recovery
+  without a reboot is `docker start jellyfin ollama`; if that repeats the CDI
+  error, dockerd's registry is stale from the failed watch and needs
+  `systemctl restart docker` first.
+
 - **Optimus vBIOS caveat — did NOT fire here.** Mobile GPUs sometimes need
   `romfile=` because the vBIOS lives in the system BIOS, not on the card.
   This card initialized fine headless (no display output → no vBIOS-dependent
