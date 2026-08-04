@@ -253,6 +253,34 @@ paperless / memos / sure / nebula-sync have no GPU use.
   `systemctl show docker.service -p After | tr ' ' '\n' | grep nvidia` — the
   latter must list `nvidia-cdi-refresh.service`.
 
+  **Confirmed across a reboot, 2026-08-04 23:25 — and the ordering was genuinely
+  exercised, not merely lucky.** The refresh takes ~2 s, which is exactly the
+  window Docker used to win:
+
+  ```
+  23:25:51  Starting nvidia-cdi-refresh.service
+  23:25:53  nvidia-ctk: "Generated CDI spec with version 0.7.0"
+  23:25:53  nvidia-cdi-refresh.service: Finished          ← completes FIRST now
+  23:25:53  Starting docker.service                        ← Docker waited
+  23:26:02  Started docker.service
+  ```
+
+  Compare the failing boot at the top of this entry, where `docker.service` started
+  at 23:06:48 and the refresh only finished at 23:06:50. The order is inverted, no
+  `unresolvable CDI devices` error appears, both containers came up unattended, and
+  `docker exec jellyfin nvidia-smi` returns the GTX 1060 — so CDI injection
+  delivers a *working* GPU, not just a started container.
+
+  **Do not be misled by this line, which is now expected and harmless:**
+
+  ```
+  dockerd: "CDI directory does not exist, skipping" dir=/var/run/cdi
+  ```
+
+  It is correct — the spec deliberately moved to `/etc/cdi`. The failure signature
+  is the *absence* of a matching `/etc/cdi` skip line plus no `unresolvable CDI
+  devices` error, not the presence of this one.
+
   **Operational trap: `qm start 150` does not guarantee a working Jellyfin.**
   The VM comes up, the hookscript passes, `/mnt/media` is fine — and the GPU
   containers are still dead. After any restart of this stack, check
