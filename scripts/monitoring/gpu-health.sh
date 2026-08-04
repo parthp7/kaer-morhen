@@ -179,8 +179,22 @@ check() {
 
   # 2. Encoder present. Distinct from step 1 on purpose: NVML and NVENC can and do
   #    disagree, which is exactly what NVIDIA_DRIVER_CAPABILITIES used to guard.
-  if ! timeout "$EXEC_TIMEOUT" docker exec "$JELLYFIN_CONTAINER" \
-        "$FFMPEG_BIN" -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc; then
+  #
+  #    Capture the listing and match in-shell rather than piping to `grep -q`.
+  #    Under `set -o pipefail` that pipeline reports 141: grep -q exits at the
+  #    first match and closes the pipe, ffmpeg takes SIGPIPE with ~200 lines still
+  #    to write, and pipefail surfaces the signal as the pipeline's status. The
+  #    first version of this script did exactly that and reported the encoder
+  #    missing while it was demonstrably present (caught on first deploy,
+  #    2026-08-05). Capturing also separates "ffmpeg would not run" from
+  #    "the encoder is absent", which are different faults.
+  local encoders
+  if ! encoders=$(timeout "$EXEC_TIMEOUT" docker exec "$JELLYFIN_CONTAINER" \
+                    "$FFMPEG_BIN" -hide_banner -encoders 2>/dev/null); then
+    echo "could not list encoders in '$JELLYFIN_CONTAINER' — ffmpeg failed to run ($FFMPEG_BIN)"
+    return 1
+  fi
+  if [[ "$encoders" != *h264_nvenc* ]]; then
     echo "h264_nvenc missing from ffmpeg in '$JELLYFIN_CONTAINER' — NVML works but the encoder is not exposed"
     return 1
   fi

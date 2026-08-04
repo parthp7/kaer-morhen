@@ -321,6 +321,47 @@ That exercises CUDA init, NVENC session allocation and an actual encode — ever
 step a transcode needs, and the exact step that failed on 08-01. Nothing is
 written to disk.
 
+### `set -o pipefail` + `grep -q` = false failure (fixed 2026-08-05)
+
+The first deploy failed its smoke test with `h264_nvenc missing from ffmpeg …`
+for an encoder that was demonstrably present. The check was:
+
+```bash
+if ! … docker exec jellyfin "$FFMPEG_BIN" -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc
+```
+
+Measured on ciri:
+
+| | exit |
+|---|---|
+| `set -o pipefail` + `grep -q` | **141** (128+13, SIGPIPE) |
+| same pipeline without `pipefail` | 0 |
+| `h264_nvenc` in the output? | yes — 1 match in 227 lines |
+
+`grep -q` exits at the **first match** and closes the read end of the pipe.
+ffmpeg is still enumerating (12.8 KB of output, emitted incrementally), its next
+write hits a pipe with no reader, and it dies of SIGPIPE. `pipefail` then reports
+the *pipeline* as failed even though grep succeeded. All lab scripts run
+`set -euo pipefail`, so this is a trap for any of them.
+
+Fixed by capturing the output and matching in-shell, which also separates
+"ffmpeg would not run" from "the encoder is absent" — genuinely different faults:
+
+```bash
+if ! encoders=$(… docker exec … -encoders 2>/dev/null); then …; fi
+if [[ "$encoders" != *h264_nvenc* ]]; then …; fi
+```
+
+**The sibling instance is safe, and it is worth knowing why.**
+[`servarr-vpn-health.sh`](#servarr-vpn-healthsh) has the same shape at its
+`tun0` check (`in_netns ip -o addr show tun0 | grep -q inet`) on a *hard* path.
+It was measured, not assumed: the output is **93 bytes**, so `ip` writes
+everything into the 64 KB pipe buffer and exits before `grep` ever closes it —
+0 failures in 25 consecutive runs. Left as-is rather than churn a monitor that
+is proven in production. The rule that separates the two cases: **piping to an
+early-exiting reader is only safe when the writer's entire output fits the pipe
+buffer and it exits promptly.** If the producer streams, capture instead.
+
 - **Deployed to**: `/usr/local/bin/gpu-health.sh` on **ciri** (0755).
 - **Reads** the push URL from `/etc/kuma-push.gpu-health` (mode 600).
 - **Exits non-zero** on hard failure as well as pushing `status=down`.
