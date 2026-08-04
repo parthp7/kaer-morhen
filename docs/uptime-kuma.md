@@ -144,7 +144,7 @@ Full set as of 2026-07-13:
 | photos-backup | **Push** (86400 s → **90000 s**) | fed by `restic-photos.sh` on geralt, daily 05:00 IST | dead-man switch for the nightly restic backup ([backups](../scripts/backup/README.md)); silent from 2026-07-16, fixed 2026-07-30 — see below |
 | ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29, see below |
 | servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft, see below |
-| ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — added 2026-08-02; runs a real NVENC encode inside the jellyfin container, see below |
+| ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — deployed 2026-08-05; runs a real NVENC encode inside the jellyfin container, see below |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's
@@ -345,6 +345,28 @@ excused.
 
 Deploy steps, unit, timer, and how to force both the hard and soft paths are in
 [scripts/monitoring/README.md](../scripts/monitoring/README.md#gpu-healthsh).
+
+**Deployed and verified 2026-08-05**: timer enabled and active, drop-in applied
+(`TimeoutStartUSec=1min 30s`), strike counter at `0`, every run reporting
+`ok: 'jellyfin' encoded on the GPU (h264_nvenc)`, no push failures, monitor
+green. Measured timer period **323 s** against the 360 s heartbeat. Full
+as-built table in the script README.
+
+**The smoke test failed on first deploy, and the monitor was wrong — not the
+GPU.** The encoder check was `… -encoders | grep -q h264_nvenc` under
+`set -o pipefail`: `grep -q` exits at the first match and closes the pipe,
+ffmpeg takes SIGPIPE with most of its 227-line listing still to write, and
+pipefail reports the pipeline as failed. Measured exit 141 with pipefail, 0
+without, encoder present throughout. Fixed by capturing the output and matching
+in-shell. **Every script in this lab runs `set -euo pipefail`, so this is a
+general trap** — the rule and the audit of the one sibling instance are in
+[scripts/monitoring/README.md](../scripts/monitoring/README.md#set--o-pipefail--grep--q--false-failure-fixed-2026-08-05).
+
+Worth noting what this near-miss would have cost: a monitor that hard-fails on a
+healthy system is not a harmless bug. Left undiagnosed it would have paged
+nightly, trained everyone to ignore the GPU alert, and made the *real* fault it
+exists to catch invisible again — the alert-fatigue path back to a 21-hour
+outage.
 
 ### The photos-backup Push monitor — silent for 14 days (fixed 2026-07-30)
 

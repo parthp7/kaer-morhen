@@ -487,3 +487,30 @@ would run with defaults and report a misleading green.
 Then confirm the monitor goes **green** on a normal run — per the
 [photos-backup lesson](../../docs/uptime-kuma.md#the-photos-backup-push-monitor--silent-for-14-days-fixed-2026-07-30),
 a push monitor that has never been green has only been created, not tested.
+
+### As-built (deployed 2026-08-05)
+
+| Check | Value |
+|---|---|
+| `/usr/local/bin/gpu-health.sh` | 0755 root, md5 matches the repo copy byte-for-byte |
+| `/etc/kuma-push.gpu-health` | `-rw------- root root` |
+| `gpu-health.timer` | enabled, active; `OnBootSec=3min`, `OnUnitActiveSec=5min`, `AccuracyUSec=30s` |
+| `TimeoutStartUSec` | `1min 30s` (the drop-in took) |
+| `/var/lib/gpu-health/degraded.strikes` | `0` |
+| Runs | all `ok: 'jellyfin' encoded on the GPU (h264_nvenc), 0MiB VRAM in use` |
+| Push errors | none — no `push to Uptime-Kuma failed` in the journal |
+
+**Measured timer period: 323 s**, against the 360 s heartbeat — consistent with
+media-mount's historical 301–330 s, and the run itself takes ~1 s. That leaves
+roughly 30 s of headroom, the same margin the other two Push monitors have run
+with since 2026-07-29. Note this is a **single** timer-to-timer sample taken
+minutes after deploy; if Kuma ever flaps red with the checks passing, re-measure
+before assuming a real fault:
+
+```bash
+journalctl -u gpu-health.service -o short-unix | grep -a "Starting gpu-health" \
+  | awk '{print int($1)}' | awk 'NR>1{print $1-p" s"} {p=$1}'
+```
+
+(A manual `systemctl start` resets `OnUnitActiveSec`, so it shows up as a short
+bogus interval — ignore those when reading the output.)
