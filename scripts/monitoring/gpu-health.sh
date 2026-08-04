@@ -66,7 +66,8 @@
 # Requires: curl, docker, nvidia-smi on the host. The push URL carries a token, so it
 #           lives ONLY in that 0600 file and in secrets.local.yaml — never here.
 # Env overrides: JELLYFIN_CONTAINER, OLLAMA_CONTAINER, KUMA_URL_FILE, MAX_STRIKES,
-#                VRAM_CONTENTION_MIB, FFMPEG_BIN, EXEC_TIMEOUT
+#                VRAM_CONTENTION_MIB, FFMPEG_BIN, EXEC_TIMEOUT, STATE_DIR
+# Test hook:     FORCE_ENCODE_FAIL=1 (see the note by its declaration below)
 
 set -euo pipefail
 
@@ -84,6 +85,12 @@ readonly EXEC_TIMEOUT="${EXEC_TIMEOUT:-30}"
 # it never causes one.
 readonly VRAM_CONTENTION_MIB="${VRAM_CONTENTION_MIB:-3000}"
 readonly MAX_STRIKES="${MAX_STRIKES:-6}"
+# Test hook: force the encode probe to fail without touching the GPU or the
+# container. Needed because the obvious trick — pointing FFMPEG_BIN at /bin/false —
+# trips the EARLIER `-encoders` check and lands on the hard path instead, so it
+# cannot reach the soft path at all. Pair with VRAM_CONTENTION_MIB=0 to exercise
+# contention handling. See scripts/monitoring/README.md.
+readonly FORCE_ENCODE_FAIL="${FORCE_ENCODE_FAIL:-}"
 # Outside /tmp on purpose: a reboot must not reset a genuinely stuck GPU to zero
 # strikes. Same reasoning as servarr-vpn-health.sh.
 readonly STATE_DIR="${STATE_DIR:-/var/lib/gpu-health}"
@@ -147,6 +154,7 @@ vram_used_mib() {
 # container. Exercises CUDA init, NVENC session allocation and an actual encode —
 # every step a transcode needs. Output goes to the null muxer; nothing is written.
 nvenc_encode_works() {
+  [[ -z "$FORCE_ENCODE_FAIL" ]] || return 1
   timeout "$EXEC_TIMEOUT" docker exec "$JELLYFIN_CONTAINER" \
     "$FFMPEG_BIN" -hide_banner -loglevel error \
     -f lavfi -i testsrc=duration=1:size=256x256:rate=5 \

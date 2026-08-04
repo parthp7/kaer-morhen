@@ -416,16 +416,32 @@ A monitor that has never been red has not been tested. Both paths can be forced
 without touching the GPU:
 
 ```bash
-# Hard path: point it at a container that has no GPU
-sudo JELLYFIN_CONTAINER=searxng /usr/local/bin/gpu-health.sh; echo "exit=$?"
-# → nvidia-smi FAILED inside 'searxng' ... , exit 1, Kuma goes red
+# Hard path — point it at a container that has no GPU:
+sudo env JELLYFIN_CONTAINER=searxng /usr/local/bin/gpu-health.sh; echo "exit=$?"
+# → nvidia-smi FAILED inside 'searxng' …   exit 1, Kuma goes red
 
-# Soft path: make any VRAM usage look like contention and any encode fail
-sudo VRAM_CONTENTION_MIB=0 FFMPEG_BIN=/bin/false /usr/local/bin/gpu-health.sh
-# → degraded: ... (strike 1/6), stays green
+# Hard path — encode fails with the card idle (the "really broken" verdict):
+sudo env FORCE_ENCODE_FAIL=1 /usr/local/bin/gpu-health.sh; echo "exit=$?"
+# → NVENC test encode FAILED with the GPU essentially idle (0MiB used) …   exit 1
+
+# Soft path — same failure, but attributed to VRAM contention:
+sudo env FORCE_ENCODE_FAIL=1 VRAM_CONTENTION_MIB=0 /usr/local/bin/gpu-health.sh
+# → degraded: … (strike 1/6), stays green, exit 0
 # Repeat 6× to watch it escalate to down, then clear the counter:
 sudo rm -f /var/lib/gpu-health/degraded.strikes
 ```
+
+**Use `FORCE_ENCODE_FAIL`, not `FFMPEG_BIN=/bin/false`, to fake a failed
+encode.** The obvious trick does not work: `FFMPEG_BIN` is also used by the
+earlier `-encoders` check, so pointing it at `/bin/false` trips *that* check and
+lands on the hard "h264_nvenc missing" path, never reaching the encode step the
+soft path depends on. The explicit test hook exists to make the soft path
+reachable at all — same role as `HOST_IP_OVERRIDE` in
+[`servarr-vpn-health.sh`](#servarr-vpn-healthsh).
+
+`sudo env VAR=…` rather than `sudo VAR=…`: the latter depends on sudoers not
+resetting the environment, and fails silently-wrong if it does — the script
+would run with defaults and report a misleading green.
 
 Then confirm the monitor goes **green** on a normal run — per the
 [photos-backup lesson](../../docs/uptime-kuma.md#the-photos-backup-push-monitor--silent-for-14-days-fixed-2026-07-30),
