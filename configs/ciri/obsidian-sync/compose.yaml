@@ -1,0 +1,60 @@
+# obsidian-sync — CouchDB backing Obsidian "Self-hosted LiveSync".
+#
+# Obsidian itself is a CLIENT app (Mac/desktop); ciri hosts only the sync
+# database. Notes stay plain Markdown on every device, so the vault is
+# replicated N+1 times before PBS ever runs.
+#
+# Lab conventions: pinned image tag, container_name, restart: unless-stopped,
+# TZ=Asia/Kolkata, dedicated bridge network, secrets only from .env (${VAR:?}
+# fails loudly).
+#
+# NO healthcheck block, deliberately: the official couchdb image purges curl
+# after using it to fetch the repo signing key (3.5.2.1/Dockerfile) and never
+# installs wget, so every curl/wget-based healthcheck silently fails and parks
+# the container in `unhealthy`. Liveness is Uptime-Kuma's job instead
+# (follow-up) — it must send Basic auth, see couchdb/00-livesync.ini.
+#
+# NO `user:` override, also deliberately: the image starts as root, chowns the
+# bind mounts to couchdb (uid 5984), then drops privileges via
+# `setpriv --reuid=couchdb` before exec'ing CouchDB. Pinning `user: 5984:5984`
+# skips that fixup, and the entrypoint's `touch local.d/docker.ini` then dies
+# on a root-owned mount — the single most common first-deploy failure. The
+# pre-chown in the README makes first start deterministic anyway; this just
+# means a wrong-ownership mount self-heals instead of crash-looping.
+
+services:
+  couchdb:
+    image: couchdb:3.5.2.1
+    container_name: obsidian-couchdb
+    restart: unless-stopped
+    ports:
+      # LAN-wide. Unauthenticated access is refused by require_valid_user
+      # (00-livesync.ini) — unlike ollama:11434, this port is NOT open by design.
+      - "5984:5984"
+    volumes:
+      # Database files. On /data, so they DO ride the nightly PBS job.
+      # CouchDB is append-only + fsync, so the guest-agent fs-freeze snapshot
+      # is crash-consistent and recoverable.
+      - ./data:/opt/couchdb/data
+      # Config dir, holding BOTH the tracked baseline (00-livesync.ini) and
+      # runtime state (docker.ini: [admins] + session secret + every config
+      # write from Fauxton/the HTTP API). Must stay writable by 5984.
+      #
+      # The 00- prefix is load-bearing: CouchDB writes config changes to the
+      # LAST ini in the chain (alphabetical), and a tracked write target would
+      # both lose its comments and acquire the hashed admin password. See the
+      # header of couchdb/00-livesync.ini. Never commit docker.ini.
+      - ./couchdb:/opt/couchdb/etc/local.d
+    environment:
+      TZ: Asia/Kolkata
+      COUCHDB_USER: ${COUCHDB_USER:?}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:?}
+      # Signs session cookies. Without it the entrypoint generates nothing and
+      # every container restart invalidates live sessions mid-replication.
+      COUCHDB_SECRET: ${COUCHDB_SECRET:?}
+    networks:
+      - obsidian_net
+
+networks:
+  obsidian_net:
+    driver: bridge
