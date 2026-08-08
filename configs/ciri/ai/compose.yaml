@@ -8,11 +8,11 @@
 #
 # Model VRAM/RAM contract (proposal 002 §2/§7):
 #   qwen3:8b lives in the 1060's 6 GB VRAM (realtime chat, default model);
-#   qwen3:30b-a3b MoE is mostly RAM-resident (~15-16 GB during inference) —
-#   OLLAMA_MAX_LOADED_MODELS=2 lets those two coexist but blocks a second
-#   RAM-heavy model from stacking on top (ciri is 24 GB total, shared with
-#   every other stack). OLLAMA_KEEP_ALIVE=10m frees the GPU for Jellyfin
-#   NVENC transcodes after idle — the 1060 is shared, VRAM contention is real.
+#   qwen3:30b-a3b MoE is mostly RAM-resident (~15-16 GB during inference) but
+#   still pins ~4.3 GB of VRAM for its offloaded layers — which is why only ONE
+#   model is kept loaded (see OLLAMA_MAX_LOADED_MODELS below), not two.
+#   OLLAMA_KEEP_ALIVE=10m frees the GPU for Jellyfin NVENC transcodes after
+#   idle — the 1060 is shared, VRAM contention is real.
 #
 # Model weights live on the dedicated scsi2 disk (backup=0) mounted at
 # /mnt/ai-models: ~19 GB of re-downloadable GGUFs stay OUT of nightly PBS.

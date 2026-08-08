@@ -107,9 +107,10 @@ qm set 150 --scsi0 silver-guests:vm-150-disk-1,discard=on,iothread=1,ssd=1
 qm disk resize 150 scsi0 64G
 ```
 
-- `--memory 8192` is what was **executed on 2026-07-11**; the VM was later
-  raised to **10240** and that is the current live value. Left as-executed here
-  so the runbook stays a faithful record — use 10240 if rebuilding today.
+- `--memory 8192` is what was **executed on 2026-07-11**; the VM was raised to
+  10240, then to **24576** on 2026-07-31 for the AI stack's MoE tier, and that
+  is the current live value. Left as-executed here so the runbook stays a
+  faithful record — use 24576 if rebuilding today.
 - The EFI vars disk takes `vm-150-disk-0`, so the imported image lands as
   `vm-150-disk-1` — check `qm config 150` before the `--scsi0` attach.
 - `--serial0 socket --vga serial0`: cloud images put their console on serial;
@@ -319,6 +320,8 @@ plus `.env.example` + README).
 | immich | 2026-07-14 | photo/video library (v3.0.2), port 2283; originals on geralt's `steel/photos` via virtiofs at `/mnt/photos`, thumbs/postgres on `/data` ([as-built](../configs/ciri/immich/README.md)) |
 | jellyfin | 2026-07-22 | media server (10.11.11), port 8096; NVENC via GTX 1060, media on an external USB HDD (ext4) on geralt via virtiofs at `/mnt/media`, config/cache on `/data`. Media bind now **read-only** (subtitles delegated to Bazarr) ([as-built](../configs/ciri/jellyfin/README.md)) |
 | servarr | 2026-07-25 | TV + Movies download/import stack: gluetun (Proton WireGuard **kill-switch verified**) + qBittorrent, Prowlarr, Sonarr, Radarr, Bazarr, Jellyseerr, FlareSolverr. Writers run as dedicated non-root `jaskier` (13000); imports **hardlink** into `/mnt/media/library`. Ports 8080/9696/8989/7878/6767/5055/8191. Open follow-up: Proton port-forward → qBit. Audiobooks (Readarr) dropped as EOL ([as-built](../configs/ciri/servarr/README.md)) |
+| ai | 2026-07-31 | local LLM stack — Ollama (11434, OpenAI-compatible LAN API), Open WebUI (8090, chat + web search + RAG), SearXNG (internal-only). GPU via CDI, **shares the 1060 with Jellyfin**; model weights on the `backup=0` scsi2 disk at `/mnt/ai-models`. Drives Sure's AI chat ([proposal 002](proposals/002-local-ai-stack.md), [as-built](../configs/ciri/ai/README.md)) |
+| obsidian-sync | 2026-08-05 | CouchDB 3.5.2.1 (5984) as the replication target for Obsidian Self-hosted LiveSync; Obsidian itself runs on the client, and its AI comes from the `ai` stack over the LAN ([as-built](../configs/ciri/obsidian-sync/README.md)) |
 
 ## Next steps (not yet built)
 

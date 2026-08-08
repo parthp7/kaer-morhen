@@ -54,9 +54,13 @@ instruct model such as `qwen2.5:7b-instruct`. Check a new client's timeout
   `qwen3:30b-a3b` → Advanced → `num_ctx` 16384) — its KV sits in system RAM.
 - **Thinking mode**: qwen3 models emit a hidden reasoning block before the
   visible answer — at degraded speeds this looks like "nothing happening".
-  For realtime chat, add `/no_think` to the system prompt of a chat preset
-  (or per message); leave thinking ON for research/analysis, where it earns
-  its tokens.
+  Reliable control is **per-request only**: `think: false` on `/api/chat`, or
+  `reasoning_effort: "none"` on `/v1` (both measured to cut a trivial reply
+  from hundreds of tokens to ~10). Qwen3's `/no_think` text switch is only
+  *partially* honoured here — measured 419 → 285 tokens, not ~10 — so don't
+  rely on it, and there is no Modelfile parameter for it
+  ([ollama#14809](https://github.com/ollama/ollama/issues/14809)). Leave
+  thinking on for research/analysis, where it earns its tokens.
 - Web search inflates prompts by thousands of tokens (first prompt: 4.6 k);
   prompt processing at full GPU is several hundred tok/s, so this costs
   seconds — but it compounds badly with any CPU spill.
@@ -107,21 +111,34 @@ Web Search instead.
 - **Keyed access** (when a real key is wanted): Open WebUI → Settings →
   Account → API keys; OpenAI-compatible endpoint under
   `http://<LAN_PREFIX>.150:8090/api/`.
-- **Sure**: wired 2026-07-31 — needs all three of `OPENAI_ACCESS_TOKEN=ollama`,
-  `OPENAI_URI_BASE=http://<LAN_PREFIX>.150:11434/v1`, `OPENAI_MODEL=qwen3:8b`
-  in its `.env` (the model is mandatory for custom providers, and the host IP
-  is mandatory because Sure pins external DNS). Details:
+- **Sure**: wired 2026-07-31, verified 2026-08-01. Needs all three of
+  `OPENAI_ACCESS_TOKEN=ollama`,
+  `OPENAI_URI_BASE=http://<LAN_PREFIX>.150:11434/v1`, and
+  `OPENAI_MODEL=qwen3:30b-a3b` in its `.env` (the model is mandatory for custom
+  providers, and the host IP is mandatory because Sure pins external DNS).
+  Running a *thinking* model there also required raising Sure's hardcoded
+  response timeout via a mounted initializer. Details:
   [configs/ciri/sure](../sure/README.md).
 - Future consumers: paperless-ai / paperless-gpt, Karakeep.
 
 ## Monitoring
 
-Uptime-Kuma (per [uptime-kuma.md](../../../docs/uptime-kuma.md) conventions):
+**In place:**
+- `scripts/monitoring/gpu-health.sh` (Push monitor, 5-min timer on ciri, live
+  since 2026-08-05) — runs a real NVENC encode inside the jellyfin container
+  and separately checks that ollama still has GPU access. An encode failure
+  *while a model is resident* is treated as soft/strike-counted, because
+  contention on the shared 6 GB card is expected and self-heals via
+  `OLLAMA_KEEP_ALIVE`. See [monitoring README](../../../scripts/monitoring/README.md).
+- Beszel graphs the GPU via ciri's agent. Sustained 30B runs load all 6 cores
+  on a laptop cooler — watch temps on long research sessions.
+
+**Still TODO** — neither service has an HTTP liveness check, so a dead ollama
+or open-webui is currently only noticed by using it:
 - HTTP keyword on `http://<LAN_PREFIX>.150:11434` — expect `Ollama is running`
 - HTTP on `http://<LAN_PREFIX>.150:8090`
 
-Beszel already graphs the GPU via ciri's agent; sustained 30B runs load all
-6 cores on a laptop cooler — watch temps on first long research sessions.
+(per [uptime-kuma.md](../../../docs/uptime-kuma.md) conventions)
 
 ## Verification (after deploy)
 

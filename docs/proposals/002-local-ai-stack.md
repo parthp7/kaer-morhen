@@ -2,8 +2,11 @@
 
 - **Status**: **Implemented 2026-07-31** — RAM upgrade (§5) done, ciri raised to
   24 G per the §7 budget, stack deployed on ciri, all three models pulled, web
-  search working end-to-end, Sure wired to the local endpoint (§4). Remaining:
-  Uptime-Kuma monitors + DNS name (§6). As-built detail lives in
+  search working end-to-end, Sure wired and verified 2026-08-01 (§4).
+  Amended since: GPU moved from `deploy.resources` to **CDI** on 2026-08-02
+  alongside Jellyfin, and `gpu-health.sh` monitoring landed 2026-08-05.
+  Remaining: **HTTP liveness monitors for ollama/open-webui, and a DNS name**
+  (§6). As-built detail lives in
   [configs/ciri/ai/README.md](../../configs/ciri/ai/README.md).
 - **Date**: 2026-07-29
 - **Scope**: VM 150 `ciri` on `geralt`; see
@@ -24,9 +27,9 @@ requirement, not an afterthought.
   slow CPU-offloaded models, which is why the interim answer is an 8B model
   fully in VRAM and the real upgrade is host RAM (§5).
 - geralt live budget: **32 GB total since 2026-07-31** (was 16 GB when this was
-  drafted), ciri at 10240 MB fixed, 2 GiB ARC cap → ~18 GB of true slack, which
-  is what makes the §2 MoE tier viable. docker-vm.md's stale 8192 figure was
-  corrected 2026-07-31.
+  drafted). At the moment this section was written ciri still held 10240 MB,
+  leaving ~18 GB of slack — which is what made the §2 MoE tier viable. That
+  slack was then spent: ciri now runs at **24576 MB** per the §7 budget.
 - ciri prerequisites already in place: nvidia driver 580.x + container toolkit,
   `nvidia` runtime registered; ports 8090 and 11434 free.
 
@@ -70,7 +73,10 @@ Three services, lab conventions (pinned tags, `container_name`,
 secrets only from `.env`):
 
 - **ollama** `ollama/ollama:0.32.5` — port `11434:11434` (LAN API);
-  GPU via the same `deploy.resources.reservations.devices` block as Jellyfin;
+  GPU wired the same way as Jellyfin — originally
+  `deploy.resources.reservations.devices`, **migrated to CDI**
+  (`devices: ["nvidia.com/gpu=all"]`) on 2026-08-02 in lockstep with that
+  stack since they share the card ([gpu-passthrough.md](../gpu-passthrough.md));
   `OLLAMA_KEEP_ALIVE=10m` so VRAM frees for NVENC transcodes;
   models volume on a **new scsi2 64 G disk (`backup=0`) at `/mnt/ai-models`**
   so ~10–15 GB of re-downloadable GGUFs stay out of nightly PBS backups.
@@ -176,10 +182,13 @@ Remaining steps:
 during inference (≈18.6 G weights − ~5 G in VRAM + KV cache) + ~2 G reserved
 for future apps (Obsidian LiveSync/CouchDB etc.) + guest page cache.
 
-Guardrails: `OLLAMA_MAX_LOADED_MODELS=2` (8B in VRAM + 30B in RAM may coexist;
-a second RAM-heavy model may not), `OLLAMA_KEEP_ALIVE=10m`, and a **4 G
-swapfile on ciri** (had none) so an Immich ML burst on top of a resident model
-degrades instead of OOM-killing.
+Guardrails: `OLLAMA_MAX_LOADED_MODELS=1` — planned as 2 on the assumption that
+"8B in VRAM + 30B in RAM" could coexist, corrected on 2026-07-31 once the 30B
+turned out to pin ~4.3 G of VRAM for its offloaded layers too, squeezing a
+co-resident 8B onto the CPU. Six GB of VRAM holds **one** ~5 G model at full
+speed. Plus `OLLAMA_KEEP_ALIVE=10m` and a **4 G swapfile on ciri** (had none)
+so an Immich ML burst on top of a resident model degrades instead of
+OOM-killing.
 
 **Observed with the 30B resident (2026-07-31):** ciri reports only ~3.9 G
 "used" but ~18 G in buff/cache, because Ollama **mmaps** the weights — the model
@@ -195,10 +204,14 @@ items still fit: HAOS VM 2 G + reverse-proxy LXC 202 at 256–512 M leave
 
 ## 6. Monitoring, docs, verification (at deploy time)
 
-- Uptime-Kuma: HTTP keyword monitor `:11434` ("Ollama is running") + HTTP `:8090`.
-- Docs to touch: docker-vm.md stack table (~~fix stale 8 G RAM figure~~ done
-  2026-07-31 — now 10240 MB), gpu-passthrough.md (Ollama future → live),
-  storage.md (scsi2, backup=0 rationale), uptime-kuma.md.
+- Uptime-Kuma: HTTP keyword monitor `:11434` ("Ollama is running") + HTTP
+  `:8090` — **still outstanding.** GPU access itself is covered by
+  `gpu-health.sh` since 2026-08-05, but nothing checks that either service is
+  answering HTTP.
+- Docs: ~~docker-vm.md RAM figure~~ (done — now 24576 MB),
+  ~~gpu-passthrough.md consumer table (Ollama future → live)~~ (done
+  2026-08-08), ~~storage.md scsi2 / `backup=0` rationale~~ (done 2026-08-08).
+  uptime-kuma.md gains the two monitors above when they are created.
 - Verify: nvidia-smi shows ollama ~5 GB during generation and frees after
   keep-alive; `ollama run qwen3:8b --verbose` ≥20 tok/s; web-search answer with
   citations on a current-events question; `/v1/chat/completions` curl from the

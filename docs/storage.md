@@ -25,6 +25,23 @@ resolved in the git-ignored `secrets.local.yaml`.
 | `steel/photos` | 1M | Immich originals (irreplaceable — must be in backup path) |
 | `steel/dump` | 128K (default) | `steel-dump` dir storage: vzdump, ISOs, templates |
 
+`silver-guests` zvols for **ciri (VM 150)** — the one place a guest disk is
+deliberately excluded from backup:
+
+| Disk | Size | Mounted in ciri | In nightly PBS? |
+|---|---|---|---|
+| scsi0 | 64 G | `/` | yes |
+| scsi1 | 64 G | `/data` — Docker data-root + every stack's app data | yes |
+| scsi2 | 64 G | `/mnt/ai-models` — Ollama model weights | **no — `backup=0`** |
+
+scsi2 was added 2026-07-31 for the AI stack ([proposal 002](proposals/002-local-ai-stack.md)).
+The `backup=0` flag is the point of it: ~29 GB of GGUF weights are
+re-downloadable in minutes, so backing them up nightly would inflate every
+snapshot for nothing. Anything that must survive a restore therefore must NOT
+live under `/mnt/ai-models` — it is a cache, not storage. (`/mnt/photos` and
+`/mnt/media` are virtiofs shares and are excluded for a different reason: PBS
+only sees the guest's own disks.)
+
 Pool naming: Geralt carries two swords — **silver** (fast/precious: guests) and
 **steel** (workhorse: bulk).
 

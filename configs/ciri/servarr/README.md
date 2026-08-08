@@ -157,21 +157,28 @@ non-root service account; readers are read-only.
 > Claude only runs read-only checks. `qm` commands run on **geralt** (`ssh lab-geralt`).
 > Steps marked ⚙️ change system state — run them yourself.
 
-### 0. (Recommended first) Give ciri more RAM — 8 GB → 10 GB
-ciri at 8 GB has only ~4 GB free and this stack adds ~1.7–2 GB active (Immich ML can also
-spike 1–2 GB). geralt (16 GB) has room: ~2 GB free + 8 GB swap, ARC pinned at 2 GB.
-Bumping ciri to 10 GB leaves geralt ~2 GB host headroom (the safe floor; 11 GB is the hard
-ceiling). Memory hot-plug isn't enabled, so this needs a reboot of ciri:
+### 0. ~~(Recommended first) Give ciri more RAM — 8 GB → 10 GB~~ — DONE, SUPERSEDED
+
+> ⚠️ **Do not run the command in this step.** It is kept as a record of what was
+> executed on 2026-07-25, when geralt had 16 GB and ciri 8 GB. geralt now has
+> **32 GB** and ciri is at **24576 MB** ([docker-vm.md](../../../docs/docker-vm.md),
+> [proposal 002](../../../docs/proposals/002-local-ai-stack.md)) — re-running
+> `--memory 10240` today would *shrink* ciri by 14 GB and break the AI stack.
+
+Original rationale: ciri at 8 GB had only ~4 GB free and this stack adds
+~1.7–2 GB active (Immich ML can also spike 1–2 GB). geralt (16 GB then) had
+room: ~2 GB free + 8 GB swap, ARC pinned at 2 GB. Bumping ciri to 10 GB left
+geralt ~2 GB host headroom (the safe floor at the time; 11 GB was the hard
+ceiling). Memory hot-plug isn't enabled, so it needed a reboot of ciri:
 
 ```bash
-# ⚙️ on ciri: stop stacks cleanly first (optional but tidy)
-ssh lab-ciri 'cd /data/stacks/jellyfin && docker compose stop'   # etc. for each, or just shut down
-# ⚙️ on geralt:
+# ⚙️ HISTORICAL — superseded, see the warning above.
 ssh lab-geralt 'qm shutdown 150 && sleep 20 && qm set 150 --memory 10240 && qm start 150'
 ```
-Verify: `ssh lab-geralt 'qm config 150 | grep memory'` → `memory: 10240`, then
-`ssh lab-ciri 'free -h'`. If you'd rather defer, deploy **core-first** (gluetun,
-qbittorrent, prowlarr, sonarr, radarr) and add bazarr/jellyseerr/flaresolverr later.
+
+If deploying this stack fresh on a smaller ciri, the fallback still applies:
+deploy **core-first** (gluetun, qbittorrent, prowlarr, sonarr, radarr) and add
+bazarr/jellyseerr/flaresolverr later.
 
 ### 1. ⚙️ Create the `jaskier` service account, subdirectories, and ownership (on ciri)
 The writers run as a **dedicated non-root, non-login account `jaskier` (uid/gid 13000)** —

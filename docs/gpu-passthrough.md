@@ -133,7 +133,8 @@ Consumers:
 |---|---|---|
 | Jellyfin (**live** 2026-07-22) | NVENC/NVDEC transcode, CUDA HDR→SDR tone mapping | reservation above + NVENC in Playback settings — **verified**: CUDA decode → `scale_cuda` → `h264_nvenc` ([stack](../configs/ciri/jellyfin/README.md)) |
 | Immich | ML (smart search, faces) on CUDA; NVENC for video previews | swap ML image to the `-cuda` tag + reservation; NVENC in video-transcoding settings — optional, CPU is coping meanwhile |
-| Future | Ollama (7–8B Q4 fits in 6 GB), Frigate + TensorRT, Whisper | per-stack |
+| Ollama (**live** 2026-07-31) | LLM inference — qwen3:8b fully in VRAM, qwen3:30b-a3b MoE hybrid CPU+GPU | CDI `devices: ["nvidia.com/gpu=all"]` ([stack](../configs/ciri/ai/README.md), [proposal 002](proposals/002-local-ai-stack.md)). Shares the card with Jellyfin: `OLLAMA_KEEP_ALIVE=10m` releases VRAM, and only one model is kept loaded |
+| Future | Frigate + TensorRT, Whisper | per-stack |
 
 paperless / memos / sure / nebula-sync have no GPU use.
 
