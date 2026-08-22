@@ -1,0 +1,8 @@
+[Unit]
+Description=Push media NFS export health to Uptime-Kuma
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/media-export-health.sh
+# the script's own `timeout 30`s bound the probes; this bounds everything else
+TimeoutStartSec=90

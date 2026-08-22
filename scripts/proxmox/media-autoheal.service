@@ -1,0 +1,14 @@
+[Unit]
+Description=Re-mount the media disk and refresh its NFS export after a USB re-enumeration
+# udev fires this repeatedly while a bridge re-enumerates. The script also takes
+# a flock, but stopping systemd from queueing runs is cheaper than serialising
+# them. Above the burst the script's own ntfy alert has already told someone.
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/media-autoheal.sh
+# fsck of the 1 TB disk after an aborted journal can take a while; the script
+# must not be killed mid-repair.
+TimeoutStartSec=600

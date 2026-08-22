@@ -61,6 +61,17 @@ dd if=/dev/urandom of=/mnt/media/library/.mount-health bs=4096 count=1
 - **Deployed to**: `/usr/local/bin/media-mount-health.sh` on **ciri** (0755).
 - **Reads** the push URL from `/etc/kuma-push.media-mount` (mode 600). The URL
   carries Kuma's push token — it lives only on ciri and in `secrets.local.yaml`.
+- **Since 2026-08-23 this is an NFS probe** ([proposal 005](../../docs/proposals/005-nfs-media-share.md)):
+  expected fstype is `nfs4`, not `virtiofs`. Two consequences, both load-bearing:
+  - `/mnt/media` is an `x-systemd.automount`, so mountinfo holds a **stacked
+    pair** — systemd's `autofs` trigger *underneath* the real `nfs4` mount.
+    `findmnt --first-only` returns `autofs`, a guaranteed false alarm; the
+    script triggers the automount, then takes `tail -1` (top of the stack).
+  - Every command that touches the mount is wrapped in `timeout 30`, **including
+    the `[[ -d ]]` sentinel test**. Against a `hard` NFS mount a dead server
+    *blocks* rather than erroring, and an unbounded probe would hang until
+    systemd SIGKILLed the unit having pushed nothing — turning a precise
+    `status=down` into mere heartbeat silence.
 - **Exits non-zero** on failure as well as pushing `status=down`, so a bad state
   is visible in `systemctl --failed` even if Kuma itself is unreachable.
 - **Two independent failure signals**: an explicit `status=down` push (fast, with
@@ -174,6 +185,68 @@ which is still well inside the 16-hour blind spot this was built to close. If
 `AccuracySec=1s` is set instead of `30s` the period tightens to ~301 s, but keep
 the headroom anyway — it costs nothing and the timer is not the only source of
 delay (a slow push counts too).
+
+## media-export-health.sh
+
+The **server-side** half of the media-path monitor, on geralt. `media-mount-health.sh`
+on ciri sees the end-to-end truth but cannot say *where* a fault is; this one
+proves geralt is serving the real disk, so a host-only fault (disk dropped, nfsd
+dead, export vanished) is attributed correctly — and is still caught when ciri
+itself is down.
+
+Six checks, first failure wins:
+
+1. `/mnt/media` is a mount point of type `ext4` (not the pve-root placeholder)
+2. `library/` can be **enumerated** (readdir reaches the backing store)
+3. `library/.mount-health` can be **read as bytes** — the same sentinel file the
+   ciri monitor reads, so both halves agree on what "alive" means
+4. `nfs-server.service` is active
+5. the export table still lists `/mnt/media` — the `mountpoint` export option
+   silently **drops** the export when the mount dies, so catch that explicitly
+6. nfsd is listening on the storage IP's port 2049
+
+- **Deployed to**: `/usr/local/bin/media-export-health.sh` on **geralt** (0755).
+- **Reads** the push URL from `/etc/kuma-push.media-export` (mode 600); the URL
+  lives only on geralt and in `secrets.local.yaml`.
+- **No IP is hardcoded**: `NFS_BIND_IP` derives itself from `vmbr1`, so the repo
+  copy and the deployed copy are byte-identical with nothing to mask.
+- Same contract as `media-mount-health.sh`: push up/down with a reason, and exit
+  non-zero on failure so `systemctl --failed` shows it host-side too.
+
+### Two deployment traps, both learned the hard way
+
+**Address Kuma by IP, never by name.** geralt resolves via the router and
+*cannot* resolve `kaermorhen.internal` or the public domain — only the Pi-holes
+hold those records. A name-based push URL fails every time, silently, because
+`push()` deliberately swallows curl errors so a dead Kuma cannot corrupt the
+check's verdict. This already cost a 10-day silent heartbeat loss in July; see
+[docs/uptime-kuma.md](../../docs/uptime-kuma.md).
+
+**Store the BARE base URL**, with no query string. The script appends its own
+`status=`/`msg=` via `curl --get --data-urlencode`. A URL pasted from Kuma's UI
+ends in `?status=up&msg=OK&ping=`, and curl would append after it — leaving two
+`status` parameters, of which Kuma reads the **first**. The monitor would then
+report `up` forever regardless of what the check found: a dead-man switch welded
+shut, strictly worse than no monitor.
+
+### Timer cadence — why `OnCalendar`, not `OnUnitActiveSec`
+
+Kuma's push window is a hard deadline: a beat that is *ever* late reads as a
+missed heartbeat. Two systemd defaults conspire against that:
+
+- `OnUnitActiveSec=N` counts from the **last activation**, so the period is
+  always ≥ N and the error accumulates.
+- `AccuracySec` defaults to **1 min** — systemd may defer the wakeup that far to
+  batch wakeups.
+
+Measured 2026-08-23 with `OnUnitActiveSec=60`: intervals of **61, 72, 75, 90 s**
+against a 60 s window — every single beat late. With `OnCalendar=*:*:0/30` plus
+`AccuracySec=1s`: **30.0 s, no drift**, beats landing on exact `:00`/`:30`
+boundaries. Push at roughly **half** the Kuma heartbeat interval so one dropped
+push cannot trip the monitor.
+
+Unit + timer are in this directory; deploy per
+[proposal 005](../../docs/proposals/005-nfs-media-share.md) Phase A5.
 
 ## servarr-vpn-health.sh
 

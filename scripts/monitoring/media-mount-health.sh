@@ -35,6 +35,11 @@
 #
 #   Why 1-3 all passed against a dead filesystem:
 #     findmnt  → still `virtiofs`  (the guest mount never went away)
+#
+#   2026-08-23: media moved from virtiofs to NFS (proposal 005); same checks,
+#   new fstype (nfs4, read from the TOP of the autofs+nfs4 stack), plus a
+#   `timeout` on every command that touches the mount — a `hard` NFS mount
+#   BLOCKS on a dead server rather than erroring, and hung must become "down".
 #     -d test  → still succeeded   (virtiofsd's pinned fd + cached dentries)
 #     df       → still 915 GiB     (statfs on the pinned inode returns the real
 #                                   geometry of the detached filesystem)
@@ -66,7 +71,7 @@
 set -euo pipefail
 
 readonly MEDIA_DIR="${MEDIA_DIR:-/mnt/media}"
-readonly EXPECTED_FSTYPE="virtiofs"
+readonly EXPECTED_FSTYPE="nfs4"
 readonly SENTINEL="library"
 # 800 GiB: comfortably above the ~68 G placeholder and below the ~916 G real disk,
 # with room for a future larger drive. Not a capacity check — a wrong-disk check.
@@ -102,11 +107,17 @@ push() {
 check() {
   local fstype size_kb size_gib dd_err read_mode="O_DIRECT"
 
-  # 1. --mountpoint matches EXACTLY. --target would fall back to the parent mount
-  #    and cheerfully report the root filesystem as if it were the media disk —
-  #    the same trap the VM 150 hookscript avoids.
-  if ! fstype=$(findmnt --noheadings --first-only --output FSTYPE \
-                        --mountpoint "$MEDIA_DIR" 2>/dev/null); then
+  # 1. Trigger the automount first (x-systemd.automount mounts on access), then
+  #    read the TOP mount at this path. mountinfo holds a stacked pair here —
+  #    systemd's `autofs` trigger underneath the real `nfs4` mount — and
+  #    --first-only returns the autofs entry: a guaranteed false alarm. tail -1
+  #    is the top of the stack. `timeout` because against a `hard` NFS mount a
+  #    dead server BLOCKS instead of erroring — hung must become "down".
+  #    --mountpoint still matches EXACTLY: --target would fall back to the parent
+  #    mount and cheerfully report the root filesystem as if it were the media disk.
+  timeout 30 ls "$MEDIA_DIR" >/dev/null 2>&1 || true
+  fstype=$(findmnt --noheadings --output FSTYPE --mountpoint "$MEDIA_DIR" 2>/dev/null | tail -1)
+  if [[ -z "$fstype" ]]; then
     echo "$MEDIA_DIR is not a mount point"
     return 1
   fi
@@ -117,13 +128,16 @@ check() {
   fi
 
   # 2. Sentinel directory — exists only on the real media filesystem.
-  if [[ ! -d "$MEDIA_DIR/$SENTINEL" ]]; then
+  #    `timeout` for the same reason as checks 1 and 3-5: a bare [[ -d ]] is a
+  #    stat() that BLOCKS forever against a hard NFS mount whose server is gone,
+  #    and the unit would be SIGKILLed by TimeoutStartSec having pushed nothing.
+  if ! timeout 30 test -d "$MEDIA_DIR/$SENTINEL"; then
     echo "$MEDIA_DIR/$SENTINEL missing — wrong or empty filesystem"
     return 1
   fi
 
   # 3. Size — the check that actually catches a pinned placeholder.
-  size_kb=$(df -Pk "$MEDIA_DIR" | awk 'NR==2 {print $2}')
+  size_kb=$(timeout 30 df -Pk "$MEDIA_DIR" | awk 'NR==2 {print $2}')
   if [[ -z "$size_kb" || "$size_kb" != *[0-9]* ]]; then
     echo "could not read filesystem size for $MEDIA_DIR"
     return 1
@@ -138,7 +152,7 @@ check() {
   #    already in the guest dentry cache, so it sees a dead backing store that
   #    stat() does not. On 2026-08-03 this is precisely what failed for Jellyfin
   #    (`Input/output error: '/media/movies'`) while checks 1-3 all still passed.
-  if ! ls -1 "$MEDIA_DIR/$SENTINEL" >/dev/null 2>&1; then
+  if ! timeout 30 ls -1 "$MEDIA_DIR/$SENTINEL" >/dev/null 2>&1; then
     echo "cannot enumerate $MEDIA_DIR/$SENTINEL — mounted but not readable (host mount likely dropped)"
     return 1
   fi
@@ -154,10 +168,10 @@ check() {
     return 1
   fi
 
-  if ! dd_err=$(dd if="$HEALTH_FILE" of=/dev/null bs=4096 count=1 iflag=direct 2>&1); then
+  if ! dd_err=$(timeout 30 dd if="$HEALTH_FILE" of=/dev/null bs=4096 count=1 iflag=direct 2>&1); then
     if [[ "$dd_err" == *"Invalid argument"* ]]; then
       read_mode="buffered"
-      if ! dd_err=$(dd if="$HEALTH_FILE" of=/dev/null bs=4096 count=1 2>&1); then
+      if ! dd_err=$(timeout 30 dd if="$HEALTH_FILE" of=/dev/null bs=4096 count=1 2>&1); then
         echo "cannot read $HEALTH_FILE (buffered): ${dd_err%%$'\n'*}"
         return 1
       fi

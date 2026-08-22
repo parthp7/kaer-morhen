@@ -1,0 +1,17 @@
+[Unit]
+Description=Run media-export-health every 30s
+
+[Timer]
+OnBootSec=90
+# Wall-clock, not OnUnitActiveSec: a relative timer restarts its countdown from
+# the last activation, so its period is always >= the nominal value and the error
+# accumulates. Kuma's push window is a hard deadline — a beat that is ever late
+# reads as "No heartbeat in the time window".
+OnCalendar=*:*:0/30
+# systemd defaults to AccuracySec=1min and will defer the wakeup that far to batch
+# wakeups. Measured 2026-08-23: intervals of 61-90s against a 60s Kuma window.
+AccuracySec=1s
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

@@ -7,12 +7,16 @@
 #
 # THE HARDLINK CONTRACT (do not break):
 #   The *arr mount /mnt/media at /data (seeing /data/downloads AND /data/library);
-#   qBittorrent mounts /mnt/media/downloads at /data/downloads (downloads only).
-#   Both therefore see the completed file at the SAME path /data/downloads/... , so
-#   when an *arr imports it into /data/library/{movies,tv,audiobooks} — one ext4
-#   filesystem (the USB HDD) — it is an instant hardlink (0 extra bytes) instead of
-#   a slow copy on the ~40 MB/s USB 2.0 disk. Keep downloads and library on the one
-#   /data mount inside each *arr; never split them into separate volumes there.
+#   qBittorrent mounts /mnt/media/downloads at /data/downloads (downloads only),
+#   with /mnt/torrents/incomplete nested over /data/downloads/incomplete
+#   (in-flight scratch, local NVMe — proposal 005). Completed torrents land in
+#   /data/downloads/complete,
+#   where the *arr see them at the SAME path, so an import into
+#   /data/library/{movies,tv,audiobooks} — one NFS mount backed by one ext4
+#   filesystem on geralt — is an instant hardlink (0 extra bytes) instead of a
+#   slow copy. Keep downloads/ and library/ on the one /data mount inside each
+#   *arr; never split them into separate volumes there. incomplete/ is the ONLY
+#   piece allowed on a different filesystem — qBittorrent itself does that move.
 #
 # Lab conventions: pinned image tags (verified current 2026-07-24 — bump
 # deliberately, read release notes, then `docker compose pull && up -d`),
@@ -112,9 +116,33 @@ services:
       # silently made a root:root `downloads/` on the boot disk, qBittorrent
       # (uid 13000) attached to it, and all 20 torrents went missingFiles/error.
       # With the guard the container refuses to start instead — fail loud.
+      # Since proposal 005 this path is an NFS mount from geralt behind
+      # x-systemd.automount: resolving it is what TRIGGERS the mount. If geralt is
+      # not serving, the path is absent and the guard fails the container — same
+      # loud failure as before, now without any virtiofs inode pinning.
       - type: bind
         source: /mnt/media/downloads
         target: /data/downloads
+        bind:
+          create_host_path: false
+      # In-flight torrent scratch on local NVMe (scsi3, LABEL=torrents,
+      # backup=0) — proposal 005. Random write I/O stays off the USB disk (the
+      # 08-03 SMR RCA); qBittorrent's TempPath points here and its own
+      # move-on-completion carries finished files to /data/downloads/complete.
+      # Same guard: absent scratch disk => fail loud, never silently write to
+      # the VM root disk.
+      #
+      # NESTED ON PURPOSE: this mounts OVER /data/downloads/incomplete, which is
+      # part of the NFS bind above. Docker orders binds by target depth, so the
+      # NFS parent lands first and the NVMe scratch on top of it. Net effect: the
+      # container keeps the original, intuitive complete/ + incomplete/ pair side
+      # by side under /data/downloads — only the backing store of incomplete/
+      # changed (USB -> NVMe). The NFS directory underneath is merely a
+      # mountpoint from the container's view; anything left in it stays on the
+      # share, reachable from geralt, but is invisible in here.
+      - type: bind
+        source: /mnt/torrents/incomplete
+        target: /data/downloads/incomplete
         bind:
           create_host_path: false
     # NB: no `ports:` and no `networks:` here — both come from gluetun.

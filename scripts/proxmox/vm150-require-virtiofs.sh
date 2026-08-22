@@ -30,13 +30,16 @@
 #                    the media containers are held back instead, by
 #                    create_host_path:false guards on their binds
 #                    (configs/ciri/{jellyfin,servarr}/compose.yaml).
+#                    (Historical since proposal 005 — media is NFS now and no
+#                    longer passes through this hook at all.)
 #
-#   Boot ordering for /mnt/media is handled separately and with a timeout, in
-#   geralt's /etc/fstab:
+#   Boot ordering for /mnt/media USED to be handled in geralt's /etc/fstab with
 #     x-systemd.before=pve-guests.service,x-systemd.device-timeout=30
-#   Ordering only, no Requires — an absent disk delays guest start by at most
-#   30 s, then everything comes up anyway. This hook covers what ordering cannot:
-#   the disk dropping off the bus while running, then a VM restart.
+#   Dropped with proposal 005 (2026-08-23): that ordering existed only because
+#   virtiofsd had to resolve --shared-dir before ciri started. NFS has no
+#   start-time inode to pin, so guest start no longer needs to wait on a flaky
+#   USB disk at all — the export's `mountpoint` guard owns correctness, and
+#   media-autoheal.sh owns recovery.
 #
 # Usage (on geralt, as root)
 #   install -m 0755 vm150-require-virtiofs.sh /var/lib/vz/snippets/
@@ -58,7 +61,10 @@ readonly VMID_EXPECTED=150
 # from "an empty stand-in directory on the root filesystem".
 readonly SHARES=(
   "/steel/photos:zfs:library:required"   # virtiofs0 — Immich originals (irreplaceable)
-  "/mnt/media:ext4:library:advisory"     # virtiofs1 — USB media disk (disposable)
+  # /mnt/media left this list with proposal 005 (2026-08-23): the media disk is
+  # served to ciri over NFS now, not virtiofs, so there is no start-time inode
+  # pin to guard. Its availability is autoheal's + the export `mountpoint`
+  # guard's problem; the media containers still have their own bind guards.
 )
 
 main() {
