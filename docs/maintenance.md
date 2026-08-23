@@ -206,8 +206,8 @@ cannot name a version it never recorded.
 | nebula-sync | nebula-sync | `ghcr.io/lovelaze/nebula-sync:v0.11.2` | — | 0 |
 | obsidian-sync | couchdb | `couchdb:3.5.2.1` | — | 1 |
 | paperless | webserver | `ghcr.io/paperless-ngx/paperless-ngx:2.20.15` | — | 2 |
-| paperless | db | `postgres:16` ⚠️ **floating** — container on untagged **16.14** | — | 3 |
-| paperless | broker | `redis:7.4-alpine` ⚠️ **floating** — container on untagged **7.4.9** | — | 3 |
+| paperless | db | `postgres:16` ⚠️ **floating** — now **16.15** | `rollback/paperless-postgres:16.14` | 3 |
+| paperless | broker | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | `rollback/paperless-redis:7.4.9` | 3 |
 | paperless | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
 | servarr | gluetun | `qmcgaw/gluetun:v3.41.1` | — | 2 |
 | servarr | qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13` | — | 2 |
@@ -228,11 +228,17 @@ cannot name a version it never recorded.
 `valkey:9` were pinned 2026-08-23. The remaining four are the shared
 `postgres:16` / `redis:7.4-alpine` pairs, deferred as tier 3.
 
-**They are already drifting.** Pinning `sure` pulled newer builds of both shared
-images and moved the tags, leaving `paperless-db` (16.14) and `paperless-redis`
-(7.4.9) on untagged images while `sure-db` (16.15) and `sure-redis` (7.4.11)
-moved ahead. Same major throughout, so nothing broke — but paperless will jump
-on its next unrelated `up -d` unless it is brought in line deliberately.
+**They drifted once already, and it was caught by the inventory.** Pinning `sure`
+pulled newer builds of both shared images and moved the tags, leaving
+`paperless-db` (16.14) and `paperless-redis` (7.4.9) on *untagged* images —
+visible as bare image IDs in `docker ps` — while `sure-db` and `sure-redis`
+moved ahead. Resolved 2026-08-24 by recreating paperless's pair onto the current
+tagged builds, so both stacks now run **16.15 / 7.4.11** and every container
+references a real tag again. The old images were retagged under `rollback/`
+first, because an untagged image in use is one `docker image prune` away from
+being unrecoverable.
+
+That the fix was needed at all is the argument for pinning these four.
 
 ## Open items
 
@@ -241,8 +247,6 @@ on its next unrelated `up -d` unless it is brought in line deliberately.
   before relying on any post-upgrade monitoring.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **Bring paperless's db/redis onto the current tagged builds** so the version
-  change happens under observation rather than incidentally later.
 - **geralt is 98 packages behind**, including security updates.
 - **Node version divergence was unexplained** (geralt 9.2.4 vs yennefer 9.2.11).
   This registry exists so it cannot recur silently.
