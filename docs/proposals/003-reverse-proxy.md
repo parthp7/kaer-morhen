@@ -9,9 +9,12 @@
   slot reserved in [network.md](../network.md) since 2026-07-10, and closes
   the "reverse proxy interplay" next-step in
   [tailscale.md](../tailscale.md).
-  Remaining: per-app fixes (§7 — Paperless URL, Sure `RAILS_ASSUME_SSL`,
-  Jellyfin published URI), the Kuma monitors (§8), deploying Audiobookshelf,
-  and mirroring the live Caddyfile back into the repo.
+  Per-app fixes done for Paperless (`PAPERLESS_URL`), Sure
+  (`RAILS_ASSUME_SSL`) and Immich (app repointed); Kuma monitors `proxy-caddy`
+  and `proxy-tls` live with certificate-expiry alerting (2026-08-23).
+  **One item outstanding: Jellyfin's published server URI — parked
+  2026-08-23, state and next experiment in §7.** Audiobookshelf is
+  deliberately not deployed, so `books.kaermorhen.fyi` returns 502 by design.
 - **Date**: 2026-08-08 (domain settled 2026-08-09)
 - **Scope**: new LXC 202 on `yennefer`; DNS records on pihole-1
   ([dns.md](../dns.md)); Tailscale split-DNS addition
@@ -357,18 +360,52 @@ told to expect. Each needs a one-line change, then a stack restart:
   server URL afterwards.
 - **CouchDB / Obsidian LiveSync** — same body-size treatment; this is the one
   service that *gains* function, since mobile LiveSync requires HTTPS.
-- **Jellyfin** — two settings, and the second is not cosmetic. Add
-  `<LAN_PREFIX>.202` to Networking → "Known proxies" so client IPs in its logs
-  stay real rather than all reading as the proxy. Then **enable "Publish server
-  URL based on client request"** (`EnablePublishedServerUriByRequest`).
-  Jellyfin otherwise self-detects its address and advertises its *Docker bridge
-  IP* — confirmed 2026-08-21 returning `"LocalAddress": "http://172.23.0.2:8096"`
-  through the proxy. A browser on the LAN survives that because the web UI uses
-  relative paths, but native clients and every remote client build stream and
-  API URLs from `LocalAddress` and end up pointing at an address that exists
-  only inside ciri. Check with:
-  `curl -s https://jellyfin.kaermorhen.fyi/System/Info/Public | grep LocalAddress`
-  — it must return the `.fyi` URL.
+- **Jellyfin** — **UNRESOLVED, parked 2026-08-23.** `KnownProxies` is set to
+  `<LAN_PREFIX>.202` and that part is done. The published-server-URI half is
+  not, and is the reason native/remote clients misbehave: Jellyfin
+  self-detects its address and advertises its *Docker bridge IP*
+  (`"LocalAddress":"http://172.24.0.2:8096"` — note it moved from `172.23.0.2`
+  when the container was recreated, which is the point: the value is not
+  stable). A LAN browser survives it because the web UI uses relative paths;
+  native clients and every remote client build stream and API URLs from
+  `LocalAddress` and land on an address that exists only inside ciri.
+
+  What has been established, so it is not re-derived:
+
+  - **10.11 has no "Publish server URL based on client request" checkbox.** It
+    exposes *Published Server URIs* (`PublishedServerUriBySubnet`) instead,
+    with `internal=` / `external=` / `all=` syntax. The
+    `EnablePublishedServerUriByRequest` field still exists in `network.xml`
+    but has no UI; whether it is still honoured or vestigial is **untested**.
+  - **`internal=` / `external=` cannot express the goal here.** Tailscale
+    SNATs remote clients to `<LAN_PREFIX>.103`, a LAN address, so Jellyfin
+    files them as internal. The split silently misclassifies every remote
+    client.
+  - **Do not set LAN Networks (`LocalNetworkSubnets`) to the LAN subnet.**
+    Tried 2026-08-23 and it *regressed* things: the setting also filters which
+    of Jellyfin's own interfaces it will publish, and in a bridged container
+    none are in `<LAN_PREFIX>.0/24`, so it fell back to publishing
+    `127.0.0.1`. Reverted to empty.
+  - **`PublishedServerUriBySubnet` takes precedence over request-based
+    publishing**, so it must be cleared to test the latter at all.
+  - Jellyfin's Dashboard rewrites `network.xml` wholesale on save, so a
+    UI change will silently drop any field edited by hand.
+
+  **Next step when resumed**: clear `LocalNetworkSubnets` and
+  `PublishedServerUriBySubnet`, set `EnablePublishedServerUriByRequest` to
+  `true`, restart the *container* (`docker restart jellyfin` — the Dashboard's
+  restart button reloads in-process and does not change Docker's `StartedAt`),
+  then compare:
+
+  ```bash
+  curl -s https://jellyfin.kaermorhen.fyi/System/Info/Public | grep -o '"LocalAddress":"[^"]*"'
+  curl -s http://<LAN_PREFIX>.150:8096/System/Info/Public | grep -o '"LocalAddress":"[^"]*"'
+  ```
+
+  Different per path = request-based works, and gives the desired split (TV
+  direct by IP, Mac/phone proxied). Both `172.24.0.2` = the field is vestigial;
+  fall back to `all=https://jellyfin.kaermorhen.fyi` and accept that the TV
+  streams through the proxy too.
 - **Proxmox and PBS** — self-signed HTTPS backends, so their blocks need
   `reverse_proxy https://… { transport http { tls_insecure_skip_verify } }`.
   Skipping verification is correct here: the connection is a wired LAN hop to
@@ -586,6 +623,15 @@ only so the option isn't re-litigated later.
   Keeps the lore name (matching this repo) while the TLD, unlike `.in`, reveals
   nothing about where the lab is. Written out in full in tracked files by
   explicit decision — see the note under the header.
+- **Jellyfin published server URI — parked 2026-08-23, unresolved.** The last
+  open item from §7; full state and the next experiment are recorded there.
+  Everything else in this proposal is done.
+- **Jellyfin HLS errors — unexplained.** Caddy's log carries **170 × 500** and
+  **9 × 502** for `jellyfin.kaermorhen.fyi`, on transcoded HLS segments
+  (`/videos/*/hls1/main/*.mp4`) over HTTP/3, with
+  `aborting with incomplete response` in the journal. Some of that is normal
+  client seeking; 170 is not. Unrelated to the published-URI issue and
+  untouched — no diagnosis attempted yet.
 - **Vaultwarden**, listed as an LXC candidate in
   [001 §4](001-initial-infrastructure-plan.md), would be the first service
   *built* behind the proxy rather than retrofitted. Worth doing after this.
