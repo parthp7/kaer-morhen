@@ -116,10 +116,12 @@ runuser -u uptime-kuma -- ping -c1 <LAN_PREFIX>.22   # must succeed
 - **Settings → Notifications → ntfy**: server `https://ntfy.sh`, topic
   `<NTFY_TOPIC>`, "Default enabled" so every monitor inherits it. Test → phone.
 - **Gotcha — "Resend Notification if Down X times" defaults to `0`**, i.e.
-  *notify once on the down transition, then never again*, and **~29 of the 31
-  monitors here are still on that default** (`media-export` and `media-mount`
-  were set to 30 on 2026-08-23; the rest are batched with the timer work below).
-  It cost the lab a **12-day** media outage on
+  *notify once on the down transition, then never again*, and **every monitor
+  here is still on that default except `media-export` and `media-mount`**, which
+  were set to 30 on 2026-08-23; the remaining ~30 are batched with the timer work
+  below. (The exact total drifts — the table above is not exhaustive, and 003
+  added two more on 2026-08-23 — so treat "all but those two" as the figure, not
+  a count.) It cost the lab a **12-day** media outage on
   2026-08-10: the push monitor detected the fault in 10 s, Kuma fired exactly one
   ntfy at 00:16 AM, and nothing ever repeated it
   ([storage.md](storage.md#incident-2026-08-10--22--usb-link-fault-12-day-silent-outage)).
@@ -163,6 +165,8 @@ Full set as of 2026-07-13:
 | media-export geralt | **Push** (60 s) | fed by `media-export-health.sh` on geralt | **functional, not liveness** — added 2026-08-23; the *server-side* half of the media path, see below |
 | servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft, see below |
 | ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — deployed 2026-08-05; runs a real NVENC encode inside the jellyfin container, see below |
+| proxy-caddy | Ping | `<LAN_PREFIX>.202` | reverse proxy liveness — added 2026-08-23 ([proposal 003](proposals/003-reverse-proxy.md)) |
+| proxy-tls | HTTPS | `https://memos.kaermorhen.fyi` | proxy **plus** certificate expiry (expiry notification on, TLS errors not ignored). Backend up + proxy-tls down isolates the fault to the proxy. Needs a static `/etc/hosts` entry on 104 — see gotchas |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's

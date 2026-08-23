@@ -1,11 +1,13 @@
 # Proposal 005 — NFS media share on a dedicated storage network
 
 - **Status**: **DEPLOYED 2026-08-23.** Phases A, B and C complete; Phase D
-  passed on D1, D2, D4, D5 and D6 (D3 real-torrent and D7 worst-case-boot not
-  yet run). The design text and runbook below are preserved **as written**, so
-  they no longer match the system in the twelve places listed in
+  passed on D1, D2, **D3**, D4, D5 and D6 (only D7 worst-case-boot not run).
+  The design text and runbook below are preserved **as written**, so they no
+  longer match the system in the twelve places listed in
   [As-built deviations](#as-built-deviations-2026-08-23) — read that section
-  before trusting any command here. Phase E doc reconciliation is outstanding.
+  before trusting any command here. Phase E doc reconciliation is **complete**
+  (`b50c29f`); this document, both directory READMEs, `storage.md`,
+  `network.md`, `docker-vm.md` and `uptime-kuma.md` all reflect as-built.
 - **Scope**: `geralt` (NFS server, storage bridge, autoheal) and `ciri`
   (NFS client, new scratch disk, servarr changes). `yennefer` untouched.
   **`/steel/photos` and its virtiofs share are explicitly out of scope** —
@@ -779,6 +781,37 @@ healer was the only component using a weaker probe than the thing watching it.
 After the fix, re-running the same unbind/bind: repair completed in **13 s**,
 ciri's uptime unbroken, **zero container restarts**, one ntfy delivered.
 
+### D3 result (2026-08-23) — the hardlink contract at scale
+
+The real-torrent test ran itself: one movie resumed by hand, plus five episodes
+Sonarr grabbed on its own, **six parallel completions and imports across two
+\*arr instances**, ~10 GB written to the share in about 11 minutes.
+
+Every stage behaved:
+
+| Stage | Evidence |
+|---|---|
+| in-flight → NVMe | a resumed torrent downloading in `/mnt/torrents/incomplete` while the imports ran |
+| completed → NFS | six files landed in `downloads/complete` on the share |
+| the move | qBittorrent's own move-on-completion — one **sequential** write per file to the SMR disk, which was the entire point of the scratch disk |
+| \*arr import | **6/6 at `links=2` with identical inodes** — genuine hardlinks over NFS, 0 extra bytes |
+| rename + subs | Radarr foldered and renamed correctly; Bazarr fetched an SDH track (a real new file, `links=1`) |
+
+The aggregate is the strongest statement of the contract available:
+
+```
+library/ + downloads/complete/
+  apparent size (double-counts hardlinks):  521.4 GiB
+  actual blocks consumed (each inode once):   265 G
+```
+
+**~256 GiB of the share is hardlinks costing nothing**, over NFS. Had `link()`
+degraded to a copy — the risk §4 flagged — that would have been ~256 GiB of
+duplicated writes onto the worst disk in the lab.
+
+No errors, no monitor blips, and the media disk saw only sequential writes
+throughout.
+
 ### Also worth recording
 
 - **The USB link is back at SuperSpeed** — `/sys/bus/usb/devices/2-3/speed` =
@@ -792,7 +825,10 @@ ciri's uptime unbroken, **zero container restarts**, one ntfy delivered.
   mounts first and the NVMe scratch lands on top.
 - `/mnt/media/downloads/complete` was **not** empty as §4 claims — it holds live
   seeding data, and 7.3 G of stale partials remain in the NFS
-  `downloads/incomplete/` underneath the scratch mount, pending cleanup.
+  `downloads/incomplete/` underneath the scratch mount. Confirmed orphaned by
+  D3: a resumed torrent restarted from zero on the scratch disk rather than
+  picking up its old partial, because the path it now writes to is a different
+  filesystem. Safe to delete from geralt, where the path is not shadowed.
 
 ## Follow-ups
 
