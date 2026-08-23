@@ -50,7 +50,10 @@ services:
 
   redis:
     # Upstream pins valkey:9 by digest; tag-only per repo pinning policy.
-    image: docker.io/valkey/valkey:9
+    # Pinned to the exact minor (2026-08-23): a bare `9` floats across the whole
+    # major, so an incident cannot answer "what changed?" and a rollback has no
+    # version to name. The running server already reports 9.1.0.
+    image: docker.io/valkey/valkey:9.1.0
     container_name: immich-redis
     restart: unless-stopped
     environment:

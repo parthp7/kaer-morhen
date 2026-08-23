@@ -149,6 +149,13 @@ Check mounts *before* pulling; `docker image prune` after.
 - **Immich**: `database`/`redis` service names are load-bearing DNS; `.immich`
   markers must exist; never substitute plain `postgres:16`.
 - **Restarting dockerd restarts every container on ciri** — schedule it.
+- **A pull re-points shared tags lab-wide.** `postgres:16` and
+  `redis:7.4-alpine` are used by both `sure` and `paperless`; pulling in one
+  stack moves the tag for the other, leaving its running containers on an
+  untagged image that `docker ps` shows as a bare ID. After pulling a stack
+  that shares an image, check `docker ps` for bare IDs and bring the other
+  stack in line deliberately rather than letting it jump on some later,
+  unrelated `up -d`.
 
 ## Rollback
 
@@ -193,14 +200,14 @@ cannot name a version it never recorded.
 | immich | server | `ghcr.io/immich-app/immich-server:v3.0.2` | — | 2 |
 | immich | machine-learning | `ghcr.io/immich-app/immich-machine-learning:v3.0.2` | — | 2 |
 | immich | database | `ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0` | — | 3 |
-| immich | redis | `valkey/valkey:9` ⚠️ **floating** | — | 3 |
+| immich | redis | `valkey/valkey:9.1.0` | `:9` (floating) | 3 |
 | jellyfin | jellyfin | `jellyfin/jellyfin:10.11.11` | — | 2 |
 | memos | memos | `neosmemo/memos:0.29.1` | — | 0 |
 | nebula-sync | nebula-sync | `ghcr.io/lovelaze/nebula-sync:v0.11.2` | — | 0 |
 | obsidian-sync | couchdb | `couchdb:3.5.2.1` | — | 1 |
 | paperless | webserver | `ghcr.io/paperless-ngx/paperless-ngx:2.20.15` | — | 2 |
-| paperless | db | `postgres:16` | — | 3 |
-| paperless | broker | `redis:7.4-alpine` | — | 3 |
+| paperless | db | `postgres:16` ⚠️ **floating** — container on untagged **16.14** | — | 3 |
+| paperless | broker | `redis:7.4-alpine` ⚠️ **floating** — container on untagged **7.4.9** | — | 3 |
 | paperless | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
 | servarr | gluetun | `qmcgaw/gluetun:v3.41.1` | — | 2 |
 | servarr | qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13` | — | 2 |
@@ -211,16 +218,22 @@ cannot name a version it never recorded.
 | servarr | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | — | 0 |
 | servarr | bazarr | `lscr.io/linuxserver/bazarr:version-v1.6.0` | — | 1 |
 | servarr | jellyseerr | `fallenbagel/jellyseerr:2.7.3` | — | 1 |
-| sure | web / worker | `ghcr.io/we-promise/sure:stable` ⚠️ **floating** → v0.7.2 | — | 2 |
-| sure | db | `postgres:16` | — | 3 |
-| sure | redis | `redis:7.4-alpine` | — | 3 |
+| sure | web / worker | `ghcr.io/we-promise/sure:0.7.2` | `:stable` (same digest) | 2 |
+| sure | db | `postgres:16` ⚠️ **floating** — now **16.15** | — | 3 |
+| sure | redis | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | — | 3 |
 | sure | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
 | audiobookshelf | audiobookshelf | `ghcr.io/advplyr/audiobookshelf:2.35.1` | — | **NOT DEPLOYED** |
 
-⚠️ **Floating tags violate the pinning policy.** `sure:stable` and `valkey:9`
-both move on their own, so an incident cannot answer "what changed?" and a
-rollback has no version to name. Pin them (`sure:stable` currently resolves to
-**v0.7.2**).
+⚠️ **Floating tags violate the pinning policy** — an incident cannot answer
+"what changed?" and a rollback has no version to name. `sure:stable` and
+`valkey:9` were pinned 2026-08-23. The remaining four are the shared
+`postgres:16` / `redis:7.4-alpine` pairs, deferred as tier 3.
+
+**They are already drifting.** Pinning `sure` pulled newer builds of both shared
+images and moved the tags, leaving `paperless-db` (16.14) and `paperless-redis`
+(7.4.9) on untagged images while `sure-db` (16.15) and `sure-redis` (7.4.11)
+moved ahead. Same major throughout, so nothing broke — but paperless will jump
+on its next unrelated `up -d` unless it is brought in line deliberately.
 
 ## Open items
 
@@ -229,7 +242,10 @@ rollback has no version to name. Pin them (`sure:stable` currently resolves to
   before relying on any post-upgrade monitoring.
 - **`books.kaermorhen.fyi` → 502** — Caddy routes to an audiobookshelf backend
   that was never deployed. Deploy the stack or remove the route.
-- **Pin the two floating tags.**
+- **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
+  now demonstrably drifting between stacks (see the registry note).
+- **Bring paperless's db/redis onto the current tagged builds** so the version
+  change happens under observation rather than incidentally later.
 - **geralt is 98 packages behind**, including security updates.
 - **Node version divergence was unexplained** (geralt 9.2.4 vs yennefer 9.2.11).
   This registry exists so it cannot recur silently.

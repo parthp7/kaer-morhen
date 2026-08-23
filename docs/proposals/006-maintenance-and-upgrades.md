@@ -355,6 +355,16 @@ after liveness proved insufficient three separate times.
   makes it quietly check *less* than it claims.
 - **`pct exec` inside a `while read` loop consumes the loop's stdin** — redirect
   `</dev/null`.
+- **A `docker compose pull` in one stack silently re-points shared floating tags
+  for every other stack** (hit 2026-08-23, pinning `sure`). `sure` and
+  `paperless` both use `postgres:16` and `redis:7.4-alpine`. Pulling in `sure`
+  fetched newer builds of both, moved the tags, and left the images
+  `paperless-db` and `paperless-redis` are *still running* untagged — so
+  `docker ps` reports a bare image ID for them. Nothing broke, but paperless was
+  left on postgres 16.14 / redis 7.4.9 while sure moved to 16.15 / 7.4.11, and
+  paperless would jump versions on its next unrelated `up -d`, at a moment
+  nobody chose. This is the floating-tag problem in its most concrete form: the
+  blast radius of a pull is not the stack you ran it in.
 - **A stale apt cache reports "0 upgradable"**, which reads as healthy and is not.
 - **`apt upgrade` drops Caddy's DNS plugin**, and the consequence appears ~30
   days later at renewal, not at upgrade time.
