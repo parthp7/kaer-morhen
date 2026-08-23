@@ -60,7 +60,7 @@ time on 2026-08-23 found, in about ninety seconds:
 | The nodes have silently diverged | geralt on `pve-manager` **9.2.4**, yennefer on **9.2.11** — the docs claimed both were 9.2.4 |
 | geralt is far behind | **98** pending packages, including `stable-security`; yennefer had 2 |
 | Most guests are unmeasured, not current | **six of eight LXCs** reported "0 pending" purely because their apt cache dated from July |
-| The proxy advertises a service that does not exist | `books.kaermorhen.fyi` → **502**; the audiobookshelf stack was mirrored into the repo but never deployed |
+| The proxy advertised a service that does not exist | `books.kaermorhen.fyi` → **502**; audiobookshelf was routed but never deployed. Resolved 2026-08-24 by retiring the plan (route + DNS record removed) rather than carrying a permanently-red check |
 | Two pinned tags are not pins | `sure:stable` and `valkey:9` both float |
 
 None of these were known. All of them are the kind of thing that is invisible
@@ -393,12 +393,12 @@ quarterly for docker tiers.
 - **Kuma `resend_interval` (Phase 0.1) — OPEN, and it outranks everything else
   in this document.** It is not this proposal's finding; it has been the named
   highest-value change in the lab since the 12-day outage.
-- **`books.kaermorhen.fyi` returns 502 — OPEN (found 2026-08-23).** The
-  Caddyfile routes it to an audiobookshelf backend on `:13378` that was never
-  deployed; `configs/ciri/audiobookshelf/` is in the repo but untracked and
-  there is no `/data/stacks/audiobookshelf`. Either deploy the stack or remove
-  the route — an advertised service that 502s trains you to ignore a red smoke
-  test.
+- **`books.kaermorhen.fyi` 502 — CLOSED 2026-08-24.** Resolved by retiring the
+  audiobooks plan outright: the `@books` route, the pihole-1 A record and the
+  local scaffolding were all removed. The general rule it produced is worth more
+  than the feature was: **never publish a route or DNS record ahead of the
+  service**, because an advertised name that always fails trains you to ignore a
+  red check.
 - **The two floating tags (Phase 0.4) — OPEN.**
 - **geralt is 98 packages behind including security updates — OPEN**, and is the
   natural first real exercise of Phase D.

@@ -85,8 +85,7 @@ Costs nothing if the *arr stack never happens.
 /mnt/media/                    (geralt, ext4, USB)
 ├── library/                   ← Jellyfin sees only this (read-only)
 │   ├── movies/
-│   ├── tv/
-│   └── audiobooks/            ← (audiobooks deferred — see servarr README)
+│   └── tv/
 └── downloads/                 ← qBittorrent writes here; *arr hardlink into library/
 ```
 

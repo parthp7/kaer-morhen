@@ -13,8 +13,9 @@
   (`RAILS_ASSUME_SSL`) and Immich (app repointed); Kuma monitors `proxy-caddy`
   and `proxy-tls` live with certificate-expiry alerting (2026-08-23).
   **One item outstanding: Jellyfin's published server URI — parked
-  2026-08-23, state and next experiment in §7.** Audiobookshelf is
-  deliberately not deployed, so `books.kaermorhen.fyi` returns 502 by design.
+  2026-08-23, state and next experiment in §7.** Audiobookshelf was retired
+  2026-08-24 — the plan was abandoned rather than deployed, and its route and
+  DNS record were removed, so `books.kaermorhen.fyi` no longer exists (§3).
 - **Date**: 2026-08-08 (domain settled 2026-08-09)
 - **Scope**: new LXC 202 on `yennefer`; DNS records on pihole-1
   ([dns.md](../dns.md)); Tailscale split-DNS addition
@@ -41,7 +42,6 @@ only thing distinguishing them:
 |---|---|---|
 | Jellyfin | `<LAN_PREFIX>.150:8096` | `jellyfin.kaermorhen.fyi` |
 | Immich | `<LAN_PREFIX>.150:2283` | `immich.kaermorhen.fyi` |
-| Audiobookshelf | `<LAN_PREFIX>.150:13378` | `books.kaermorhen.fyi` |
 | memos | `<LAN_PREFIX>.150:5230` | `memos.kaermorhen.fyi` |
 | Paperless | `<LAN_PREFIX>.150:8000` | `paperless.kaermorhen.fyi` |
 | Sure | `<LAN_PREFIX>.150:3000` | `sure.kaermorhen.fyi` |
@@ -68,11 +68,16 @@ that terminates HTTP and dispatches on `Host`, i.e. a reverse proxy.
 FlareSolverr (`8191`) and SearXNG stay unproxied: the first is an internal API
 for Prowlarr, the second has no published host port at all.
 
-**Audiobookshelf is routed but not yet deployed** — `configs/ciri/audiobookshelf/`
-exists in the repo while ciri has no such stack, so `books.kaermorhen.fyi`
-correctly returns 502 (confirmed 2026-08-12). The Caddy block and DNS record are
-in place and will start working the moment the stack ships; no proxy change
-needed then.
+**Audiobookshelf was routed, then retired (2026-08-24).** The `@books` block and
+the `books.kaermorhen.fyi` DNS record were added ahead of a stack that was never
+built, so the name returned 502 for twelve days (confirmed 2026-08-12) and then
+showed up as the only failure in the first post-upgrade smoke test. Rather than
+carry a permanently-red assertion, the audiobooks plan was dropped: route
+removed from the `Caddyfile`, A record removed from pihole-1, and the local
+scaffolding deleted, and the empty `library/audiobooks` folder removed from the
+media disk. **Lesson kept: do not publish a route or a DNS record ahead
+of the service.** An advertised name that always fails trains you to ignore a
+red check, which is the one thing a check must never do.
 
 ## 2. Decisions and why
 

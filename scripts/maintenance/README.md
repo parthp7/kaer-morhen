@@ -231,5 +231,6 @@ shell expands them.
 **First-run findings** (all real, none introduced by the scripts): geralt 98
 packages behind yennefer's 2 and on an older `pve-manager` (9.2.4 vs 9.2.11);
 six of eight LXC apt caches 6+ weeks stale; `books.kaermorhen.fyi` returning 502
-because the proxy routes to an audiobookshelf stack that was never deployed; and
+because the proxy routed to an audiobookshelf stack that was never deployed
+(resolved 2026-08-24 by retiring the plan); and
 one 6-week-old exited `nebula-sync` one-shot leftover.

@@ -41,11 +41,6 @@
 		reverse_proxy <LAN_PREFIX>.150:8096
 	}
 
-	@books host books.kaermorhen.fyi
-	handle @books {
-		reverse_proxy <LAN_PREFIX>.150:13378
-	}
-
 	@requests host requests.kaermorhen.fyi
 	handle @requests {
 		reverse_proxy <LAN_PREFIX>.150:5055

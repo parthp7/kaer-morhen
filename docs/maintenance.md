@@ -222,7 +222,6 @@ cannot name a version it never recorded.
 | sure | db | `postgres:16` ⚠️ **floating** — now **16.15** | — | 3 |
 | sure | redis | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | — | 3 |
 | sure | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
-| audiobookshelf | audiobookshelf | `ghcr.io/advplyr/audiobookshelf:2.35.1` | — | **NOT DEPLOYED** |
 
 ⚠️ **Floating tags violate the pinning policy** — an incident cannot answer
 "what changed?" and a rollback has no version to name. `sure:stable` and
@@ -240,8 +239,6 @@ on its next unrelated `up -d` unless it is brought in line deliberately.
 - **Kuma `resend_interval = 0` on ~29 monitors** — notifies once, then never
   again. Caused a 12-day silent outage. **Highest-value fix in the lab**; do it
   before relying on any post-upgrade monitoring.
-- **`books.kaermorhen.fyi` → 502** — Caddy routes to an audiobookshelf backend
-  that was never deployed. Deploy the stack or remove the route.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
 - **Bring paperless's db/redis onto the current tagged builds** so the version

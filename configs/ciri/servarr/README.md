@@ -47,8 +47,9 @@ good port meanwhile (see Caveats for the manual reconnect).
 | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | `http://<CIRI_IP>:8191` | Cloudflare solver for Prowlarr indexers |
 
 **Audiobooks deferred:** Readarr was removed — it is EOL (frozen at 0.4.18) and its old
-WebUI login can't authenticate to qBittorrent 5.x. Audiobooks (Readarr replacement +
-Audiobookshelf) will be revisited separately; this stack is TV + Movies only for now.
+WebUI login can't authenticate to qBittorrent 5.x. Audiobooks were dropped
+outright on 2026-08-24 (see [docker-vm.md](../../../docs/docker-vm.md)) rather than
+carried as a deferred plan; this stack is TV + Movies.
 
 `<CIRI_IP>` = `<LAN_PREFIX>.150`. Tags verified current 2026-07-24; bump deliberately.
 
@@ -374,5 +375,7 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
 - **FlareSolverr** is only needed for Cloudflare-protected indexers; it's stateless (no
   media, no `/config`). If an indexer test fails with a Cloudflare/challenge error, tag it to
   route through the FlareSolverr proxy.
-- **Audiobooks are deferred**: Readarr was removed (EOL, can't auth to qBittorrent 5.x). When
-  revisited, audiobooks will use a maintained grabber + the separate `audiobookshelf` stack.
+- **Audiobooks were dropped 2026-08-24**: Readarr was removed (EOL, can't auth to
+  qBittorrent 5.x) and the replacement never happened. The half-built state — a routed
+  but undeployed `books.kaermorhen.fyi` — cost more attention than the feature was
+  worth, so the plan, its Caddy route and its DNS record were all retired.

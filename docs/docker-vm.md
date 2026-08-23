@@ -375,12 +375,14 @@ plus `.env.example` + README).
 - **App stacks**: all deployed. Memos 2026-07-12, sure 2026-07-13 (fresh
   install — old-host backup discarded), paperless 2026-07-14, immich
   2026-07-14, jellyfin 2026-07-22, servarr (TV + Movies) 2026-07-25.
-- **Audiobooks — deferred (gated on stability)**: hold until the servarr stack
-  has run stably for ≥1 week — re-evaluate **on/after 2026-08-02**. Readarr was
-  dropped (EOL, can't authenticate to qBittorrent 5.x), so this needs a
-  maintained grabber + an Audiobookshelf server. Scaffolding for the
-  `audiobookshelf` stack exists locally but is intentionally **uncommitted**
-  until it's built and verified.
+- **Audiobooks — dropped 2026-08-24.** Deferred since 2026-07-25 pending servarr
+  stability, then abandoned: Readarr is EOL (can't authenticate to qBittorrent
+  5.x) so it needed a maintained grabber *and* an Audiobookshelf server, and the
+  half-built state was costing more attention than the feature was worth — a
+  routed-but-undeployed `books.kaermorhen.fyi` sat at 502 and was the only
+  failure in the first smoke test. Route, DNS record and local scaffolding all
+  removed; see [proposal 003](proposals/003-reverse-proxy.md) §3. Revisit from
+  scratch if audiobooks come back.
 - **Immich follow-ups**: backup job done 2026-07-16 (restic → yennefer,
   [scripts/backup/README.md](../scripts/backup/README.md)) — library
   import now unblocked; B2 offsite later — see
