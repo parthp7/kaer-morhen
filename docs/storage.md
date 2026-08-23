@@ -33,14 +33,24 @@ deliberately excluded from backup:
 | scsi0 | 64 G | `/` | yes |
 | scsi1 | 64 G | `/data` — Docker data-root + every stack's app data | yes |
 | scsi2 | 64 G | `/mnt/ai-models` — Ollama model weights | **no — `backup=0`** |
+| scsi3 | 100 G | `/mnt/torrents` — in-flight torrent scratch (`incomplete/`) | **no — `backup=0`** |
 
 scsi2 was added 2026-07-31 for the AI stack ([proposal 002](proposals/002-local-ai-stack.md)).
 The `backup=0` flag is the point of it: ~29 GB of GGUF weights are
 re-downloadable in minutes, so backing them up nightly would inflate every
 snapshot for nothing. Anything that must survive a restore therefore must NOT
-live under `/mnt/ai-models` — it is a cache, not storage. (`/mnt/photos` and
-`/mnt/media` are virtiofs shares and are excluded for a different reason: PBS
-only sees the guest's own disks.)
+live under `/mnt/ai-models` — it is a cache, not storage.
+
+scsi3 was added 2026-08-23 ([proposal 005](proposals/005-nfs-media-share.md)) and
+applies the same precedent for the same reason: torrent scratch is disposable by
+construction, and backing it up nightly would inflate every snapshot with data
+that is deleted the moment a download completes. Its real job is to keep random
+write I/O off the SMR USB disk — qBittorrent downloads to NVMe, then performs its
+own move-on-completion to the media share as a single **sequential** write, which
+is the SMR-friendliest workload there is.
+
+(`/mnt/photos` is a virtiofs share and `/mnt/media` an NFS mount; both are
+excluded for a different reason — PBS only sees the guest's own disks.)
 
 Pool naming: Geralt carries two swords — **silver** (fast/precious: guests) and
 **steel** (workhorse: bulk).
@@ -529,16 +539,181 @@ here it was pointed at a **dead filesystem** (hard `EIO` → everything refused)
 | `usb-storage.quirks=0bc2:ab24:u` via **`modprobe.d`, not GRUB** | the UAS command timeout. Also clears the vendor-wide `US_FL_NO_ATA_1X`, which may restore SMART. Delivered outside the kernel cmdline because that is the path blamed for the 07-28 boot hangs |
 | `queue_depth=1` (runtime probe) | reduces UAS command concurrency with zero boot risk and instant revert — a test, not a fix |
 | Keep sustained writes off the disk (downloads/imports land on `steel`) | the **root cause**. Targets SMR cache exhaustion directly |
-| Auto-remount on re-enumeration | the host mount sitting dead from 00:57 to 15:39 |
+| Auto-remount on re-enumeration | the host mount sitting dead from 00:57 to 15:39 — **filed here, never implemented, and the direct cause of the 12-day [2026-08-10 / 22](#incident-2026-08-10--22--usb-link-fault-12-day-silent-outage) outage. Finally deployed 2026-08-23 as part of [proposal 005](proposals/005-nfs-media-share.md)** |
 
 **Still open:** virtiofs pins the inode, so even an auto-remount cannot heal the
 guest without a VM restart. Replacing the media share with **NFS** would remove
 that constraint entirely (an NFS client recovers on its own; export with the
-`mountpoint` option so it refuses to serve the empty placeholder). Filed as future
-work, not yet done.
+`mountpoint` option so it refuses to serve the empty placeholder).
+
+***Built 2026-08-23.*** [Proposal 005](proposals/005-nfs-media-share.md) replaced
+virtiofs with NFS over a dedicated storage network, and
+[proposal 004](proposals/004-media-mount-self-healing.md) — which would have
+automated the VM restart instead of removing the need for it — was superseded
+before deployment. Repair is now host-side only and takes ~13 s with the guest
+untouched. One correction to the parenthetical above, learned by fault injection:
+the `mountpoint` option refuses to export a path that is **not a mount point**,
+but it does *not* protect against a path that is mounted and **dead** — it went
+on exporting a filesystem in `shutdown` state throughout the test. It answers
+07-27, not 08-03.
 
 **Accepted position (revised 2026-08-03):** the drive is SMR and will stall under
 sustained write; the bridge will drop when it does. The lab's job is to (a) stop
 writing to it heavily, (b) detect the drop in minutes rather than hours, and
 (c) make recovery not require a human. A replacement should be **CMR** — swapping
 only the enclosure would leave the root cause in place.
+
+## Incident 2026-08-10 / 22 — USB link fault, 12-day silent outage
+
+The third media outage, and the first that is **not** the SMR mechanism. A
+one-second bus drop became a **12-day** outage because nothing re-arms the mount.
+Detection worked perfectly and still nobody acted, which makes this as much an
+alerting incident as a storage one.
+
+geralt never rebooted (up 17 d at diagnosis). The disk was healthy, present and
+unmounted the entire time.
+
+### What happened
+
+| When (IST) | Event |
+|---|---|
+| 08-10 **00:15:37** | `usb 2-3: USB disconnect` — spontaneous, while virtiofsd (`comm vring_worker`) was serving **reads**. `device offline error, dev sdb, sector 0 op WRITE` (a flush), `EXT4-fs (sdb1): shut down requested (2)`, `Aborting journal on device sdb1-8` |
+| 00:15:37 | systemd: `Unmounted mnt-media.mount` — **and nothing ever remounts it** |
+| 00:15:37 | Disk re-enumerates **0 s later** at SuperSpeed as device 3, attaches as **`sdc`** (was `sdb`). Healthy. Left unmounted |
+| 00:15:47 | `media-mount-health.service` FAILs: `cannot enumerate /mnt/media/library`. **10 seconds after the drop** — the monitor did its job |
+| 00:16:33 | Kuma marks monitor 23 down → ntfy fires. **Once.** User received it, did not check the server |
+| 08-15 **16:34:44 → 16:35:04** | Second event, worse: **4+ disconnect/re-enumerate cycles in 20 s**, `device descriptor read/64, error -71`, bouncing between `2-3` and `1-3`, ending in a permanent fallback to **USB 2.0** (`speed=480`) |
+| 08-22 01:27 | Diagnosis. `/mnt/media` still unmounted, disk still healthy, still at 480 Mb/s |
+
+`/mnt/media` was down for **12 days 1 h**. Jellyfin was retrying one transcode
+(`South.Park.S02E04`) every ~5 s from a client left on the play screen — those
+retries are what kept `EXT4-fs warning … comm vring_worker` scrolling in geralt's
+log for twelve days.
+
+### Root cause: the USB link, not SMR
+
+This is the important finding, because it **contradicts the standing position**
+from [2026-08-03](#incident-2026-08-03--usb-bus-drop-under-sustained-write-smr).
+The SMR remediation is in place and **working**:
+
+| Evidence | Reading | What it rules out |
+|---|---|---|
+| `188 Command_Timeout` | **65558** vs the 08-04 baseline **65557** — **+1 in 18 days** | Under the SMR/UAS mechanism this counter climbed hard. It has essentially stopped. The quirk beat it |
+| `usb-storage 2-3:1.0: Quirks match for vid 0bc2 pid ab24: 800000`, `UAS is ignored for this device` | quirk loaded and active | UAS is disabled, so a **UAS command timeout cannot be what dropped the bus**. This was a raw USB disconnect |
+| In-flight I/O at the drop | `comm vring_worker` — **read-dominant** (Jellyfin), no \*arr import running | SMR cache exhaustion, which needs sustained *writes* |
+| 08-15 signature | `error -71` on descriptor reads, repeated re-enumeration, permanent drop to USB 2.0 | Shingled-write stalls do not renegotiate link speed. This is **physical layer** |
+| `199 UDMA_CRC_Error_Count` | **0** | the SATA link *inside* the enclosure. Note this does **not** exonerate the USB cable — it is not on that link |
+| `191 G-Sense_Error_Rate` | **10** | the drive has taken knocks; consistent with the 08-15 cascade being physical handling |
+
+Drive health is pristine — `5 Reallocated_Sector_Ct` 0, `197 Current_Pending_Sector`
+0, `198 Offline_Uncorrectable` 0, SMART `PASSED`, 2119 power-on hours. **The
+platters are fine. Suspect the cable and the port, not the disk.**
+
+Per the standing lesson from 08-03 — *this disk is hand-portable and unsecured,
+check physical handling before counting a drop as a hardware trend* — the 08-15
+cascade most likely **was** physical handling of the drive or its cable.
+
+### Why a one-second glitch became twelve days
+
+`mnt-media.mount` is a one-shot fstab unit. On device loss it deactivates; when
+the device returns 0 s later under a **new kernel name**, nothing Wants it, so it
+stays dead indefinitely. The 07-27 fix
+(`x-systemd.before=pve-guests.service`) is **boot ordering only** and does nothing
+for a mid-flight drop — the same reason it did not apply on 08-03.
+
+"Auto-remount on re-enumeration" was listed as a fix in the 08-03 table and
+**never implemented**. This incident is the bill for that.
+
+### Why detection worked and it still ran twelve days
+
+Unlike 07-27 and 08-03, the monitor was **not** blind. Check 4 caught it in ten
+seconds and failed ~3,400 consecutive times over twelve days. The gap moved
+downstream, to notification:
+
+**Every Kuma monitor has `resend_interval = 0`** — notify once on the down
+transition, then never again. A total media outage got **one ntfy at 00:16 AM**
+and silence for twelve days. The user received that notification and did not act
+on it, which is the expected outcome for a single midnight buzz with no follow-up.
+
+This is now the cheapest high-value fix in the lab: one field, per monitor.
+
+### Collateral
+
+None. Same asymmetry as 08-03: the guest was pointed at a **dead** filesystem
+(hard `EIO`) rather than a live empty placeholder, so everything refused loudly
+instead of writing to the wrong disk. Sonarr logged `Unable to get free space and
+unmapped folders for root folder /data/library/tv/` and wrote nothing;
+`pve-root` was untouched. The `create_host_path:false` guards were never
+exercised.
+
+The filesystem superblock reads `Filesystem state: clean` with
+`Last write time: Tue Aug 4 23:06:11` — i.e. **stale**, because the device was
+already gone when ext4 tried to mark it dirty. `clean` here is not evidence of a
+clean shutdown; the journal was aborted. fsck before remounting.
+
+### Recovery
+
+```bash
+# on geralt
+fsck.ext4 -fp /dev/disk/by-label/media   # journal was aborted; -p auto-fixes safe issues
+mount /mnt/media
+findmnt /mnt/media && ls /mnt/media/library   # must list, not EIO
+
+# only then — virtiofsd must re-resolve the pinned inode
+qm stop 150 && qm start 150               # NOT qm reboot
+```
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| **DONE 2026-08-23** — self-healing mount + NFS, [proposal 005](proposals/005-nfs-media-share.md) | the mount sitting dead from 08-10 to 08-22, **and** the VM restart that virtiofs pinning made unavoidable. Closes the "auto-remount on re-enumeration" item left open on 08-03. Verified by fault injection: 13 s to heal, ciri's uptime unbroken, zero container restarts |
+| **PARTIAL** — `resend_interval` on the Kuma monitors (30–60 min) | the twelve days. Still the highest-value change here. Set on `media-export` and `media-mount`; **~29 monitors remain on the `0` default** |
+| Reseat/replace the USB cable, confirm the link returns to 5000 Mb/s | the **root cause**. *(2026-08-23: the link is back at `speed=5000` / USB 3.0 on its own, having been at 480 since 08-15. Less urgent than it was; the drop history stands.)* |
+| ~~Keep sustained writes off the disk (downloads/imports on `steel`)~~ → **DONE differently 2026-08-23** | steel was vetoed (reserved for photo growth). Proposal 005 put in-flight torrent writes on a `backup=0` NVMe zvol instead, leaving only one sequential write per completed file. Note it would **not** have prevented this incident either way — the drop happened under read traffic |
+
+**Revised position (2026-08-22):** the 08-03 conclusion — "the drive is SMR and
+will stall under sustained write" — remains true but is **no longer the active
+failure mode**. The UAS quirk closed it. What drops the bus now is the physical
+USB link, and the lab's job is unchanged: detect in minutes, recover without a
+human, and make the alert survive being ignored once. A replacement should still
+be **CMR**, but the cable is the cheaper suspect and should be eliminated first.
+
+### Postscript 2026-08-23 — the structural fix, and what testing it found
+
+[Proposal 005](proposals/005-nfs-media-share.md) is deployed. `/mnt/media` is no
+longer a virtiofs share: geralt exports it over NFSv4.2 on a dedicated,
+port-less storage bridge, and ciri mounts it `hard` with `x-systemd.automount`.
+An NFS client holds a *network handle* rather than a pinned inode, so the whole
+class of failure that made this incident twelve days long — "the host can remount
+all it likes, the guest is still being served the dead filesystem" — no longer
+exists. `udev` → `media-autoheal.sh` remounts and re-exports host-side; the guest
+blocks and resumes on its own.
+
+**Measured, not asserted.** Unbinding the USB device with everything running:
+repair completed in **13 s**, ciri's uptime unbroken, **zero container restarts**.
+The same fault on 2026-08-10 cost 12 days and would have cost a full VM restart
+even had someone noticed.
+
+Two findings from that test are worth carrying forward, because both contradict
+things written above:
+
+- **`readdir` does not prove a filesystem is alive.** The first heal attempt
+  *failed silently*: `media-autoheal.sh` probed with `ls`, concluded "nothing to
+  heal", and left nfsd exporting a corpse. `library/` has three entries and had
+  just been read, so the readdir was served entirely from the **dentry cache**.
+  On that same dead mount, `dd … iflag=direct` returned `EIO` — and both Kuma
+  monitors had flagged the fault correctly, because both use `O_DIRECT`. *The
+  healer was the only component using a weaker probe than the thing watching it.*
+  This generalises past media: the [08-03 lesson](#incident-2026-08-03--usb-bus-drop-under-sustained-write-smr)
+  was that `stat`/`df` pass against a shut-down ext4; the 08-23 lesson is that
+  **`readdir` does too, whenever the directory is small and warm.** Only a
+  cache-bypassing byte read reaches the disk.
+- **The `mountpoint` export option does not cover mounted-but-dead.** It refuses
+  to export a path that is not a mount point, which answers 07-27's empty
+  placeholder. It went on happily exporting a filesystem in `shutdown` state
+  throughout this test. Do not over-trust it.
+
+**Still open:** `resend_interval` on ~29 remaining monitors — which, note, is the
+one fix on the list above that would have shortened *this* incident, and it is
+still the cheapest.

@@ -18,9 +18,9 @@ guest hostname = login user = `ciri`.
 | OS | Ubuntu Server **26.04 LTS** (Resolute) cloud image, cloud-init provisioned |
 | Machine | **q35 + OVMF**, Secure Boot off (`pre-enrolled-keys=0`) — GPU passthrough later is a `qm set --hostpci0`, not a rebuild; no MOK dance for future NVIDIA DKMS |
 | Resources | 6 vCPU (`cpu: host`), **24576 MB fixed** (`balloon: 0`) — provisioned at 8192 MB, raised to 10240, then to 24576 on 2026-07-31 for the AI stack's MoE tier ([proposals/002](proposals/002-local-ai-stack.md)); live value verified 2026-07-31 |
-| Disks | **scsi0 64 G = OS**; **scsi1 32 G = `/data`** (Docker + app data) — both sparse zvols on `silver-guests`, `discard=on,iothread=1,ssd=1`, virtio-scsi-single; see "Storage layout" |
+| Disks | **scsi0 64 G = OS**; **scsi1 64 G = `/data`** (Docker + app data); **scsi2 64 G = `/mnt/ai-models`** (`backup=0`, 2026-07-31); **scsi3 100 G = `/mnt/torrents`** (`backup=0`, 2026-08-23) — all sparse zvols on `silver-guests`, `discard=on,iothread=1,ssd=1`, virtio-scsi-single; see "Storage layout" |
 | Docker config | `data-root: /data/docker`; `local` log driver capped **100 MB × 5 files per container** (`/etc/docker/daemon.json`); containerd `root = /data/containerd` (`/etc/containerd/config.toml`) — image layers live *there*, not in data-root (containerd image store, see gotchas) |
-| Network | virtio on `vmbr0`, static `<LAN_PREFIX>.150/24` via cloud-init, DNS `.101`/`.201` (the Pi-holes), search `kaermorhen.internal` (renamed from `….home.arpa` 2026-07-12 — see [dns.md](dns.md) gotchas) |
+| Network | **net0** virtio on `vmbr0`, static `<LAN_PREFIX>.150/24` via cloud-init, DNS `.101`/`.201` (the Pi-holes), search `kaermorhen.internal` (renamed from `….home.arpa` 2026-07-12 — see [dns.md](dns.md) gotchas). **net1** virtio on `vmbr1` → `eth1`, `<STORAGE_PREFIX>.150/24`, **no gateway** — NFS to geralt only, added 2026-08-23 ([proposal 005](proposals/005-nfs-media-share.md), [network.md](network.md)) |
 | Login | user `ciri`, SSH-key only (keys inherited from geralt's `/root/.ssh/authorized_keys`); no password unless set via `sudo passwd ciri` |
 | Docker | Engine 29.6.1 + Compose v5.3.1 from Docker's official apt repo; `ciri` in the `docker` group |
 | Monitoring | Beszel agent (binary, `beszel-agent.service`) → hub on `.204`; per-container Docker stats on the same dashboard. **Auto-update timer disabled** (house policy) |
@@ -50,7 +50,10 @@ while keeping memory fixed.
 |---|---|---|---|
 | scsi0 → `/` | 64 G | OS only | a full data disk stops containers but leaves SSH, the OS, and monitoring alive |
 | scsi1 → `/data` | 32 G | `/data/docker` (Docker data-root: volumes, container state, logs) + `/data/containerd` (image layers & content) + `/data/stacks` (compose files & bind mounts, owned by `ciri`) | independent online growth; per-disk vzdump policy |
+| scsi2 → `/mnt/ai-models` | 64 G | Ollama model weights (2026-07-31) | `backup=0` — re-downloadable, must not inflate the nightly PBS job |
+| scsi3 → `/mnt/torrents` | 100 G | in-flight torrent scratch, `incomplete/` (2026-08-23) | `backup=0`, same reason. Keeps random torrent writes off the SMR USB disk; qBittorrent's move-on-completion then writes the finished file to the media share as one **sequential** write ([proposal 005](proposals/005-nfs-media-share.md)) |
 | virtiofs0 → `/mnt/photos` | — | geralt's `steel/photos` dataset (Immich originals), dir mapping `photos`, added 2026-07-14 | host dataset stays in the future photos backup path, outside PBS/vzdump; costs the VM live migration + `--vmstate` snapshots (disk-only snapshots and PBS backups verified fine) |
+| NFS → `/mnt/media` | — | geralt's USB media disk over the storage network, `vers=4.2,hard,x-systemd.automount` (2026-08-23, replaced virtiofs1) | an NFS client holds a *network handle*, not a pinned inode — a USB drop heals host-side with **no VM restart**. See below |
 
 Design decisions behind the split (evaluated 2026-07-11):
 
@@ -79,12 +82,20 @@ Design decisions behind the split (evaluated 2026-07-11):
 - **Sizing**: caps on sparse zvols, not allocations. Growing is online and
   trivial (`qm disk resize` + `resize2fs`); shrinking is effectively
   impossible — grow on evidence. Bulk media never goes here: it lands on an
-  external USB HDD on geralt, shared into ciri via **virtiofs** (like
-  `steel/photos`), so replaceable terabytes never touch a VM disk or inflate
-  the nightly PBS job protecting the irreplaceable app data on scsi0+scsi1
-  (both backed up by default). (Originally planned as a raw `--scsi2` with
-  `backup=0`; virtiofs superseded it once ciri gained virtiofs + the GPU —
-  rationale in [configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md).)
+  external USB HDD on geralt, so replaceable terabytes never touch a VM disk or
+  inflate the nightly PBS job protecting the irreplaceable app data on
+  scsi0+scsi1 (both backed up by default). (Originally planned as a raw
+  `--scsi2` with `backup=0`; virtiofs superseded it once ciri gained virtiofs +
+  the GPU — rationale in
+  [configs/ciri/jellyfin/README.md](../configs/ciri/jellyfin/README.md).)
+- **Media moved from virtiofs to NFS on 2026-08-23** ([proposal 005](proposals/005-nfs-media-share.md)).
+  `virtiofsd` resolves `--shared-dir` **once**, at VM start, and pins that inode
+  for the life of the process, so every USB drop cost a **cold restart of ciri** —
+  all ~20 containers, Immich and Paperless included — to heal a share only the
+  media stack uses. That is why 2026-08-10 ran for 12 days. `/mnt/photos` keeps
+  virtiofs deliberately: it is an always-present internal SATA disk, so the
+  pinning constraint never bites. Verified by fault injection 2026-08-23: heal in
+  **13 s**, ciri's uptime unbroken, zero container restarts.
 
 ## Runbook (as executed)
 

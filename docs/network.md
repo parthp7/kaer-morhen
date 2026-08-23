@@ -37,12 +37,37 @@ Consequences:
 The guest-space asymmetry (geralt 100 slots, yennefer 55) matches the hardware
 asymmetry — the workhorse gets the bigger namespace.
 
+### Second subnet: the storage network (`<STORAGE_PREFIX>.0/24`, 2026-08-23)
+
+A **second, private /24** carries NFS traffic between geralt and ciri and nothing
+else. It is not part of the map above and never touches the LAN.
+
+| Address | Host |
+|---|---|
+| `<STORAGE_PREFIX>.21` | geralt, on `vmbr1` |
+| `<STORAGE_PREFIX>.150` | ciri (VM 150), `net1` → `eth1` |
+
+**Same last-octet convention as the LAN**, deliberately — an address is readable
+on either network without a lookup.
+
+- `vmbr1` on geralt has **`bridge-ports none`**: a bridge with *no physical
+  port*. There is no path from the LAN to `<STORAGE_PREFIX>.21` — isolation by
+  topology, not by an export allowlist or a firewall rule that can drift. Host↔
+  guest traffic runs at virtio/memory speed (measured 0.195 ms RTT) and never
+  touches the `alx` NIC, which already logs chronic AER noise.
+- The prefix had to come from **`10.0.0.0/8`**: ciri's docker bridges already
+  occupy `172.17.0.0/16`–`172.26.0.0/16` and docker allocates further networks
+  out of `172.16.0.0/12` on demand. `10.2.0.0/24` was also avoided (gluetun's
+  WireGuard address — an isolated netns, but not worth the ambiguity).
+- Real value in `secrets.local.yaml` as `STORAGE_PREFIX`; see
+  [proposal 005](proposals/005-nfs-media-share.md).
+
 ### Infra tier assignments (.20–.30)
 
 | Octet | Device |
 |---|---|
 | .20 | TP-Link TL-SG108E switch |
-| .21 | geralt (Proxmox node, `vmbr0`) |
+| .21 | geralt (Proxmox node, `vmbr0`; also `<STORAGE_PREFIX>.21` on the port-less `vmbr1` — see below) |
 | .22 | yennefer (Proxmox node, `vmbr0`) |
 | .23–.29 | Future nodes / corosync QDevice |
 | .30 | Spare |
@@ -94,6 +119,10 @@ services share their last two digits across nodes (101/201 Pi-holes,
 - **Cluster status**: nodes run standalone (no corosync cluster) until a third
   vote exists — a 2-node cluster freezes management on the survivor whenever
   either node is down. The VMID bands keep a future cluster merge collision-free.
+- **Storage traffic is already off the LAN** — the `vmbr1` split above is a
+  working precedent for the VLAN plan below: a second subnet with its own shape,
+  reachable only where it should be. It needed no switch support because it never
+  leaves the host.
 - **VLANs (future)**: when IoT segmentation happens, each VLAN becomes its own
   /24 with the same internal shape (router .1, infra low, DHCP middle, static
   high); this map remains the management/services network unchanged. `vmbr0` on

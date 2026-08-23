@@ -115,6 +115,23 @@ runuser -u uptime-kuma -- ping -c1 <LAN_PREFIX>.22   # must succeed
 - Create the admin account (→ `secrets.local.yaml`).
 - **Settings → Notifications → ntfy**: server `https://ntfy.sh`, topic
   `<NTFY_TOPIC>`, "Default enabled" so every monitor inherits it. Test → phone.
+- **Gotcha — "Resend Notification if Down X times" defaults to `0`**, i.e.
+  *notify once on the down transition, then never again*, and **~29 of the 31
+  monitors here are still on that default** (`media-export` and `media-mount`
+  were set to 30 on 2026-08-23; the rest are batched with the timer work below).
+  It cost the lab a **12-day** media outage on
+  2026-08-10: the push monitor detected the fault in 10 s, Kuma fired exactly one
+  ntfy at 00:16 AM, and nothing ever repeated it
+  ([storage.md](storage.md#incident-2026-08-10--22--usb-link-fault-12-day-silent-outage)).
+  A single midnight buzz is not an alerting strategy — an alert has to survive
+  being ignored once. Setting it to a 30–60 min equivalent across all monitors is
+  **still the highest-value change in the lab**, and remains mostly undone —
+  originally [proposal 004 §5](proposals/004-media-mount-self-healing.md#5-companion-fix-make-the-alert-survive-being-ignored),
+  carried forward unchanged into
+  [proposal 005 §8](proposals/005-nfs-media-share.md). Note that self-healing does
+  **not** replace it: autoheal shrinks the outages it can repair to seconds, but
+  the class it cannot repair — the disk that does not come back — still depends
+  entirely on a notification reaching a human.
 
 ### 6. Monitors
 
@@ -142,7 +159,8 @@ Full set as of 2026-07-13:
 | qbittorrent | HTTP | `http://<LAN_PREFIX>.150:8080/` | servarr; **doubles as gluetun liveness** — the port is published through gluetun, so it reddens if the VPN container dies |
 | flaresolverr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8191/` → `FlareSolverr is ready` | servarr (Cloudflare solver) |
 | photos-backup | **Push** (86400 s → **90000 s**) | fed by `restic-photos.sh` on geralt, daily 05:00 IST | dead-man switch for the nightly restic backup ([backups](../scripts/backup/README.md)); silent from 2026-07-16, fixed 2026-07-30 — see below |
-| ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29, see below |
+| ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; became an **NFS** probe 2026-08-23, see below |
+| media-export geralt | **Push** (60 s) | fed by `media-export-health.sh` on geralt | **functional, not liveness** — added 2026-08-23; the *server-side* half of the media path, see below |
 | servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft, see below |
 | ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — deployed 2026-08-05; runs a real NVENC encode inside the jellyfin container, see below |
 
@@ -171,7 +189,7 @@ the right thing?**
 | Type | Push, heartbeat interval **360 s**, retries **1** — must exceed the 5 min timer's real period, see below |
 | Fed by | `scripts/monitoring/media-mount-health.sh` on ciri, systemd timer every 5 min |
 | Push URL | in `/etc/kuma-push.media-mount` on ciri (0600) + `secrets.local.yaml` — never in git |
-| Green when | `/mnt/media` is a real **virtiofs** mount **and** `library/` exists **and** the fs is **≥ 800 GiB** |
+| Green when | `/mnt/media` is a real **`nfs4`** mount (**virtiofs** until 2026-08-23) **and** `library/` exists **and** the fs is **≥ 800 GiB** **and** `.mount-health` reads back as bytes |
 | Red when | any check fails (explicit `status=down` with the reason) **or** the heartbeat stops |
 
 The **size check is the load-bearing one**. Existence alone would not have caught
@@ -195,6 +213,61 @@ heartbeat interval must exceed the producer's worst-case period, never equal its
 nominal one.** Both are now 360 s / retries 1. The scripts also gained
 `curl --retry 2` after a real dropped push at 22:21:43 — one lost push is one
 missed heartbeat, and Kuma cannot tell that apart from the disk being gone.
+
+**Refinement 2026-08-23 — widening the window treated the symptom.** The
+diagnosis above is right, but 360 s / retries 1 only buys 60 s of slack against a
+producer that drifts *without bound*, and it costs a minute of detection latency.
+The actual fix is on the producer: use **`OnCalendar=`** (absolute wall-clock, so
+error cannot accumulate) plus **`AccuracySec=1s`** (systemd's default of 1 min is
+pure additive lateness), and push at roughly **half** the Kuma interval so one
+dropped push cannot trip anything. Measured on `media-export-health` before and
+after: `OnUnitActiveSec=60` + default accuracy gave **61 / 72 / 75 / 90 s**
+against a 60 s window — every beat late; `OnCalendar=*:*:0/30` + `AccuracySec=1s`
+gives **30.0 s with no drift**, beats landing on exact `:00`/`:30` boundaries, and
+1133 consecutive beats overnight with zero misses. **ciri's three producers
+(`media-mount-health`, `gpu-health`, `servarr-vpn-health`) still have the old
+defect** — all `AccuracySec=30s`, measured at ~330 s against a nominal 300 s —
+and are queued for the same treatment.
+
+### The media-export Push monitor (added 2026-08-23) — the server-side half
+
+`media-mount-health` on ciri sees the **end-to-end** truth but cannot say *where*
+a fault is, and it goes silent entirely if ciri itself is down. This is the other
+half, on geralt.
+
+| | |
+|---|---|
+| Type | Push, heartbeat **60 s**, retries **2**, `resend_interval` **30** |
+| Fed by | `scripts/monitoring/media-export-health.sh` on geralt, `OnCalendar=*:*:0/30` |
+| Push URL | `/etc/kuma-push.media-export` on geralt (0600) + `secrets.local.yaml` |
+| Green when | `/mnt/media` is an `ext4` mount **and** `library/` enumerates **and** `.mount-health` reads back **and** `nfs-server` is active **and** the export is listed **and** nfsd is listening on the storage IP |
+| Red when | any of those fails, or the heartbeat stops |
+
+The pairing is the point: on 2026-08-23 the two monitors disagreed usefully —
+geralt reported `FAIL — /mnt/media is not a mount point` for exactly one beat
+during the repair window and recovered, while ciri's monitor showed the
+client-visible `Input/output error`. A single end-to-end monitor could not have
+told those apart.
+
+**Two deployment traps, both of which produce a monitor that lies rather than one
+that errors:**
+
+- **Address Kuma by IP, never by name.** geralt resolves via the router and
+  cannot resolve `kaermorhen.internal` *or* the public domain — those records
+  live only in the Pi-holes. `push()` deliberately swallows curl failures so a
+  dead Kuma cannot corrupt the check's verdict, so a name-based URL fails
+  *silently, forever*. This is the same fault that made `photos-backup` silent
+  for 14 days (below); it cost nothing the second time only because it was
+  caught during deployment.
+- **Store the bare base URL, with no query string.** The script appends its own
+  `status=`/`msg=` via `curl --get --data-urlencode`. A URL copied from Kuma's UI
+  ends in `?status=up&msg=OK&ping=`; curl would append after it, leaving two
+  `status` parameters — and Kuma reads the **first**. The monitor would report
+  `up` forever regardless of what the check found: a dead-man switch welded shut,
+  strictly worse than having no monitor at all.
+
+Full deploy steps in
+[scripts/monitoring/README.md](../scripts/monitoring/README.md#media-export-healthsh).
 
 ### The servarr-vpn Push monitor (added 2026-07-29) — and what it actually proves
 
