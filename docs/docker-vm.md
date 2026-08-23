@@ -280,6 +280,42 @@ sudo rm -rf /var/lib/containerd  # abandoned pre-move remnant
   `/data/docker`. If raw grep-able files ever matter more than compactness,
   switch to `json-file` with the same `max-size`/`max-file` opts.
 
+### Restarting VM 150: leave a gap between `qm stop` and `qm start`
+
+Never `qm reboot 150` — that hits a virtiofsd socket re-bind race and fails about
+half the time (documented in [storage.md](storage.md)). But cold stop + start is
+**also** not safe back-to-back on this VM, for a different reason: the **GPU**.
+
+```
+kvm: -device vfio-pci,host=0000:01:00.0 …: Could not open '/dev/vfio/2': Device or resource busy
+TASK ERROR: start failed: QEMU exited with code 1
+```
+
+`/dev/vfio/2` stays busy for a moment after QEMU exits, while the kernel tears
+down the IOMMU group for `hostpci0`. `qm stop 150 && qm start 150` fires the start
+inside that window. Observed 2026-08-23; every earlier restart avoided it purely by
+accident, by having another command in between.
+
+Use a gap:
+
+```bash
+qm stop 150
+sleep 5
+qm start 150
+```
+
+or wait on the condition rather than a guess:
+
+```bash
+qm stop 150
+until ! fuser -s /dev/vfio/2 2>/dev/null; do sleep 1; done
+qm start 150
+```
+
+The error message names neither the GPU nor waiting as the fix, so it is worth
+recognising on sight: **`Device or resource busy` on `/dev/vfio/*` means "too
+soon", not "broken".**
+
 ## Verification (read-only)
 
 ```bash

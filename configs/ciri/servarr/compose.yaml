@@ -38,8 +38,9 @@ x-arr-env: &arr_env
 
 # Missing-mount guard for the services that bind the PARENT /mnt/media (added
 # 2026-07-28). Those can't use create_host_path:false on /data directly: /mnt/media
-# exists in the VM even when the USB disk is gone, because ciri's own fstab mounts
-# the virtiofs share with `nofail`. So the guard hangs off a subdirectory that
+# exists in the VM even when the media share is unavailable — since proposal 005
+# it is an `x-systemd.automount` trigger, which is present as a path whether or not
+# geralt is serving. So the guard hangs off a subdirectory that
 # exists ONLY on the real media filesystem — no disk (or a virtiofsd pinned to the
 # empty pre-mount dir, the 2026-07-27 boot race) means no /mnt/media/library, and
 # the container refuses to start instead of silently writing to geralt's boot disk.
@@ -48,9 +49,16 @@ x-arr-env: &arr_env
 # requires downloads/ and library/ to be reached through the single /data bind, and
 # this assertion must not perturb that. It is a start-time check, nothing reads it.
 #
-# This is load-bearing now: by design the VM 150 hookscript treats /mnt/media as
-# advisory and lets ciri boot without the USB disk, so these guards — not the
-# hypervisor — are what keep the media stack off the wrong filesystem.
+# This is load-bearing, and MORE so since proposal 005: /mnt/media left the VM 150
+# hookscript's share list entirely (it is NFS now, not virtiofs, so there is no
+# start-time inode to pin and nothing for the hook to check). The hypervisor no
+# longer looks at the media path at all — these guards are the only thing keeping
+# the media stack off the wrong filesystem.
+#
+# Verified by the proposal 005 D7 test, 2026-08-23: with nfs-server stopped on
+# geralt and ciri cold-restarted, the five containers binding /mnt/media all
+# Exited(128) while the other eighteen came up healthy, and NOTHING was created on
+# the VM root disk underneath the automount point.
 x-media-guard: &media_guard
   type: bind
   source: /mnt/media/library

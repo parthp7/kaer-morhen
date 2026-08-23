@@ -1,9 +1,10 @@
 # Proposal 005 — NFS media share on a dedicated storage network
 
-- **Status**: **DEPLOYED 2026-08-23.** Phases A, B and C complete; Phase D
-  passed on D1, D2, **D3**, D4, D5 and D6 (only D7 worst-case-boot not run).
+- **Status**: **DEPLOYED AND FULLY VERIFIED 2026-08-23.** Phases A, B and C
+  complete; **Phase D passed in full — D1 through D7**, including the live
+  fault injection (D4) and the worst-case boot (D7).
   The design text and runbook below are preserved **as written**, so they no
-  longer match the system in the twelve places listed in
+  longer match the system in the thirteen places listed in
   [As-built deviations](#as-built-deviations-2026-08-23) — read that section
   before trusting any command here. Phase E doc reconciliation is **complete**
   (`b50c29f`); this document, both directory READMEs, `storage.md`,
@@ -754,6 +755,7 @@ Found while executing the runbook. Each is a place the document above is
 | 10 | Appendix C-2 | `timeout 30` on "every command that touches the mount", listing checks 3-5 | Misses **check 2's `[[ -d ]]`**, a bare `stat()` that blocks forever on a `hard` mount with a dead server — systemd then SIGKILLs the unit having pushed nothing, degrading a precise `status=down` into mere heartbeat silence. Fixed. |
 | 11 | **Appendix A** | "readdir is the only probe that reaches the backing store" | **False, and it silently defeated the entire heal.** See below. |
 | 12 | §3, §5 | credits the `mountpoint` export option with answering 07-27 | It does — but it only asserts that *something* is mounted. It went on exporting a filesystem in `shutdown` state throughout the 2026-08-23 test, so it does **not** cover mounted-but-dead (the 08-03 class). |
+| 13 | §0.5, C2 | "Never `qm reboot 150` — cold `qm stop` + `qm start` only (socket race)" | **Incomplete for this VM.** `qm stop 150 && qm start 150` back-to-back has its *own* race, and it is the **GPU**, not virtiofsd: `/dev/vfio/2` stays busy for a moment after QEMU exits while the kernel tears down the IOMMU group. D7's restart failed with `kvm: -device vfio-pci,host=0000:01:00.0 …: Could not open '/dev/vfio/2': Device or resource busy` → `QEMU exited with code 1`. Every earlier restart avoided it by accident, by having a command in between (the `qm set --delete virtiofs1` in C2, human typing latency before that). Use `qm stop 150; sleep 5; qm start 150`, or wait explicitly: `until ! fuser -s /dev/vfio/2; do sleep 1; done`. The error names neither the GPU nor waiting as the fix. |
 
 ### #11 in detail — the healer must not be weaker than its monitors
 
@@ -811,6 +813,37 @@ duplicated writes onto the worst disk in the lab.
 
 No errors, no monitor blips, and the media disk saw only sequential writes
 throughout.
+
+### D7 result (2026-08-23) — worst-case boot
+
+`nfs-server` stopped on geralt, then a cold restart of ciri, to answer: does the
+guest still come up, and does the media stack fail *loudly* rather than silently
+writing to the VM's root disk?
+
+```
+Boot              1min 18s total, graphical.target reached — ciri came up FULLY
+mnt-media.mount   30.041s   <- the automount timing out, exactly mount-timeout=30
+
+18 non-media containers   ALL Up; Immich, Paperless, sure, ollama healthy
+5 guarded media containers  Exited (128)  <- bazarr, jellyfin, qbittorrent, radarr, sonarr
+5 unguarded media-adjacent  Up            <- flaresolverr, gluetun, jellyseerr,
+                                             prowlarr, qbit-port-sync (none binds the share)
+```
+
+`Exited (128)` is Docker refusing a bind whose source cannot resolve — the
+`create_host_path:false` guards firing, on exactly the five containers that touch
+`/mnt/media` and no others.
+
+**The assertion that matters most passed**: nothing was created on the root disk.
+`/mnt/` showed `d????????? … media` — the autofs trigger, unresolvable while the
+server is down, so `stat()` fails and the bind fails. With the automount stopped,
+the directory underneath was **empty, dated Jul 22**, and `/` stayed at 16 %. On
+2026-07-27 the equivalent situation produced a `root:root downloads/` on geralt's
+boot disk and marked all 20 torrents `missingFiles`.
+
+Blast radius is therefore identical to the old `nofail` virtiofs, as §7 predicted.
+After `systemctl start nfs-server` + `docker compose up -d`, the full stack
+returned and all six D3 hardlinks were intact (same inodes, `links=2`).
 
 ### Also worth recording
 
