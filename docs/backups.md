@@ -193,6 +193,11 @@ LXC disks are filesystem datasets that must mount, unlike VM zvols. Details in
 
 - Debian 13 LXCs need `--features nesting=1` (systemd 257).
 - PBS install enables the enterprise apt repo — disable it; same on PVE nodes.
+  **Verified 2026-08-23 on both PVE nodes**: `pve-enterprise` and the ceph
+  enterprise repo are `Enabled: false`, `pve-no-subscription` is active.
+  Re-checked automatically on every run of
+  [`lab-inventory.sh`](../scripts/maintenance/lab-inventory.sh); see
+  [maintenance.md](maintenance.md).
 - Prune without GC reclaims nothing; both are scheduled.
 - vzdump skips bind mounts: the datastore never backs itself up (good), but
   host-side payloads (`steel/photos`!) are equally invisible to it (must be
