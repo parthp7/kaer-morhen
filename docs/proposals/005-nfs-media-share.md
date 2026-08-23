@@ -824,11 +824,14 @@ throughout.
   changed (USB → NVMe). Docker orders binds by target depth, so the NFS parent
   mounts first and the NVMe scratch lands on top.
 - `/mnt/media/downloads/complete` was **not** empty as §4 claims — it holds live
-  seeding data, and 7.3 G of stale partials remain in the NFS
-  `downloads/incomplete/` underneath the scratch mount. Confirmed orphaned by
-  D3: a resumed torrent restarted from zero on the scratch disk rather than
-  picking up its old partial, because the path it now writes to is a different
-  filesystem. Safe to delete from geralt, where the path is not shadowed.
+  seeding data. A further 7.3 G of stale partials sat in the NFS
+  `downloads/incomplete/` underneath the scratch mount, left from before the
+  cutover. D3 proved them orphaned rather than merely hidden: a resumed torrent
+  restarted from **zero** on the scratch disk instead of picking up its old
+  partial, because the path it now writes to is a different filesystem.
+  Removed the same day, reclaiming 7 G (272 G → 265 G used). Note the cleanup
+  had to run **on geralt** — the container cannot see that directory at all,
+  since the NVMe scratch is mounted over it.
 
 ## Follow-ups
 
