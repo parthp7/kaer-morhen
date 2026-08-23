@@ -267,6 +267,11 @@ same day: rootfs on `silver-guests`, tailscaled active after the move,
 - **Optional — exit node** (`--advertise-exit-node`): full-tunnel browsing
   through home (Pi-hole ad-blocking everywhere). Off by default; decide when
   there's a use case.
-- **Reverse proxy interplay** (LXC 202, still unbuilt): once a proxy serves
-  `https://<app>.kaermorhen.internal` with real certs, remote clients get the
-  same clean URLs via this route — no Tailscale-side changes needed.
+- **Reverse proxy interplay** — **done (built 2026-08-12,
+  [proposal 003](proposals/003-reverse-proxy.md))**. Remote clients get clean
+  `https://<app>.kaermorhen.fyi` URLs via this route, with one correction to
+  the assumption above: real certs rule out `.internal` (no public CA will sign
+  it), so the names landed on a registered domain instead. That meant **one**
+  tailnet change rather than none — `kaermorhen.fyi` added to the split-DNS
+  list alongside `kaermorhen.internal`, pointing at both Pi-holes. Verified
+  2026-08-21 via `tailscale dns status` on tailscale-1.

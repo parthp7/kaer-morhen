@@ -19,6 +19,7 @@ Homelab configurations and helper scripts for personal infrastructure. Private r
 - NEVER commit secrets, tokens, passwords, or keys. Commit `*.example` templates instead.
 - Replace sensitive values (IPs, hostnames, MACs, credentials) with named placeholders, e.g. `<NAS_IP>`.
 - Real values live only in a local, git-ignored `secrets.local.*` mapping file — never reference real values in tracked files.
+- **Exception — the public domain `kaermorhen.fyi` is written out in full** (decided 2026-08-09). A registered domain is public information by construction and carries no secret; masking it only made the reverse-proxy docs unreadable. Internal names (`*.kaermorhen.internal`) were never masked either. Credentials for it — `<ACME_EMAIL>`, `CF_API_TOKEN` — stay masked as normal.
 - Keep placeholder names stable and documented so mappings stay resolvable.
 
 ## Shell scripts

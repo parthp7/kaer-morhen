@@ -1,0 +1,207 @@
+# Caddyfile — reverse proxy for the whole lab (LXC 202 on yennefer)
+#
+# Mirror of the live file at 202:/etc/caddy/Caddyfile. After any change on the
+# container, scp it back into this repo verbatim (CLAUDE.md mirror rule).
+# Design + runbook: docs/proposals/003-reverse-proxy.md
+#
+# Placeholders (real values in secrets.local.yaml):
+#   <ACME_EMAIL>   Let's Encrypt expiry-notice address
+#   <LAN_PREFIX>   first three octets of the LAN /24
+# The domain kaermorhen.fyi is written out in full — it is public information
+# and masking it would make this file unreadable.
+# CF_API_TOKEN is NOT a placeholder either — it is read from the environment at
+# runtime via /etc/caddy/cloudflare.env (chmod 600, never committed).
+#
+# One wildcard site block => exactly one certificate for *.kaermorhen.fyi,
+# renewed by DNS-01. Nothing here listens to the public internet; the domain
+# exists only to prove control to the CA.
+
+*.kaermorhen.fyi {
+	# The ACME contact email is an argument to `tls`, deliberately not a global
+	# `{ email ... }` block: that block is only honoured when it is the very
+	# first block in the file, so any comment header above it silently demotes
+	# it to a nameless site block and Caddy rejects `email` as a directive.
+	tls <ACME_EMAIL> {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+
+	# ---- Media -------------------------------------------------------------
+
+	@jellyfin host jellyfin.kaermorhen.fyi
+	handle @jellyfin {
+		# Add <LAN_PREFIX>.202 to Jellyfin's Networking > Known proxies,
+		# otherwise every client IP in its logs reads as the proxy.
+		reverse_proxy <LAN_PREFIX>.150:8096
+	}
+
+	@books host books.kaermorhen.fyi
+	handle @books {
+		reverse_proxy <LAN_PREFIX>.150:13378
+	}
+
+	@requests host requests.kaermorhen.fyi
+	handle @requests {
+		reverse_proxy <LAN_PREFIX>.150:5055
+	}
+
+	# ---- Photos, docs, notes ------------------------------------------------
+
+	@immich host immich.kaermorhen.fyi
+	handle @immich {
+		# max_size 0 = unlimited: default caps break large photo/video uploads.
+		request_body {
+			max_size 0
+		}
+		reverse_proxy <LAN_PREFIX>.150:2283
+	}
+
+	@paperless host paperless.kaermorhen.fyi
+	handle @paperless {
+		# Requires PAPERLESS_URL=https://paperless.kaermorhen.fyi in the
+		# stack's .env, else login POSTs fail Django's CSRF origin check.
+		request_body {
+			max_size 0
+		}
+		reverse_proxy <LAN_PREFIX>.150:8000
+	}
+
+	@memos host memos.kaermorhen.fyi
+	handle @memos {
+		reverse_proxy <LAN_PREFIX>.150:5230
+	}
+
+	@obsidian host obsidian.kaermorhen.fyi
+	handle @obsidian {
+		# CouchDB for Obsidian LiveSync. HTTPS here is what makes mobile
+		# LiveSync work at all — it refuses plain HTTP.
+		request_body {
+			max_size 0
+		}
+		reverse_proxy <LAN_PREFIX>.150:5984
+	}
+
+	@sure host sure.kaermorhen.fyi
+	handle @sure {
+		# Rails: the new host must be in its allowed-hosts config.
+		reverse_proxy <LAN_PREFIX>.150:3000
+	}
+
+	# ---- AI -----------------------------------------------------------------
+
+	@chat host chat.kaermorhen.fyi
+	handle @chat {
+		reverse_proxy <LAN_PREFIX>.150:8090
+	}
+
+	@ollama host ollama.kaermorhen.fyi
+	handle @ollama {
+		# Ollama rejects unexpected Host headers; hand it the upstream's own.
+		# Note: this API is unauthenticated — see proposal 003 §8.
+		reverse_proxy <LAN_PREFIX>.150:11434 {
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	# ---- *arr stack ---------------------------------------------------------
+
+	@qbit host qbit.kaermorhen.fyi
+	handle @qbit {
+		# Published on gluetun's netns, not qbittorrent's (see servarr stack).
+		# The Host rewrite is mandatory: qBit's CSRF guard returns a blank
+		# page for any foreign Host header.
+		reverse_proxy <LAN_PREFIX>.150:8080 {
+			header_up Host {upstream_hostport}
+		}
+	}
+
+	@prowlarr host prowlarr.kaermorhen.fyi
+	handle @prowlarr {
+		reverse_proxy <LAN_PREFIX>.150:9696
+	}
+
+	@sonarr host sonarr.kaermorhen.fyi
+	handle @sonarr {
+		reverse_proxy <LAN_PREFIX>.150:8989
+	}
+
+	@radarr host radarr.kaermorhen.fyi
+	handle @radarr {
+		reverse_proxy <LAN_PREFIX>.150:7878
+	}
+
+	@bazarr host bazarr.kaermorhen.fyi
+	handle @bazarr {
+		reverse_proxy <LAN_PREFIX>.150:6767
+	}
+
+	# ---- Infrastructure -----------------------------------------------------
+	# These are the reason the proxy lives in an LXC and not on ciri: they must
+	# stay reachable by name while the docker VM is down.
+
+	@kuma host kuma.kaermorhen.fyi
+	handle @kuma {
+		reverse_proxy <LAN_PREFIX>.104:3001
+	}
+
+	@beszel host beszel.kaermorhen.fyi
+	handle @beszel {
+		reverse_proxy <LAN_PREFIX>.204:8090
+	}
+
+	@pihole1 host pihole-1.kaermorhen.fyi
+	handle @pihole1 {
+		redir / /admin 308
+		reverse_proxy <LAN_PREFIX>.101:80
+	}
+
+	@pihole2 host pihole-2.kaermorhen.fyi
+	handle @pihole2 {
+		redir / /admin 308
+		reverse_proxy <LAN_PREFIX>.201:80
+	}
+
+	# Self-signed HTTPS backends. Skipping verification is correct here: a
+	# wired LAN hop to a fixed IP whose cert is self-signed by design.
+
+	@pbs host pbs.kaermorhen.fyi
+	handle @pbs {
+		reverse_proxy https://<LAN_PREFIX>.200:8007 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
+	}
+
+	@geralt host geralt.kaermorhen.fyi
+	handle @geralt {
+		reverse_proxy https://<LAN_PREFIX>.21:8006 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
+	}
+
+	@yennefer host yennefer.kaermorhen.fyi
+	handle @yennefer {
+		reverse_proxy https://<LAN_PREFIX>.22:8006 {
+			transport http {
+				tls_insecure_skip_verify
+			}
+		}
+	}
+
+	# ---- Anything else ------------------------------------------------------
+	# A name that resolves to .202 but has no block above lands here, rather
+	# than getting a confusing default response.
+
+	handle {
+		respond "no such service" 404
+	}
+}

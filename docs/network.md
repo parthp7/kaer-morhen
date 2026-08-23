@@ -90,7 +90,7 @@ Loose bands — the goal is telling what something is from its ID, not rigid law
 
 | Band | Purpose | Planned/assigned |
 |---|---|---|
-| 200–209 | Infra LXCs | **200 PBS (built 2026-07-10; [backups.md](backups.md))** · **201 Pi-hole #2 (built 2026-07-11)** · 202 reverse proxy · **203 Tailscale subnet router `tailscale-1` (built 2026-07-13 — whole-LAN remote access + split DNS; [tailscale.md](tailscale.md))** · **204 Beszel hub (moved from geralt 2026-07-10 — a hub can't alert its own host's death, so it watches the busy node from the stable one)** |
+| 200–209 | Infra LXCs | **200 PBS (built 2026-07-10; [backups.md](backups.md))** · **201 Pi-hole #2 (built 2026-07-11)** · **202 reverse proxy `proxy` (Caddy — built 2026-08-12; serves all 22 services as `<app>.kaermorhen.fyi` behind one production wildcard cert, DNS-01 via Cloudflare, reachable on LAN and over the tailnet; [proposal 003](proposals/003-reverse-proxy.md))** · **203 Tailscale subnet router `tailscale-1` (built 2026-07-13 — whole-LAN remote access + split DNS; [tailscale.md](tailscale.md))** · **204 Beszel hub (moved from geralt 2026-07-10 — a hub can't alert its own host's death, so it watches the busy node from the stable one)** |
 | 210–219 | VMs | 210 HAOS (Home Assistant OS; `marlene` when built) |
 | 220–249 | Service LXCs / future | — |
 | 250–254 | Scratch / test | — |
