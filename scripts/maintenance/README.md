@@ -162,6 +162,25 @@ scripts' own severity model, not something invented here.
 
 ## Traps hit while building these (2026-08-23)
 
+- **An ad-hoc run must reproduce the unit's environment, or it lies.** These
+  checks are tuned by systemd drop-ins and `EnvironmentFile=`s. Running the
+  script bare over ssh picks up the *script defaults* instead, so
+  `servarr-vpn-health.sh` hard-failed at 84 accumulated strikes (default
+  `MAX_STRIKES=6`) while the live monitor — running with a
+  `MAX_STRIKES=100000` drop-in — correctly showed green. `lab-deep-check.sh`
+  now sources each unit's `EnvironmentFile=` and applies its `Environment=`
+  before exec'ing, so the ad-hoc verdict matches production.
+- **The docker VM's ssh user is not root.** `ciri` has passwordless sudo; the
+  nodes log in as root. Without elevation the checks still print a verdict but
+  fail to write their strike counters (`Permission denied` under `/var/lib`) —
+  a half-working run that is easy to mistake for a good one. The deep check
+  elevates only when `id -u` is non-zero.
+- **A stderr diagnostic can masquerade as the verdict.** Verdict extraction took
+  the last non-empty line, which was a `…: line 149: Permission denied` warning
+  rather than the check's own `<name>: <verdict>`. Path-shaped lines are now
+  filtered out first, with the raw last line kept as a fallback so a genuine
+  failure is never rendered blank.
+
 - **`timeout(1)` does not exist on macOS.** The first version of
   `lab-inventory.sh` wrapped every ssh call in `timeout`, so on the laptop every
   remote read failed, `|| true` swallowed the error, and the report confidently
@@ -206,6 +225,8 @@ shell expands them.
 | `lab-smoke.sh` exit code | `1` with a real failure, `0` when clean (WARN does not gate) |
 | `lab-deep-check.sh` dry, read-only assertions | `media-export` and `media-client` PASS, `— not pushing` confirmed on the wire |
 | `lab-deep-check.sh` induced failure | `EXTRA_ENV="MIN_GIB=99999"` → FAIL with a labelled reason, exit 1, no alert |
+| `lab-deep-check.sh` unit-env fidelity | `vpn` PASSes with the degraded reason, matching what Kuma shows, instead of a false hard FAIL |
+| `lab-deep-check.sh` leak detection | `EXTRA_ENV="HOST_IP_OVERRIDE=<vpn_ip>"` → `LEAK: torrent egress … is ciri's own public IP`, exit 1 |
 
 **First-run findings** (all real, none introduced by the scripts): geralt 98
 packages behind yennefer's 2 and on an older `pve-manager` (9.2.4 vs 9.2.11);

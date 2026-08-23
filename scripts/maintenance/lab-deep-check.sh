@@ -71,21 +71,24 @@ done
 
 PASS=0; FAIL=0; SKIP=0
 
-# name | host | remote command (without the env prefix)
+# name | host | systemd unit | remote command
+# The unit matters: these checks are tuned by drop-ins and EnvironmentFiles, and
+# a run that ignores them does not test what production actually does (see the
+# MAX_STRIKES trap in the README).
 assertion_cmd() {
   case "$1" in
-    gpu)          printf '%s\t%s' "$DOCKER_HOST"  '/usr/local/bin/gpu-health.sh' ;;
-    media-client) printf '%s\t%s' "$DOCKER_HOST"  '/usr/local/bin/media-mount-health.sh' ;;
-    media-export) printf '%s\t%s' "$STORAGE_NODE" '/usr/local/bin/media-export-health.sh' ;;
-    vpn)          printf '%s\t%s' "$DOCKER_HOST"  '/usr/local/bin/servarr-vpn-health.sh' ;;
-    backup)       printf '%s\t%s' "$STORAGE_NODE" '/usr/local/bin/restic-photos.sh check' ;;
+    gpu)          printf '%s\t%s\t%s' "$DOCKER_HOST"  'gpu-health.service'          '/usr/local/bin/gpu-health.sh' ;;
+    media-client) printf '%s\t%s\t%s' "$DOCKER_HOST"  'media-mount-health.service'  '/usr/local/bin/media-mount-health.sh' ;;
+    media-export) printf '%s\t%s\t%s' "$STORAGE_NODE" 'media-export-health.service' '/usr/local/bin/media-export-health.sh' ;;
+    vpn)          printf '%s\t%s\t%s' "$DOCKER_HOST"  'servarr-vpn-health.service'  '/usr/local/bin/servarr-vpn-health.sh' ;;
+    backup)       printf '%s\t%s\t%s' "$STORAGE_NODE" 'restic-photos.service'       '/usr/local/bin/restic-photos.sh check' ;;
     *) return 1 ;;
   esac
 }
 
 run_assertion() {
-  local name="$1" host cmd env_prefix out rc
-  IFS=$'\t' read -r host cmd <<<"$(assertion_cmd "$name")"
+  local name="$1" host unit cmd env_prefix payload out rc
+  IFS=$'\t' read -r host unit cmd <<<"$(assertion_cmd "$name")"
 
   if (( PUSH )); then
     env_prefix=""
@@ -95,20 +98,47 @@ run_assertion() {
   # Test hooks go through `env VAR=...` deliberately: a bare `VAR=... cmd` over
   # ssh depends on the remote shell not resetting the environment and fails
   # silently-wrong when it does. Same reasoning as the scripts' own READMEs.
-  [[ -n "${EXTRA_ENV:-}" ]] && env_prefix="env ${env_prefix}${EXTRA_ENV} "
+  [[ -n "${EXTRA_ENV:-}" ]] && env_prefix="${env_prefix}${EXTRA_ENV} "
+
+  # Reproduce the unit's real environment: EnvironmentFile= first (restic's
+  # credentials live there), then Environment= from the unit and any drop-in
+  # (servarr-vpn-health's MAX_STRIKES override lives there). Without this an
+  # ad-hoc run uses the script defaults and can report a hard FAIL for a state
+  # the live monitor correctly treats as degraded-but-green.
+  payload="set -a
+for f in \$(systemctl show '$unit' -p EnvironmentFiles --value 2>/dev/null | sed 's/ (ignore_errors=[^)]*)//g'); do
+  [ -r \"\$f\" ] && . \"\$f\"
+done
+set +a
+# EnvironmentFile vars are exported above; note sudo would strip them, but the
+# only assertion using one (restic/backup) runs on a node where we are root.
+if [ \"\$(id -u)\" -ne 0 ]; then
+  exec sudo -n env \$(systemctl show '$unit' -p Environment --value 2>/dev/null) ${env_prefix}${cmd}
+else
+  exec env \$(systemctl show '$unit' -p Environment --value 2>/dev/null) ${env_prefix}${cmd}
+fi"
 
   printf '  %-14s %-12s ' "$name" "$host"
   set +e
   out=$(ssh -o BatchMode=yes -o ConnectTimeout="$SSH_TIMEOUT" \
         -o ServerAliveInterval=10 -o ServerAliveCountMax=6 \
-        "$host" "${env_prefix}${cmd}" 2>&1)
+        "$host" "$payload" 2>&1)
   rc=$?
   set -e
 
   # The verdict these scripts print is the LAST meaningful line; the push
   # no-op notice is chatter and must not be mistaken for the verdict.
+  # Prefer the script's own "<name>: <verdict>" line. Shell diagnostics look like
+  # "/usr/local/bin/x.sh: line 149: ...", so drop anything path-shaped first --
+  # otherwise a stderr warning masquerades as the verdict.
   local verdict
-  verdict=$(printf '%s\n' "$out" | grep -vE 'not pushing|cannot read' | grep -vE '^\s*$' | tail -1)
+  verdict=$(printf '%s\n' "$out" \
+    | grep -vE 'not pushing|cannot read' \
+    | grep -vE '^\s*$' \
+    | grep -vE '^/|: line [0-9]+:' \
+    | tail -1)
+  # Fall back to the raw last line rather than printing nothing.
+  [[ -n "$verdict" ]] || verdict=$(printf '%s\n' "$out" | grep -vE '^\s*$' | tail -1)
 
   case "$rc" in
     0) printf '\033[32mPASS\033[0m  %s\n' "${verdict:0:96}"; PASS=$((PASS+1)) ;;
