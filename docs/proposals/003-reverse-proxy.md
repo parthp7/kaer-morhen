@@ -376,11 +376,26 @@ told to expect. Each needs a one-line change, then a stack restart:
 
 ### 8. Wiring
 
-- **Uptime-Kuma** (`http://<LAN_PREFIX>.104:3001`): one HTTP monitor on
-  `https://memos.kaermorhen.fyi` — it exercises DNS, the proxy, the cert,
-  and a backend in a single check — plus a ping monitor on `.202`. Add a
-  **certificate-expiry** alert; a wildcard that fails to renew takes down all
-  twenty URLs at once, and Caddy renews silently until it doesn't.
+- **Uptime-Kuma** (`http://<LAN_PREFIX>.104:3001`): two monitors, both in the
+  `yennefer` group with the existing `ntfy-alerts` notification.
+  - `proxy-caddy` — Ping on `<LAN_PREFIX>.202`: is the container alive.
+  - `proxy-tls` — HTTP(s) on `https://memos.kaermorhen.fyi`: exercises DNS,
+    the proxy, the certificate and a backend in one check, with
+    **Certificate Expiry Notification enabled** and **Ignore TLS/SSL error
+    left off** (ticking it silently defeats the whole point).
+
+  Cert expiry is a *property of an HTTPS monitor* in Kuma
+  (`expiry_notification`), not a monitor type of its own — there is nothing
+  separate to create. The lead time is global: Settings → Notifications →
+  Certificate Expiry, default `7,14,21` days. Caddy renews at ~30 days
+  remaining, so a 21-day warning means renewal has already been failing for
+  over a week; **`25,14,7` is the better setting** here.
+
+  The pairing with the existing backend monitors is what makes this
+  diagnosable: `memos` (monitor 10) already watches `<LAN_PREFIX>.150:5230`
+  directly, so backend-up + `proxy-tls`-down isolates the fault to the proxy,
+  while both down means memos itself. A wildcard that fails to renew takes all
+  22 URLs down at once, and Caddy renews silently until it doesn't.
 - **pihole-1**: `proxy.kaermorhen.internal` → `<LAN_PREFIX>.202`, keeping the
   [dns.md](../dns.md) rule that every network.md entry has a name.
 - **network.md**: bold the 202 entry in yennefer's band table with the date.
@@ -459,6 +474,18 @@ a failure.
   second site?" hint. Since the deployed `Caddyfile` carries a 17-line header by
   design, the ACME contact is given as an argument — `tls <ACME_EMAIL> { … }` —
   and no global block is used at all. Don't reintroduce one.
+- **Uptime-Kuma cannot resolve `*.kaermorhen.fyi` without help** (hit
+  2026-08-23). Two individually-correct decisions collide: LXC 104 runs
+  `nameserver 1.1.1.1` on purpose so the monitor does not depend on the
+  Pi-holes it watches ([uptime-kuma.md](../uptime-kuma.md)), while these names
+  exist **only** in Pi-hole because the public zone is deliberately empty.
+  Result: `getaddrinfo ENOTFOUND memos.kaermorhen.fyi` and a monitor that can
+  never come up. Fix is a static mapping in the monitor container rather than
+  repointing its resolver:
+  `pct exec 104 -- sh -c 'echo "<LAN_PREFIX>.202 memos.kaermorhen.fyi" >> /etc/hosts'`.
+  Cost: that monitor no longer exercises the Pi-hole DNS path — acceptable,
+  since `pihole1-dns` / `pihole2-dns` cover resolution directly. Any future
+  monitor on a `.fyi` name needs the same entry.
 - **Don't verify with `curl -I`.** Proxmox and PBS do not implement `HEAD` and
   answer `501` / `400`, which reads as a broken route when a plain `GET` returns
   `200` (hit 2026-08-12 across `geralt`, `yennefer`, `pbs`). Use

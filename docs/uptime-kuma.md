@@ -22,7 +22,7 @@ watchers are inside the house (see next steps).
 | App | Uptime-Kuma **2.4.0**, non-Docker (git checkout + `npm run setup`), Node v20.19.2 (Debian's stock `nodejs`) |
 | Service | `uptime-kuma.service` (plain systemd unit, runs as user `uptime-kuma`), UI `http://<LAN_PREFIX>.104:3001` |
 | Admin account | `KUMA_ADMIN_USER` / `KUMA_ADMIN_PASSWORD` in `secrets.local.yaml` |
-| Container nameserver | `1.1.1.1` — deliberate: the monitor must not depend on the Pi-holes it watches |
+| Container nameserver | `1.1.1.1` — deliberate: the monitor must not depend on the Pi-holes it watches. **Consequence:** it cannot resolve `*.kaermorhen.fyi`, which lives only in Pi-hole — those monitors need an `/etc/hosts` entry, see gotchas |
 | Alerts | native ntfy provider → `https://ntfy.sh/<NTFY_TOPIC>` (same topic as everything else), default-enabled on all monitors |
 | Data | SQLite under `/opt/uptime-kuma/data/` — travels with the container in PBS backups |
 | Backups | covered by geralt's nightly 04:00 `--all 1` PBS job automatically |
