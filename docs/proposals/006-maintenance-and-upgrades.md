@@ -463,6 +463,32 @@ an uptime and two kernel metas behind.
   with `resend_interval` now at 30 minutes a sub-30-minute window costs one
   notification each rather than the previous single-alert-then-silence.
 
+### The kernel that was removed, and the one that was not
+
+A `Remove: proxmox-kernel-6.17.13-15-pve-signed` line in the apt log during the
+pass read, at a glance, as the rollback kernel being cleaned up. It was not.
+Verified after the fact:
+
+| | |
+|---|---|
+| Installed after the pass | `6.17.2-1`, `6.17.13-21`, `7.0.14-4`, `7.0.14-12` (running) |
+| Rollback (`7.0.14-4-pve`) | **intact** — `vmlinuz` + `initrd` present, **8 references in `grub.cfg`**, so it is a live entry in the GRUB menu, not just an installed package |
+| Pending autoremove | `0 to remove` |
+| What was actually pruned | `6.17.13-15`, orphaned when the `proxmox-kernel-6.17` meta moved to `6.17.13-21` **in the same pass** |
+
+So the cleanup was the expected consequence of upgrading a *second, non-running*
+kernel series, and it touched nothing that mattered. **But it happened by luck,
+not by rule** — the runbook said "do not remove the old kernel" without saying
+which one that is or how to confirm it is bootable. That gap is now closed by
+the kernel-retention rule in [maintenance.md](../maintenance.md), which
+distinguishes the previous kernel of the *running* series (the rollback, keep
+it) from a superseded point release of another series (safe to prune), and
+requires checking `grub.cfg` rather than `dpkg -l` before rebooting.
+
+Expect the same line during D7: geralt still carries `6.17.13-15` and its
+`proxmox-kernel-6.17` meta is among the 98 pending, so the same prune will
+almost certainly occur. It is not the rollback disappearing.
+
 ### Deviations from the runbook as written
 
 None. Phases A–E ran in order with no step needing improvisation, which is the

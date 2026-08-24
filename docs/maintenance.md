@@ -86,6 +86,26 @@ scripts/maintenance/lab-smoke.sh
 scripts/maintenance/lab-deep-check.sh
 ```
 
+### Kernel retention — what to keep, what is safe to prune
+
+The rollback for a kernel upgrade is **the previous kernel of the same series**.
+Losing it turns a bad boot from a GRUB menu selection into a rescue-media job,
+on nodes that already have no remote power-on.
+
+| Rule | Why |
+|---|---|
+| Keep at least the previous kernel of the **running series** (running `7.0.14-12` → keep `7.0.14-4`) | It is the rollback. Nothing else substitutes for it |
+| **Verify it is bootable, not merely installed**, before you reboot | `dpkg -l` proving the package is present is not the same as GRUB offering it |
+| A superseded point release from a **different** series is safe to prune | Upgrading the `proxmox-kernel-6.17` meta orphans the old 6.17 point release; that is not the rollback for a 7.0 upgrade |
+| Never run `apt autoremove` blind after a kernel upgrade | Dry-run it first and read the list |
+
+```bash
+# before rebooting: is the rollback actually in the boot menu?
+ls -l /boot/vmlinuz-<previous>-pve /boot/initrd.img-<previous>-pve
+grep -c "<previous>-pve" /boot/grub/grub.cfg        # expect > 0
+apt-get autoremove --dry-run                        # read what it wants to take
+```
+
 ### geralt's boot-critical invariants
 
 Checked automatically by `lab-inventory.sh`. Each is a documented way this lab
