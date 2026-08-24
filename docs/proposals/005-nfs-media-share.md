@@ -6,9 +6,12 @@
   The design text and runbook below are preserved **as written**, so they no
   longer match the system in the thirteen places listed in
   [As-built deviations](#as-built-deviations-2026-08-23) — read that section
-  before trusting any command here. Phase E doc reconciliation is **complete**
-  (`b50c29f`); this document, both directory READMEs, `storage.md`,
-  `network.md`, `docker-vm.md` and `uptime-kuma.md` all reflect as-built.
+  before trusting any command here. Phase E doc reconciliation is **complete**,
+  but in two commits, not one: `b50c29f` (2026-08-23) covered this document,
+  `storage.md`, `network.md`, `docker-vm.md` and `uptime-kuma.md` — it did **not**
+  touch the two directory READMEs, though this line originally claimed it had.
+  Neither README contained the string "nfs" until `674b4f3` (2026-08-24), which
+  finished the job. All seven now reflect as-built.
 - **Scope**: `geralt` (NFS server, storage bridge, autoheal) and `ciri`
   (NFS client, new scratch disk, servarr changes). `yennefer` untouched.
   **`/steel/photos` and its virtiofs share are explicitly out of scope** —

@@ -27,4 +27,4 @@
 - [003 — Reverse proxy](docs/proposals/003-reverse-proxy.md) — Caddy in LXC 202 serving every service as `<app>.kaermorhen.fyi` behind one wildcard cert (deployed)
 - [004 — Media mount self-healing](docs/proposals/004-media-mount-self-healing.md) — superseded by 005, never implemented
 - [005 — NFS media share](docs/proposals/005-nfs-media-share.md) — `/mnt/media` served to ciri over NFS on an isolated storage network (deployed and verified)
-- [006 — Maintenance and upgrades](docs/proposals/006-maintenance-and-upgrades.md) — how patching and version upgrades are decided, performed, and proven not to have broken anything (tooling built and verified; first pass pending)
+- [006 — Maintenance and upgrades](docs/proposals/006-maintenance-and-upgrades.md) — how patching and version upgrades are decided, performed, and proven not to have broken anything (tooling built and verified; first pass done 2026-08-24 on the servarr stack)

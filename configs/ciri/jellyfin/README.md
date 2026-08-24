@@ -586,7 +586,14 @@ cd /data/stacks/jellyfin && docker compose up -d --force-recreate jellyfin
 cd /data/stacks/ai       && docker compose up -d --force-recreate ollama
 
 # devices are now in the OCI spec, not poked in by a hook
-docker inspect jellyfin --format '{{json .HostConfig.DeviceRequests}}'   # → null
+docker inspect jellyfin --format '{{json .HostConfig.DeviceRequests}}'
+#   → [{"Driver":"cdi","Count":0,"DeviceIDs":["nvidia.com/gpu=all"],...}]
+# NOT null. (Corrected 2026-08-24: this line said "→ null" from 2026-08-02 until
+# then, contradicting the Follow-ups entry below, which was right. Verified live on
+# both jellyfin and ollama. It is `.HostConfig.Devices` that is null under CDI —
+# the CDI request lands in DeviceRequests. The error mattered: this is the
+# verification block for the CDI migration, so anyone checking against it would see
+# a populated value and conclude a working GPU setup had failed.)
 docker exec jellyfin nvidia-smi
 docker exec ollama   nvidia-smi
 
