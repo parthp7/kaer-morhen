@@ -237,9 +237,10 @@ signed off**, since the previous image is half the rollback.
 
 ## Releasing rollbacks (image pruning)
 
-> **NEXT SESSION: this is the outstanding task from the 2026-08-24 upgrade
-> pass.** Nothing is broken and there is no deadline — `/data` has 64 G free.
-> Do it once the sign-off gate below is met.
+> **NEXT SESSION: class A is the outstanding task from the 2026-08-24 upgrade
+> pass.** Class B is already done; class C has its own gate. Nothing is broken
+> and there is no deadline — `/data` has **67 G free**. Release class A once
+> the sign-off gate below is met.
 
 Old images are half the rollback, so pruning is the *last* step of an upgrade
 cycle, never part of it. On ciri there are three distinct classes and only one
@@ -304,9 +305,13 @@ Then clear the *Previous (rollback)* column in the registry for those rows —
 a tag that no longer exists is worse than an empty cell, because it reads as a
 rollback that is available.
 
-### Class B — unrelated leftovers (~3.3 G) · **safe now**
+### Class B — unrelated leftovers · **DONE 2026-08-24**
 
-Nothing here is anyone's rollback:
+Removed 2026-08-24: **3.28 G reclaimed** (images 43 → 38, 56.99 → 53.71 G).
+Verified afterwards: 28/28 containers Up, no unhealthy or restarting, **0
+dangling images left behind**, and all class A + C rollbacks intact. Kept here
+as the worked example of what "safe to prune" looks like — nothing below is
+anyone's rollback:
 
 | Image | Size | Why safe |
 |---|---|---|
@@ -317,6 +322,7 @@ Nothing here is anyone's rollback:
 | `hello-world:latest` | 26 K | appears in `docker-vm.md` only as a smoke test that re-pulls |
 
 ```bash
+# already executed 2026-08-24 — re-running is harmless (no such image)
 docker rmi ghcr.io/georift/install-jellyfin-tizen:latest \
            lscr.io/linuxserver/readarr:develop-version-0.4.18.2805 \
            valkey/valkey:9 ubuntu:latest hello-world:latest
@@ -357,7 +363,7 @@ cannot name a version it never recorded.
 | 150 `ciri` | Docker Engine | **29.7.2** | docs said 29.6.1 — drift corrected |
 | 150 `ciri` | Docker Compose | **v5.5.0** | docs said v5.3.1 — drift corrected |
 | 150 `ciri` | nvidia-container-toolkit | **1.20.0** | docs said 1.19.1 — drift corrected |
-| 150 `ciri` | `/data` disk (scsi1) | **128 G** | grown from 64 G on 2026-08-24 (`qm resize` + online `resize2fs`, no downtime); 64 G free after the upgrade pass |
+| 150 `ciri` | `/data` disk (scsi1) | **128 G** | grown from 64 G on 2026-08-24 (`qm resize` + online `resize2fs`, no downtime); **67 G free** after the upgrade pass and the class-B prune |
 
 ## Container images (verified 2026-08-24, post-upgrade pass)
 
@@ -416,9 +422,9 @@ That the fix was needed at all is the argument for pinning these four.
   before relying on any post-upgrade monitoring.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **Release the 2026-08-24 upgrade rollbacks** — ~17 G of held images, plus
-  ~3.3 G of unrelated leftovers that are safe to drop today. Full procedure and
-  sign-off gate in [Releasing rollbacks](#releasing-rollbacks-image-pruning).
+- **Release the 2026-08-24 upgrade rollbacks (class A, ~17 G)** — held pending
+  the sign-off gate in [Releasing rollbacks](#releasing-rollbacks-image-pruning).
+  Class B (~3.3 G of unrelated leftovers) was cleared 2026-08-24.
 - **A pre-major `pg_dump` was planned and not taken** (paperless v3). The PBS
   snapshot happened to cover it. Add "verify the artifact exists with `ls -lh`"
   to the pre-flight for any future one-way migration.
