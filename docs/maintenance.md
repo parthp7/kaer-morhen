@@ -209,12 +209,12 @@ Single source of truth for "what is everything on, and when was it last
 checked". Update every cycle. **Fill in "Previous" before bumping** — a rollback
 cannot name a version it never recorded.
 
-## Platform (geralt verified 2026-08-23; yennefer 2026-08-24)
+## Platform (both nodes verified 2026-08-24)
 
 | Host | Component | Current | Notes |
 |---|---|---|---|
-| geralt | pve-manager | **9.2.4** | **98 pending, incl. security — next monthly pass (D7)** |
-| geralt | kernel | 7.0.14-4-pve | |
+| geralt | pve-manager | 9.2.11 | 0 pending · pass D7 2026-08-24 (was 9.2.4, 98 pending) |
+| geralt | kernel | **7.0.14-12-pve** | was 7.0.14-4; 7.0.14-4-pve-signed retained as rollback |
 | yennefer | pve-manager | 9.2.11 | 0 pending · pass D6 2026-08-24 |
 | yennefer | kernel | **7.0.14-12-pve** | was 7.0.14-4; **7.0.14-4-pve-signed retained as rollback** |
 | 200 `pbs` | Proxmox Backup Server | 4.x | 0 pending (was 39) |
@@ -283,9 +283,15 @@ That the fix was needed at all is the argument for pinning these four.
   before relying on any post-upgrade monitoring.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **geralt is 98 packages behind**, including security updates — the next
-  monthly pass (D7). It also carries the six boot-critical invariants, so run
-  `lab-inventory.sh --strict` after its reboot, not just the smoke test.
+- **Deploy `nic-pcie-tune.service` on geralt.** The ASPM and flow-control fixes
+  are runtime-only and were lost on the D7 reboot; the correctable-error storm is
+  running again at ~27,900/hour. Three commands, no reboot needed —
+  [RCA §6a](geralt-nic-throughput.md).
+- **Remove the `MAX_STRIKES=100000` override on `servarr-vpn-health`.** Proton's
+  port forward recovered during the D7 pass and the check now reports healthy
+  with 0 strikes, so the soft tier should be allowed to escalate normally again.
+- **A LAN apt cache** — deferred by decision. geralt's D7 download phase ran at
+  ~130 kB/s; every future pass pays that until the cache exists.
 - **Node version divergence was unexplained** (geralt 9.2.4 vs yennefer 9.2.11).
   This registry exists so it cannot recur silently.
 - **No host-level backup exists** — the one rollback path the lab does not have.

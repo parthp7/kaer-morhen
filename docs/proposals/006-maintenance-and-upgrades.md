@@ -1,15 +1,16 @@
 # Proposal 006 — routine maintenance and deliberate upgrades (whole lab)
 
-- **Status**: **Phase 0 closed and the first full maintenance pass executed on
-  yennefer 2026-08-24 (D6 — passed, §5).** The three scripts in
+- **Status**: **DEPLOYED AND FULLY VERIFIED 2026-08-24 — both nodes have now
+  completed a full maintenance pass (D6 yennefer, D7 geralt), and every
+  verification gate D1–D7 has passed.** The three scripts in
   [`scripts/maintenance/`](../../scripts/maintenance/) are deployed, pass
   `shellcheck`, and have been exercised against the live lab in both their
   passing and failing directions. All four Phase-0 prerequisites are done (§4),
   including Kuma's `resend_interval` — the item that outranked everything else
-  here and was not this proposal's invention. The runbook below is now a record
-  for yennefer and still a plan for geralt. **Outstanding: the first geralt pass
-  (D7) — 98 packages behind including security, and the node that carries the
-  six boot-critical invariants — and the docker tiers (§3.3).**
+  here and was not this proposal's invention. The runbook below is now a record for
+  both nodes. **Outstanding: the docker tiers (§3.3), and a LAN apt cache — see
+  the D7 result, where geralt's download phase ran at ~130 kB/s against a NIC
+  defect ([geralt-nic-throughput.md](../geralt-nic-throughput.md)).**
 - **Date**: 2026-08-23
 - **Scope**: both PVE nodes, all 8 LXCs, VM 150 (`ciri`) and its ~30 container
   images. Does **not** cover major database upgrades (§3.3, tier 3), the PVE 9→10
@@ -325,7 +326,7 @@ Tooling verified 2026-08-23 against the live lab, in both directions:
 | D4 | `lab-deep-check.sh` dry | **PASS** — `media-export` + `media-client` green, `— not pushing` confirmed on the wire, no Kuma state changed |
 | D5 | Deep check can go red | **PASS** — `EXTRA_ENV="MIN_GIB=99999"` → FAIL with a labelled reason, exit 1, no alert fired |
 | D6 | First yennefer pass | **PASS 2026-08-24** — kernel 7.0.14-4 → 7.0.14-12, 0 pending host-wide, 0 failed units, all five guests back, smoke 45/0/0, deep-check 4/0. Detail below |
-| D7 | First geralt pass | **NOT YET RUN** |
+| D7 | First geralt pass | **PASS 2026-08-24** — kernel 7.0.14-4 → 7.0.14-12, pve-manager 9.2.4 → 9.2.11, 98 packages incl. 31 security, **6/6 invariants held**, smoke 45/0/0, deep-check 4/0. Detail below |
 
 D3 and D5 matter as much as the green runs. A monitor that has never been red has
 not been tested — the same argument that produced the functional Push monitors
@@ -494,3 +495,62 @@ almost certainly occur. It is not the rollback disappearing.
 None. Phases A–E ran in order with no step needing improvisation, which is the
 first time a runbook in this repo has survived contact unchanged — helped by the
 run sheet being generated from live state rather than written from memory.
+
+---
+
+## D7 result (2026-08-24) — geralt, the node that carries the invariants
+
+The larger of the two passes: 98 pending including 31 security updates,
+`pve-manager` 9.2.4 → 9.2.11, `pve-qemu-kvm` and `qemu-server` moving under a
+24 GB VM, and the six boot-critical invariants that a new initramfs can silently
+drop. ciri was shut down gracefully first.
+
+| Stage | Evidence |
+|---|---|
+| Host kernel | `7.0.14-4-pve` → **`7.0.14-12-pve`** |
+| pve-manager | 9.2.4 → **9.2.11** — both nodes now converged |
+| Pending | **98 → 0** |
+| Failed units | 0 |
+| **Boot-critical invariants** | **6/6 OK** — `disable_idle_d3=Y`, usb quirks intact, VM 150 `onboot=1`, grub cmdline clean, ARC 2 GiB, `/mnt/media` ext4 |
+| Rollback | `7.0.14-4-pve` retained alongside the 6.17 series |
+| Guests | all three LXCs + ciri back automatically |
+| GPU | **real `h264_nvenc` encode passed** — vfio passthrough survived a kernel *and* qemu upgrade |
+| NFS | export re-established, nfsd bound, client-side O_DIRECT read OK |
+| `lab-smoke.sh` | **PASS 45 · WARN 0 · FAIL 0** |
+| `lab-deep-check.sh` | **PASS 4 · FAIL 0** |
+
+### What the pass proved
+
+- **The D3cold trap did not fire.** This was the single largest risk: the
+  parameter lives in the initramfs and a new kernel builds a new one. It
+  survived, and `--strict` confirmed it inside the 68–124 s danger window rather
+  than by assumption.
+- **The CDI race did not fire either.** `qm start` succeeding is documented as
+  *not* implying Jellyfin works — but both `jellyfin` and `ollama` came up
+  healthy on their own, and the GPU encode assertion passed against the new
+  kernel and the new `pve-qemu-kvm`.
+- **The media disk moved device node again** (`sdd1` → `sdb1`) and nothing
+  noticed, because the mount is by `LABEL`. The convention earned itself.
+- **The Tailscale route failed back.** `tailscale-1` (203, yennefer) now holds
+  `<LAN_PREFIX>.0/24` and `tailscale-2` is the standby again — the mirror-image
+  of what D6 left behind. Two reboots, two clean failovers, no manual action.
+- **The `servarr vpn health` degradation cleared on its own.** Restarting
+  gluetun as part of the ciri shutdown re-negotiated Proton's port forward:
+  the check now reports `ok: … port-forward 36507 matches qBit, no leak`, with
+  the strike counter back to **0**. The `MAX_STRIKES=100000` override is
+  therefore no longer needed and should be removed so the soft tier can escalate
+  normally again (§8).
+
+### Deviations from the runbook as written
+
+One, and it was predicted rather than discovered: **the NIC fixes did not
+survive the reboot.** ASPM L0s and 802.3x flow control were cleared at runtime
+during the RCA earlier the same day, `nic-pcie-tune.service` was written but not
+deployed, and the reboot restored both — the correctable-error storm resumed at
+~27,900/hour within seconds of boot. Nothing broke; the defect is a degrading
+link nobody watches rather than an outage. Recorded in
+[geralt-nic-throughput.md §6a](../geralt-nic-throughput.md).
+
+The download phase also ran at **~130 kB/s** for all 98 packages, which is the
+concrete cost of that same NIC defect at 172 ms RTT. The upgrade itself was
+unaffected.
