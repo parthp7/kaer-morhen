@@ -1,15 +1,15 @@
 # Proposal 006 — routine maintenance and deliberate upgrades (whole lab)
 
-- **Status**: **Tooling built and verified 2026-08-23; first maintenance pass not
-  yet run.** The three scripts in
-  [`scripts/maintenance/`](../../scripts/maintenance/) are deployed to the repo,
-  pass `shellcheck`, and have been exercised against the live lab in both their
-  passing and failing directions (§5). The runbook in this document has **not**
-  yet been executed end to end — Phases A–E below are the plan, not a record.
-  Four Phase-0 prerequisites are named in §4; one of them (Kuma's
-  `resend_interval`) outranks everything else here and is not this proposal's
-  invention. Outstanding: the first yennefer pass (D6), the first geralt pass
-  (D7), and the docker tiers (§3.3).
+- **Status**: **Phase 0 closed and the first full maintenance pass executed on
+  yennefer 2026-08-24 (D6 — passed, §5).** The three scripts in
+  [`scripts/maintenance/`](../../scripts/maintenance/) are deployed, pass
+  `shellcheck`, and have been exercised against the live lab in both their
+  passing and failing directions. All four Phase-0 prerequisites are done (§4),
+  including Kuma's `resend_interval` — the item that outranked everything else
+  here and was not this proposal's invention. The runbook below is now a record
+  for yennefer and still a plan for geralt. **Outstanding: the first geralt pass
+  (D7) — 98 packages behind including security, and the node that carries the
+  six boot-critical invariants — and the docker tiers (§3.3).**
 - **Date**: 2026-08-23
 - **Scope**: both PVE nodes, all 8 LXCs, VM 150 (`ciri`) and its ~30 container
   images. Does **not** cover major database upgrades (§3.3, tier 3), the PVE 9→10
@@ -324,7 +324,7 @@ Tooling verified 2026-08-23 against the live lab, in both directions:
 | D3 | Smoke test can go red | **PASS** — the `books` 502 is a live demonstration that a dead backend is detected; exit code 1 |
 | D4 | `lab-deep-check.sh` dry | **PASS** — `media-export` + `media-client` green, `— not pushing` confirmed on the wire, no Kuma state changed |
 | D5 | Deep check can go red | **PASS** — `EXTRA_ENV="MIN_GIB=99999"` → FAIL with a labelled reason, exit 1, no alert fired |
-| D6 | First yennefer pass | **NOT YET RUN** |
+| D6 | First yennefer pass | **PASS 2026-08-24** — kernel 7.0.14-4 → 7.0.14-12, 0 pending host-wide, 0 failed units, all five guests back, smoke 45/0/0, deep-check 4/0. Detail below |
 | D7 | First geralt pass | **NOT YET RUN** |
 
 D3 and D5 matter as much as the green runs. A monitor that has never been red has
@@ -367,7 +367,15 @@ after liveness proved insufficient three separate times.
   blast radius of a pull is not the stack you ran it in.
 - **A stale apt cache reports "0 upgradable"**, which reads as healthy and is not.
 - **`apt upgrade` drops Caddy's DNS plugin**, and the consequence appears ~30
-  days later at renewal, not at upgrade time.
+  days later at renewal, not at upgrade time. **D6 did not reproduce this, and
+  the reason matters:** the 2026-08-24 run upgraded 14 packages in LXC 202, all
+  `util-linux`/`libexpat` security updates — `caddy` was not among them. The
+  binary still dated from the day it was built with the plugin. So the plugin
+  survived because *the package never changed*, not because the trap is stale:
+  `dpkg -S /usr/bin/caddy` confirms the binary is still package-owned, so a real
+  Caddy upgrade will overwrite the custom build exactly as documented. Keep the
+  check — it costs one command, and its failure mode is a certificate expiring a
+  month later with no obvious cause.
 
 ---
 
@@ -411,3 +419,52 @@ quarterly for docker tiers.
   premature; revisit if Phase B is repeatedly forgotten.
 - **Host-level backup remains absent.** Out of scope here, but it is the one
   rollback path this proposal cannot offer.
+
+---
+
+## D6 result (2026-08-24) — yennefer, first full pass
+
+Executed end to end: Phase A pre-flight, Phase B cache refresh, Phase C guests,
+Phase D host + kernel + reboot, Phase E verification. The node was 3 weeks into
+an uptime and two kernel metas behind.
+
+| Stage | Evidence |
+|---|---|
+| Host kernel | `7.0.14-4-pve` → **`7.0.14-12-pve`**, running and newest agree |
+| Rollback preserved | `proxmox-kernel-7.0.14-4-pve-signed` still installed — the kernel was **not** cleaned up |
+| Pending | host **2 → 0**; guests **39 (pbs) / 35 (pihole-2) → 0**; the three stale-cache guests measured and cleared |
+| Failed units | 0 before, 0 after |
+| Guests | all five back automatically on `onboot=1` |
+| Caddy | active, `caddy-dns/cloudflare` **present**, 21 handle blocks |
+| PBS | datastore `vault` online |
+| Beszel hub | active |
+| Disk | root 11% → 12%, `/mnt/backup` 6% → 7% |
+| `lab-smoke.sh` | **PASS 45 · WARN 0 · FAIL 0** |
+| `lab-deep-check.sh` | **PASS 4 · FAIL 0**, including a real `h264_nvenc` encode |
+| Kuma | all monitors green after the window (operator-verified) |
+
+### What the pass proved beyond "it came back"
+
+- **The stale-cache guard earned its place.** Three of five guests reported
+  `0 pending` going in, purely because their apt caches were 11–45 days old.
+  Phase B is not ceremony; without it the pass would have silently skipped them.
+- **The Tailscale pair failed over, and did not fail back.** `tailscale-2` (103
+  on geralt) was promoted to primary for `<LAN_PREFIX>.0/24` during the reboot
+  and still holds it — Tailscale keeps the current primary until it goes away.
+  `tailscale-1` is online and still advertising the same route, just not serving
+  it. This is correct behaviour and the second live proof of the pair after the
+  2026-07-13 drill, but it has a consequence for D7: **remote access currently
+  depends on geralt, the node about to be rebooted.** The route flips back to
+  203 when geralt goes down, which is precisely why yennefer had to be healthy
+  first.
+- **The Caddy trap did not fire, for a specific and non-reassuring reason** —
+  see §6. `caddy` was simply not in the upgrade set.
+- **Alert volume was tolerable.** Eight monitors go red for a yennefer reboot;
+  with `resend_interval` now at 30 minutes a sub-30-minute window costs one
+  notification each rather than the previous single-alert-then-silence.
+
+### Deviations from the runbook as written
+
+None. Phases A–E ran in order with no step needing improvisation, which is the
+first time a runbook in this repo has survived contact unchanged — helped by the
+run sheet being generated from live state rather than written from memory.

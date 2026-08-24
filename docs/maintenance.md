@@ -100,6 +100,22 @@ has broken; all six live in the initramfs or in config a package can overwrite.
 | `zfs_arc_max` | `2147483648` | ARC eats RAM the guests need |
 | `/mnt/media` | `ext4`, exported | Media stack is serving nothing |
 
+### Subnet-router failover is expected, and does not fail back
+
+Rebooting either node promotes the *other* Tailscale subnet router to primary
+for the LAN route, and **Tailscale keeps the new primary until it goes away** —
+it does not hand back. After the D6 yennefer pass, `tailscale-2` (103 on geralt)
+holds the route and `tailscale-1` (203) is online but not serving.
+
+That is correct behaviour, but check which node currently holds it *before* the
+next window: whichever one does is carrying remote access, and it should not be
+the node you are about to reboot.
+
+```bash
+ssh lab-geralt   'pct exec 103 -- tailscale status --json' | grep -o '"PrimaryRoutes":[^]]*]'
+ssh lab-yennefer 'pct exec 203 -- tailscale status --json' | grep -o '"PrimaryRoutes":[^]]*]'
+```
+
 ### Restarting ciri
 
 **Never `qm reboot 150`.** Back-to-back stop/start races the IOMMU teardown and
@@ -173,17 +189,17 @@ Single source of truth for "what is everything on, and when was it last
 checked". Update every cycle. **Fill in "Previous" before bumping** — a rollback
 cannot name a version it never recorded.
 
-## Platform (verified 2026-08-23)
+## Platform (geralt verified 2026-08-23; yennefer 2026-08-24)
 
 | Host | Component | Current | Notes |
 |---|---|---|---|
-| geralt | pve-manager | **9.2.4** | **98 pending, incl. security — behind yennefer** |
+| geralt | pve-manager | **9.2.4** | **98 pending, incl. security — next monthly pass (D7)** |
 | geralt | kernel | 7.0.14-4-pve | |
-| yennefer | pve-manager | **9.2.11** | 2 pending (both kernels) |
-| yennefer | kernel | 7.0.14-4-pve | |
-| 200 `pbs` | Proxmox Backup Server | 4.x | 39 pending |
-| 201 `pihole-2` | Pi-hole | v6 | 35 pending |
-| 202 `proxy` | Caddy | 2.11.4 | cloudflare plugin **present** |
+| yennefer | pve-manager | 9.2.11 | 0 pending · pass D6 2026-08-24 |
+| yennefer | kernel | **7.0.14-12-pve** | was 7.0.14-4; **7.0.14-4-pve-signed retained as rollback** |
+| 200 `pbs` | Proxmox Backup Server | 4.x | 0 pending (was 39) |
+| 201 `pihole-2` | Pi-hole | v6 | 0 pending (was 35) |
+| 202 `proxy` | Caddy | 2.11.4 | 0 pending; cloudflare plugin **present**. Caddy itself was *not* in the D6 upgrade set — the binary is still package-owned, so the plugin-drop risk stands |
 | 104 `uptime-kuma` | Uptime-Kuma | 2.4.0 | per as-built doc; not re-verified |
 | 150 `ciri` | Ubuntu | 26.04 LTS | kernel 7.0.0-30-generic, 8 pending |
 | 150 `ciri` | Docker Engine | **29.7.2** | docs said 29.6.1 — drift corrected |
@@ -247,7 +263,9 @@ That the fix was needed at all is the argument for pinning these four.
   before relying on any post-upgrade monitoring.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **geralt is 98 packages behind**, including security updates.
+- **geralt is 98 packages behind**, including security updates — the next
+  monthly pass (D7). It also carries the six boot-critical invariants, so run
+  `lab-inventory.sh --strict` after its reboot, not just the smoke test.
 - **Node version divergence was unexplained** (geralt 9.2.4 vs yennefer 9.2.11).
   This registry exists so it cannot recur silently.
 - **No host-level backup exists** — the one rollback path the lab does not have.
