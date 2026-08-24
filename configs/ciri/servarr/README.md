@@ -15,7 +15,8 @@ Deployed and serving TV + Movies. Verified:
   write action — see "Verify the kill-switch" in the runbook.
 - **Hardlinks ✓** — imports hardlink (verified: a Rick and Morty S09 episode shares one
   inode across `/data/downloads/complete/…` and `/data/library/tv/…`, link count 2, `664`,
-  owned by `jaskier`). `/data` is a single virtiofs filesystem.
+  owned by `jaskier`). `/data` is a single NFSv4.2 mount backed by one ext4
+  filesystem on geralt (was virtiofs until 2026-08-23).
 - **Indexers** — 1337x (via FlareSolverr proxy) + The Pirate Bay. **Root folders** set:
   Sonarr `/data/library/tv`, Radarr `/data/library/movies`. Prowlarr app-sync live.
 - **FlareSolverr ✓** up on `:8191`.
@@ -57,15 +58,23 @@ carried as a deferred plan; this stack is TV + Movies.
 
 Every *arr **and** qBittorrent bind the same host dir `/mnt/media` at `/data`. Downloads
 land in `/data/downloads`, imports go to `/data/library/{movies,tv,audiobooks}`. Both are
-on **one ext4 filesystem** (geralt's USB HDD via virtiofs), so `*arr` imports are instant
-**hardlinks** — the file exists in both `downloads/` (still seeding) and `library/`
-(Jellyfin/ABS see it) sharing one inode, using zero extra bytes. This matters: the disk is
-USB-2.0-limited (~40 MB/s) and copying every import would be painfully slow and double the
-space. **Never** split downloads and library into separate mounts — that silently reverts
-to copy mode.
+on **one ext4 filesystem** (geralt's USB HDD, exported to ciri over **NFSv4.2** since
+2026-08-23 — virtiofs before that, see
+[proposal 005](../../../docs/proposals/005-nfs-media-share.md)), so `*arr` imports are
+instant **hardlinks** — the file exists in both `downloads/` (still seeding) and
+`library/` (Jellyfin sees it) sharing one inode, using zero extra bytes. Hardlinking
+works because both paths are on the *same* NFS mount; NFSv4 passes `link()` through to
+the server, where it resolves on the one underlying ext4. This matters: the disk is slow
+and copying every import would double the space for nothing. **Never** split downloads
+and library into separate mounts — that silently reverts to copy mode.
+
+**One exception, added by 005:** `downloads/incomplete` is nested over the NFS bind from
+a local NVMe scratch disk (`/mnt/torrents/incomplete`), so in-flight random writes stay
+off the USB disk. Completed files are moved to `downloads/complete` by qBittorrent
+itself, back onto the share — so the import is still a hardlink.
 
 ```
-Prowlarr ─(indexers, via FlareSolverr for CF sites)→ Sonarr / Radarr / Jellyseerr(requests)
+Prowlarr ─(indexers, via FlareSolverr for CF sites)→ Sonarr / Radarr / Seerr(requests)
                               │ grab → qBittorrent API (http://gluetun:8080)
                               ▼
         qBittorrent ─netns→ gluetun ─WireGuard+PF→ Proton VPN → internet
@@ -101,11 +110,15 @@ start-time assertion and nothing reads it — putting a second mount inside the
 `/mnt/media/library` is absent, the container refuses to start rather than
 writing to the wrong filesystem.
 
-These guards are **load-bearing by design**: the VM 150 hookscript treats
-`/mnt/media` as *advisory* and deliberately lets ciri boot without the USB disk,
-so Immich/Paperless/memos/sure keep running. That means these guards — not the
-hypervisor — are what hold the media stack back. See
-[`scripts/proxmox/vm150-require-virtiofs.sh`](../../../scripts/proxmox/vm150-require-virtiofs.sh).
+These guards are **load-bearing by design, and more so since 2026-08-23**: with
+proposal 005, `/mnt/media` left the VM 150 hookscript's share list *entirely* —
+it is NFS now, not virtiofs, so there is no start-time inode for the hypervisor
+to pin or check. The hookscript no longer looks at the media path at all, and
+ciri boots without it by design so Immich/Paperless/memos/sure keep running.
+These container-level guards are now the **only** thing holding the media stack
+back off the wrong filesystem. See
+[`scripts/proxmox/vm150-require-virtiofs.sh`](../../../scripts/proxmox/vm150-require-virtiofs.sh)
+(name kept for history; it guards the remaining virtiofs shares, not media).
 
 They prove the path **exists**; proving it's the *right* filesystem is the
 `ciri media mount` Push monitor ([uptime-kuma.md](../../../docs/uptime-kuma.md)).

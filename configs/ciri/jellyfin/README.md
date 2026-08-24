@@ -10,7 +10,8 @@ compatibility — including the sideloaded Samsung TV app, the primary consumer 
 is in [jellyfin-clients.md](../../../docs/jellyfin-clients.md).
 
 Deployed and fully configured **2026-07-22**; verified end-to-end: container
-healthy on `10.11.11`, media disk (ext4) shared into ciri via `virtiofs1`,
+healthy on `10.11.11`, media disk (ext4) shared into ciri over **NFSv4.2**
+(was `virtiofs1` until 2026-08-23 — see [proposal 005](../../../docs/proposals/005-nfs-media-share.md)),
 DNS `jellyfin.kaermorhen.internal` → `<LAN_PREFIX>.150` on pihole-1, Kuma HTTP
 monitor on `:8096`, `/data` grown to 64 GB, repo mirror in sync. Auto-subtitles
 via the OpenSubtitles plugin added 2026-07-23 (see Subtitles). **Playback proven** with a test movie: Direct Play on iPhone
@@ -30,7 +31,7 @@ see Troubleshooting. **Build complete** — Beszel shows the GPU on ciri's view
 
 | Data | Lives on | Why |
 |---|---|---|
-| media library | **external USB HDD on geralt**, ext4, `/mnt/media`, into the VM via **virtiofs** at `/mnt/media` | bulk sequential video; must not sit in a VM disk or inflate PBS |
+| media library | **external USB HDD on geralt**, ext4, `/mnt/media`, into the VM over **NFSv4.2** at `/mnt/media` | bulk sequential video; must not sit in a VM disk or inflate PBS |
 | `config/` (DB, artwork, trickplay) | ciri `/data` (NVMe zvol) | small-file random I/O — painful from a 5400rpm USB disk |
 | `cache/` (transcode scratch) | ciri `/data` (NVMe zvol) | write-heavy scratch, regenerable |
 
@@ -54,22 +55,48 @@ Rejected: **XFS** (fine for large files, but can't shrink and buys nothing
 here), **exFAT/NTFS** (no POSIX permissions, weaker journaling — reformat even
 if the drive ships preformatted), **ZFS** (above).
 
-### Mount method: virtiofs, superseding the `--scsi2` plan
+### Mount method: NFSv4.2 (was virtiofs until 2026-08-23)
 
-[docker-vm.md](../../../docs/docker-vm.md) originally planned the media disk as
-a raw `--scsi2` passthrough with `backup=0`. That plan predates ciri having
-either virtiofs or the GPU, and is now stale:
+Two decisions stacked here. Both still hold, but the second one was replaced.
+
+**Against raw `--scsi2` passthrough.** [docker-vm.md](../../../docs/docker-vm.md)
+originally planned the media disk as a raw `--scsi2` passthrough with
+`backup=0`. That plan predates ciri having either a host share or the GPU:
 
 - Its main advantage was preserving live migration / hibernate / RAM snapshots.
   **Those are already gone** — `virtiofs0` (photos) and `hostpci0` (GPU) each
   independently disqualify ciri. Passthrough would be defending nothing.
-- virtiofs keeps **geralt's own read/write access** to the media while ciri
+- A host share keeps **geralt's own read/write access** to the media while ciri
   runs: bulk-loading over the network, and any future stack wanting the library.
 - A USB disk **will** re-enumerate eventually. geralt recovering an ext4 mount
   is a well-understood failure; a block device yanked from under a running
   guest's filesystem is how you corrupt one.
 - `backup=0` becomes moot — a host path is never a VM disk, so vzdump never
   sees it. Same property that keeps `/mnt/photos` out of PBS.
+
+**virtiofs → NFS, 2026-08-23** ([proposal 005](../../../docs/proposals/005-nfs-media-share.md)).
+virtiofs was the original share transport and it failed structurally, three
+times: virtiofsd **pins the inode it was started against**, so when the USB disk
+re-enumerated on geralt, ciri kept being served the empty pre-mount placeholder
+on the boot disk rather than the real filesystem — silently, with no error
+anywhere. That caused the 2026-07-27 wrong-filesystem incident and the 08-10
+twelve-day silent outage. NFS has no equivalent failure: the export follows the
+mount on the server, and a client that cannot reach it gets a hard error instead
+of plausible-looking wrong data.
+
+As built:
+
+- Server `geralt`, client `ciri`, over a **dedicated storage bridge** (same
+  last-octet convention as the LAN: geralt `<STORAGE_PREFIX>.21`, ciri
+  `<STORAGE_PREFIX>.150`), so bulk media traffic stays off the LAN.
+- Export `rw,all_squash,anonuid=13000,anongid=13000` — every write lands as
+  `jaskier` (13000) on disk regardless of the client-side uid.
+- Mount `vers=4.2,hard,x-systemd.automount,_netdev,nofail`. `hard` means a
+  server outage blocks rather than returning short reads; `x-systemd.automount`
+  means `/mnt/media` exists as a trigger whether or not geralt is serving, which
+  is precisely why the containers need the missing-mount guards below.
+- `virtiofs0` (photos) is **untouched and still virtiofs** — explicitly out of
+  scope for 005.
 
 Cost: somewhat lower throughput than raw passthrough. Irrelevant at video
 bitrates the 1060 can transcode.
@@ -159,9 +186,19 @@ findmnt /mnt/media                                 # ext4, rw, noatime
 mkdir -p /mnt/media/library/movies /mnt/media/library/tv /mnt/media/downloads
 ```
 
-### 2. geralt — share into ciri via virtiofs
+### 2 & 3. ~~geralt — share into ciri via virtiofs~~ / ~~ciri — mount the share~~ — SUPERSEDED 2026-08-23
 
-`virtiofs0` is taken by `photos`, so media is **`virtiofs1`**:
+> ⚠️ **These two steps are a historical record of the 2026-07-22 build, not a
+> procedure to follow.** The media share moved from virtiofs to **NFSv4.2** on
+> 2026-08-23 ([proposal 005](../../../docs/proposals/005-nfs-media-share.md));
+> the `virtiofs1` mapping is gone. To rebuild this share, follow proposal 005's
+> runbook, not what is below. Kept because the 2026-07-27 and 08-10 incidents
+> referenced further down only make sense against it.
+
+<details>
+<summary>Original virtiofs steps (2026-07-22)</summary>
+
+`virtiofs0` was taken by `photos`, so media was **`virtiofs1`**:
 
 ```bash
 pvesh create /cluster/mapping/dir --id media --map node=geralt,path=/mnt/media
@@ -173,9 +210,7 @@ qm shutdown 150 && qm start 150
 qm config 150 | grep virtiofs                      # virtiofs0: photos, virtiofs1: media
 ```
 
-### 3. ciri — mount the share
-
-Mount tag is the mapping id (`media`):
+Then on ciri, mount tag = the mapping id (`media`):
 
 ```bash
 sudo mkdir -p /mnt/media
@@ -183,6 +218,15 @@ echo 'media /mnt/media virtiofs defaults,nofail 0 0' | sudo tee -a /etc/fstab
 sudo systemctl daemon-reload && sudo mount /mnt/media
 findmnt /mnt/media                                 # FSTYPE virtiofs
 ls /mnt/media                                      # library  downloads
+```
+
+</details>
+
+**Current state**, for verification rather than construction:
+
+```bash
+findmnt -no SOURCE,FSTYPE /mnt/media
+# <STORAGE_PREFIX>.21:/mnt/media  nfs4     (behind an x-systemd.automount trigger)
 ```
 
 ### 4. ciri — deploy
@@ -198,7 +242,11 @@ docker compose logs -f jellyfin                    # watch first-run init
 
 If the container refuses to start with a bind-source error, that is the
 missing-mount guard working — `/mnt/media/library` doesn't exist, meaning the
-USB disk or the virtiofs share is down. Fix the mount, don't remove the guard.
+USB disk is down or geralt is not serving the NFS export. Fix the mount, don't
+remove the guard. Since 005 the guard matters *more*, not less: `/mnt/media` is
+an `x-systemd.automount` trigger that exists as a path whether or not geralt is
+serving, so the only thing distinguishing "share is up" from "share is gone" is
+whether `/mnt/media/library` resolves.
 
 **This is not hypothetical — it fired for real on 2026-07-27** (`exit 127`,
 `failed to fulfil mount request: open /mnt/media/library: no such file or
