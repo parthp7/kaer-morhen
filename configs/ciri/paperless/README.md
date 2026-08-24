@@ -126,8 +126,21 @@ are not, and silently return fewer results.
 > perfectly healthy index**. The document-owning account here is `parth`
 > (id 4), not the unused `paperless` superuser (id 3).
 
-**Rollback** is the pre-v3 `pg_dump` + `{data,media}` tarball in
-`/data/backups/`, not the image tag — the schema migration is one-way.
+**Rollback** is *not* the image tag — the schema migration is one-way. What
+actually exists (verified 2026-08-24, after the fact):
+
+| Artifact | Covers | Note |
+|---|---|---|
+| `pbs-vault` snapshot `2026-08-24T15:36:06Z` | **everything**, incl. `postgres-data` | 21:06 IST, ~1 h 20 m before the 22:29 migration. `scsi1` is in the backup set, so this is the complete rollback |
+| `/data/backups/paperless-pre-v3-2026-08-24.tar.gz` | `data/` + `media/` only | 14 M; the Whoosh index and document files — **no database** |
+| `backups/pre-image-refresh-2026-08-24.sql` | database | 662 K logical dump from **03:06** the same day, i.e. ~19 h stale relative to the upgrade |
+
+> ⚠️ **The intended pre-v3 `pg_dump` was never taken.** The plan called for a
+> dump immediately before the migration; only the file tarball was made, and
+> `tar -C /data/stacks/paperless data media` does not include `postgres-data/`.
+> The PBS snapshot covers the gap here by luck of timing, not by design. For
+> the next major: take the dump **and confirm the file exists** before pulling
+> the new image — `ls -lh` the artifact, do not assume the command ran.
 
 ## Backup story (important)
 

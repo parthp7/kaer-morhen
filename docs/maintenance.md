@@ -235,6 +235,104 @@ signed off**, since the previous image is half the rollback.
 | A container | Re-pin the previous tag from the registry, `docker compose up -d` |
 | A host, not booting | **Physical access. There is no host-level backup.** |
 
+## Releasing rollbacks (image pruning)
+
+> **NEXT SESSION: this is the outstanding task from the 2026-08-24 upgrade
+> pass.** Nothing is broken and there is no deadline — `/data` has 64 G free.
+> Do it once the sign-off gate below is met.
+
+Old images are half the rollback, so pruning is the *last* step of an upgrade
+cycle, never part of it. On ciri there are three distinct classes and only one
+is safe to remove today.
+
+### How pruning actually behaves here — read before typing
+
+- **`docker image prune` frees nothing.** It removes only *dangling* (untagged)
+  images and ciri has **zero**. Verify: `docker images -f dangling=true -q | wc -l`.
+- **`docker system df` "RECLAIMABLE" is misleading.** It reported 22 G, and
+  every byte of it is *tagged* rollback material.
+- **Never `docker image prune -a` / `docker system prune -a`** — that is what
+  the 22 G figure tempts you into, and it deletes every rollback in one go.
+  **Always remove images by explicit name**; `docker rmi` refuses to delete an
+  image a container is using, so naming them is self-protecting.
+- **`docker system prune --volumes` is destructive** — data loss, never run it.
+- **Two tags can share one image ID.** `sure:0.7.2` and `sure:stable` are the
+  same ID (`96155b20c0b7`); removing one tag frees **0 bytes**. Untag both.
+
+Find true candidates by image ID, not by name:
+
+```bash
+used=$(docker ps -aq | xargs -r docker inspect -f '{{.Image}}' | sort -u)
+docker images --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}|{{.Size}}' \
+  | grep -v '<none>' \
+  | while IFS='|' read -r id name size; do
+      echo "$used" | grep -qxF "$id" || printf '%-58s %s\n' "$name" "$size"
+    done
+```
+
+### Sign-off gate
+
+Release the 2026-08-24 rollbacks only when **all** are true:
+
+- Paperless v3 used for real for several days: search returns expected hits,
+  the consume directory ingests, no OCR regressions.
+- Immich v3.1.0: library browses, ML jobs complete.
+- Sure 0.7.3: AI chat answers, balances correct.
+- Ollama 0.32.15 + Jellyfin still share the GPU without contention.
+
+### Class A — the 2026-08-24 upgrade rollbacks (~17.0 G) · **HOLD**
+
+`ollama:0.32.5` (8.04 G) · `immich-server:v3.0.2` (3.11 G) ·
+`paperless-ngx:2.20.15` (2.04 G) · `immich-machine-learning:v3.0.2` (1.85 G) ·
+`sure:0.7.2` **and** `sure:stable` (1.38 G, shared ID) ·
+`searxng:2026.7.28-c01178d03` (377 M) · `valkey:9.1.0` (167 M) ·
+`memos:0.29.1` (90 M)
+
+```bash
+# ONLY after the sign-off gate above
+docker rmi ollama/ollama:0.32.5 \
+           ghcr.io/immich-app/immich-server:v3.0.2 \
+           ghcr.io/immich-app/immich-machine-learning:v3.0.2 \
+           ghcr.io/paperless-ngx/paperless-ngx:2.20.15 \
+           ghcr.io/we-promise/sure:0.7.2 ghcr.io/we-promise/sure:stable \
+           searxng/searxng:2026.7.28-c01178d03 \
+           valkey/valkey:9.1.0 \
+           neosmemo/memos:0.29.1
+```
+
+Then clear the *Previous (rollback)* column in the registry for those rows —
+a tag that no longer exists is worse than an empty cell, because it reads as a
+rollback that is available.
+
+### Class B — unrelated leftovers (~3.3 G) · **safe now**
+
+Nothing here is anyone's rollback:
+
+| Image | Size | Why safe |
+|---|---|---|
+| `ghcr.io/georift/install-jellyfin-tizen:latest` | 2.66 G | run as `docker run --rm`, re-pulls on demand; next needed after a Jellyfin major, which is deferred |
+| `lscr.io/linuxserver/readarr:develop-…` | 278 M | decommissioned service, unreferenced anywhere in the repo |
+| `valkey/valkey:9` | 183 M | superseded floating tag; the pinned `9.1.0` is the real rollback |
+| `ubuntu:latest` | 160 M | unreferenced |
+| `hello-world:latest` | 26 K | appears in `docker-vm.md` only as a smoke test that re-pulls |
+
+```bash
+docker rmi ghcr.io/georift/install-jellyfin-tizen:latest \
+           lscr.io/linuxserver/readarr:develop-version-0.4.18.2805 \
+           valkey/valkey:9 ubuntu:latest hello-world:latest
+```
+
+### Class C — other stacks' rollbacks · **hold, separate sign-off**
+
+`fallenbagel/jellyseerr:2.7.3` (2.12 G) · `qbittorrent:…v2.0.13` (291 M) ·
+`gluetun:v3.41.1` (60 M) · `rollback/paperless-postgres:16.14` (642 M) ·
+`rollback/paperless-redis:7.4.9` (58 M).
+
+These belong to the servarr/seerr migration and the floating-tag pins, not to
+this pass. **Jellyseerr especially**: the seerr merge rewrote its DB one-way,
+so its rollback is the tarball in `/data/backups/`, and the tag is only useful
+alongside it.
+
 ---
 
 # Version registry
@@ -318,9 +416,12 @@ That the fix was needed at all is the argument for pinning these four.
   before relying on any post-upgrade monitoring.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **Paperless 2.20.15 rollback images are still held** — `rollback/paperless:2.20.15`
-  plus the pre-v3 dump/tarball in `/data/backups/`. Release only once v3 is
-  signed off; the tag alone cannot undo the schema migration.
+- **Release the 2026-08-24 upgrade rollbacks** — ~17 G of held images, plus
+  ~3.3 G of unrelated leftovers that are safe to drop today. Full procedure and
+  sign-off gate in [Releasing rollbacks](#releasing-rollbacks-image-pruning).
+- **A pre-major `pg_dump` was planned and not taken** (paperless v3). The PBS
+  snapshot happened to cover it. Add "verify the artifact exists with `ls -lh`"
+  to the pre-flight for any future one-way migration.
 - **`/mnt/torrents` is 100 G committed against ~32 M used** — thin, so it costs
   nothing today, but it is the first place to reclaim under pool pressure.
 - **A LAN apt cache** — deferred by decision. geralt's D7 download phase ran at
