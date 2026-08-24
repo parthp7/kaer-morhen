@@ -116,7 +116,7 @@ local bridge runs at virtio/memory speed. Decided 2026-08-22.
 occupy `172.17.0.0/16`–`172.26.0.0/16` and docker grows into `172.16.0.0/12`
 on demand — the storage subnet must therefore come from `10.0.0.0/8`. Avoid
 `10.2.0.0/24` (gluetun's WireGuard address, an isolated netns but keep it
-unambiguous). Suggested value: `10.77.0` — confirm against `ip route` on both
+unambiguous). Suggested value: `<STORAGE_PREFIX>` — confirm against `ip route` on both
 machines in step A0.
 
 ## 3. The failure modes, replayed against this design
@@ -362,9 +362,9 @@ ssh lab-geralt "ip route"
 ssh lab-ciri  "ip route"
 ```
 
-Expected: no route overlapping the chosen `10.x.y.0/24` (suggested `10.77.0`;
+Expected: no route overlapping the chosen `10.x.y.0/24` (suggested `<STORAGE_PREFIX>`;
 anything in `172.16/12` is disqualified — docker owns it on ciri). Record the
-choice in `secrets.local.yaml` as `STORAGE_PREFIX: 10.77.0` (or the chosen
+choice in `secrets.local.yaml` as `STORAGE_PREFIX: <STORAGE_PREFIX>` (or the chosen
 value). All commands below write `<STORAGE_PREFIX>` — substitute when handing
 blocks to the user.
 
