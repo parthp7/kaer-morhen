@@ -117,3 +117,17 @@ Env overrides: `NIC`, `PCI_DEV`, `DISABLE_ASPM`, `DISABLE_PAUSE`. The unit runs
 `Before=network-pre.target` so the link is clean before the bridge comes up, and
 carries an explicit `TimeoutStartSec` — a `Type=oneshot` unit with the default
 infinite timeout would hang `network-pre.target` forever if `setpci` wedged.
+
+### As-built (deployed 2026-08-24)
+
+| Check | Result |
+|---|---|
+| Unit enabled + active on geralt | yes |
+| Bridge auto-resolved | `0000:05:00.0` → `0000:00:1d.6` |
+| ASPM cleared, both ends | `0x0c43 → 0x0c40` (bridge), `0x0143 → 0x0140` (NIC) |
+| `lspci` confirmation | `ASPM Disabled` on device **and** bridge |
+| Flow control | `rx=off tx=off` |
+| AER correctable rate after | **0 in 30 s** (was ~27,900/hour) |
+
+Deployed immediately after the D7 reboot demonstrated the need: the runtime-only
+fixes were lost on reboot and the error storm resumed within seconds of boot.

@@ -283,13 +283,6 @@ That the fix was needed at all is the argument for pinning these four.
   before relying on any post-upgrade monitoring.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **Deploy `nic-pcie-tune.service` on geralt.** The ASPM and flow-control fixes
-  are runtime-only and were lost on the D7 reboot; the correctable-error storm is
-  running again at ~27,900/hour. Three commands, no reboot needed —
-  [RCA §6a](geralt-nic-throughput.md).
-- **Remove the `MAX_STRIKES=100000` override on `servarr-vpn-health`.** Proton's
-  port forward recovered during the D7 pass and the check now reports healthy
-  with 0 strikes, so the soft tier should be allowed to escalate normally again.
 - **A LAN apt cache** — deferred by decision. geralt's D7 download phase ran at
   ~130 kB/s; every future pass pays that until the cache exists.
 - **Node version divergence was unexplained** (geralt 9.2.4 vs yennefer 9.2.11).

@@ -537,9 +537,9 @@ drop. ciri was shut down gracefully first.
 - **The `servarr vpn health` degradation cleared on its own.** Restarting
   gluetun as part of the ciri shutdown re-negotiated Proton's port forward:
   the check now reports `ok: … port-forward 36507 matches qBit, no leak`, with
-  the strike counter back to **0**. The `MAX_STRIKES=100000` override is
-  therefore no longer needed and should be removed so the soft tier can escalate
-  normally again (§8).
+  the strike counter back to **0**. The `MAX_STRIKES=100000` override was
+  therefore **removed 2026-08-24** and the check re-verified healthy under the
+  restored default of 6, so the soft tier can escalate normally again.
 
 ### Deviations from the runbook as written
 
@@ -548,7 +548,9 @@ survive the reboot.** ASPM L0s and 802.3x flow control were cleared at runtime
 during the RCA earlier the same day, `nic-pcie-tune.service` was written but not
 deployed, and the reboot restored both — the correctable-error storm resumed at
 ~27,900/hour within seconds of boot. Nothing broke; the defect is a degrading
-link nobody watches rather than an outage. Recorded in
+link nobody watches rather than an outage. **Closed the same day**: the unit was
+deployed and verified, ASPM is cleared on both ends of the link at boot, pause is
+off, and the error rate is back to 0 — see
 [geralt-nic-throughput.md §6a](../geralt-nic-throughput.md).
 
 The download phase also ran at **~130 kB/s** for all 98 packages, which is the

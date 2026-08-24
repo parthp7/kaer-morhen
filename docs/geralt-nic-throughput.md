@@ -147,17 +147,18 @@ reverted `usb-storage.quirks` attempt).
 
 | Fix | Applied | Persistent |
 |---|---|---|
-| ASPM cleared on device + upstream bridge | **Yes, verified** — ~24,800 errors/hour → **0** | **No** — runtime `setpci` only |
-| 802.3x flow control disabled | **Yes, verified** — PAUSE frames per transfer 372 → **0** | **No** — runtime `ethtool` only |
-| `nic-pcie-tune.service` deployed | **No** | — |
+| ASPM cleared on device + upstream bridge | **Yes, verified** — ~24,800 errors/hour → **0** | **Yes** — `nic-pcie-tune.service` |
+| 802.3x flow control disabled | **Yes, verified** — PAUSE frames per transfer 372 → **0** | **Yes** — same unit |
+| `nic-pcie-tune.service` deployed | **Yes, 2026-08-24** — enabled, active, verified | — |
 | LAN apt cache | **No — deferred by decision 2026-08-24**, not rejected | — |
 
-> **Both fixes revert on reboot.** They live only in PCI config space and the
-> NIC's runtime settings. Until
-> [`nic-pcie-tune.service`](../scripts/proxmox/nic-pcie-tune.sh) is installed and
-> enabled, every reboot restores ASPM L0s and re-enables pause, and the AER storm
-> resumes at ~24,800/hour. Deploying it is three commands and needs no reboot of
-> its own — see [scripts/proxmox/README.md](../scripts/proxmox/README.md).
+**Persistence proven the hard way.** Both fixes were runtime-only when geralt
+rebooted for its D7 maintenance pass, and both were lost — the correctable-error
+storm resumed at ~27,900/hour within seconds of boot. The unit was deployed
+immediately afterwards and verified: it resolves the upstream bridge itself,
+clears ASPM on both ends (`0x0c43 → 0x0c40` and `0x0143 → 0x0140`), disables
+pause, and logs the AER total at apply time so the journal carries a trail.
+Error rate after: **0 in 30 seconds**.
 
 ## 6b. Observed consequence for the geralt maintenance pass
 
@@ -177,8 +178,8 @@ Any future pass on geralt pays this tax until the cache exists.
 - **Local apt cache — deferred 2026-08-24, not rejected.** The recommended
   mitigation, and the only one that removes the download tax without new
   hardware. Every geralt upgrade pays ~130 kB/s until it exists.
-- **`nic-pcie-tune.service` — written, not deployed.** Until it is, both fixes
-  in §3 and §4 are lost on every reboot (§6a).
+- ~~**`nic-pcie-tune.service` — written, not deployed.**~~ Deployed and verified
+  2026-08-24 (§6a).
 - **The 5% drop rate is unexplained at the hardware level.** It is reproducible,
   load-dependent, and independent of CPU, memory, ASPM and flow control. Whether
   it is a silicon limitation, an `alx` descriptor-refill bug, or a failing part
