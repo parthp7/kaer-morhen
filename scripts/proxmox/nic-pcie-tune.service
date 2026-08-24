@@ -1,0 +1,24 @@
+# nic-pcie-tune.service — disable ASPM + 802.3x flow control on geralt's NIC.
+# Deploy: install -m 0755 nic-pcie-tune.sh /usr/local/sbin/
+#         install -m 0644 nic-pcie-tune.service /etc/systemd/system/
+#         systemctl daemon-reload && systemctl enable --now nic-pcie-tune.service
+# Why: docs/geralt-nic-throughput.md
+[Unit]
+Description=Disable PCIe ASPM and 802.3x flow control on the primary NIC
+Documentation=file:///usr/share/doc/kaer-morhen/geralt-nic-throughput.md
+# Run before the network is configured so the link is already clean when the
+# bridge comes up. DefaultDependencies=no would be wrong -- we need /sys.
+After=sysinit.target
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Type=oneshot defaults to an infinite start timeout; a wedged setpci would
+# leave the unit "activating" forever and silently block network-pre.target.
+TimeoutStartSec=30
+ExecStart=/usr/local/sbin/nic-pcie-tune.sh
+
+[Install]
+WantedBy=multi-user.target

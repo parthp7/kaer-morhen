@@ -221,7 +221,14 @@ targeted fix rather than new hardware.
 
 **Network**
 - Ethernet: Qualcomm Atheros Killer E2400 Gigabit Ethernet Controller (rev 10) — bridged
-  as `vmbr0`, IP `<GERALT_IP>/24`
+  as `vmbr0`, IP `<GERALT_IP>/24`.
+  **Known defective under sustained inbound load (RCA 2026-08-24):** drops ~5% of
+  received packets to RX FIFO overflow, which is invisible on the LAN (26–65 MB/s)
+  but collapses WAN throughput ~500× at 172 ms RTT (126 kB/s from a mirror yennefer
+  pulls at 6.7 MB/s). `alx` exposes no ring or coalescing controls, so it is not
+  tunable. Two adjacent defects were fixed and were *not* the cause: ASPM L0s (a
+  3.9-million-error PCIe storm, now 0/hr) and 802.3x flow control. Full analysis and
+  mitigations: [geralt-nic-throughput.md](geralt-nic-throughput.md).
 - Wireless: Intel Corporation Cannon Lake PCH CNVi WiFi (rev 10) — present, unused
   (interface down)
 

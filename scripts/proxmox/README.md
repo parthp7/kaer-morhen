@@ -69,3 +69,51 @@ while autoheal insisted all was well.
 
 Verified end to end 2026-08-23 (USB unbind/bind on port `2-3`): heal completed
 in **13 s**, ciri's uptime unbroken, **zero container restarts**.
+
+## `nic-pcie-tune.sh` + `nic-pcie-tune.service`
+
+Disables PCIe ASPM and 802.3x flow control on geralt's primary NIC at boot.
+Full analysis: [docs/geralt-nic-throughput.md](../../docs/geralt-nic-throughput.md).
+
+Two defects on the Killer E2400 (`alx`), both found on 2026-08-24 while chasing
+slow `apt` downloads, both **fixed here and neither the actual cause**:
+
+- **ASPM L0s enabled** on both ends of the link, device declaring *unlimited* L1
+  exit latency and not asserting ASPM optionality compliance — a correctable PCIe
+  error storm at **~24,800/hour**, 3.9 million since boot. Clearing ASPM on the
+  device *and* its upstream bridge (it is negotiated per link, so one end is not
+  enough) takes it to **0**.
+- **802.3x flow control negotiated on** — an RX FIFO overrun made the NIC emit
+  PAUSE frames, stalling the switch port for all inbound traffic instead of
+  dropping one packet. yennefer's Realtek negotiates pause off and never does this.
+
+The real cause of the slow downloads is a ~5% RX FIFO drop rate under load that
+`alx` gives no way to tune; the mitigation is a LAN-local apt cache, not this
+script. These fixes are kept anyway: a link logging 24,800 correctable errors an
+hour is degrading unwatched, and PAUSE frames escalate a one-packet problem into
+a link-wide stall.
+
+**Why a systemd unit and not `pcie_aspm=off` on the cmdline.** geralt has a
+documented history of intermittent boot hangs caused by a GRUB cmdline change
+(the reverted `usb-storage.quirks` attempt, 2026-07-28 — see
+[storage.md](../../docs/storage.md)). Boot-path changes on this node have a bad
+track record, so this stays out of it entirely — and the cmdline could not cover
+flow control anyway.
+
+```bash
+# deploy on geralt
+install -m 0755 nic-pcie-tune.sh /usr/local/sbin/
+install -m 0644 nic-pcie-tune.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now nic-pcie-tune.service
+
+# verify
+systemctl status nic-pcie-tune --no-pager
+lspci -vv -s 05:00.0 | grep LnkCtl          # expect: ASPM Disabled
+ethtool -a nic0                             # expect: RX: off / TX: off
+grep TOTAL_ERR_COR /sys/bus/pci/devices/0000:05:00.0/aer_dev_correctable  # sample twice
+```
+
+Env overrides: `NIC`, `PCI_DEV`, `DISABLE_ASPM`, `DISABLE_PAUSE`. The unit runs
+`Before=network-pre.target` so the link is clean before the bridge comes up, and
+carries an explicit `TimeoutStartSec` — a `Type=oneshot` unit with the default
+infinite timeout would hang `network-pre.target` forever if `setpci` wedged.

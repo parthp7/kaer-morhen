@@ -7,6 +7,7 @@
 - [Backup setup & runbook](docs/backups.md) — PBS on yennefer (LXC 200, datastore `vault`), nightly all-guest jobs from both nodes, prune/GC/verify schedules, and the tested restore procedure
 - [Monitoring & alerting](docs/monitoring.md) — Beszel hub (LXC 204 on yennefer) + agents on both nodes, alert thresholds, and native failure alerting (PVE notifications, zed, smartd) all delivering to one ntfy topic
 - [DNS & ad-blocking](docs/dns.md) — Pi-hole pair (LXC 101 on geralt, 201 on yennefer), Cloudflare upstream, conditional forwarding, and the two-server router handout that keeps house DNS up across a node reboot
+- [geralt NIC throughput RCA](docs/geralt-nic-throughput.md) — why WAN downloads crawl on geralt: a ~5% RX FIFO drop rate amplified 500× by RTT, plus the two PCIe defects found and fixed along the way
 - [Maintenance & upgrades](docs/maintenance.md) — the weekly/monthly/quarterly cadence, per-guest upgrade exceptions, geralt's boot-critical invariants, rollback paths, and the version registry for every host and container image
 - [Docker VM](docs/docker-vm.md) — ciri (VM 150): disk split, mounts, and the stack inventory
 - [GPU passthrough](docs/gpu-passthrough.md) — GTX 1060 via VFIO to ciri, the D3cold/PGON trap, and CDI wiring
