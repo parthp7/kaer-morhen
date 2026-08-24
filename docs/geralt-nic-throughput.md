@@ -143,9 +143,42 @@ systemd unit — deliberately **not** a GRUB cmdline change, because geralt has 
 history of boot hangs from exactly that (see [storage.md](storage.md), the
 reverted `usb-storage.quirks` attempt).
 
+## 6a. Fix status (2026-08-24)
+
+| Fix | Applied | Persistent |
+|---|---|---|
+| ASPM cleared on device + upstream bridge | **Yes, verified** — ~24,800 errors/hour → **0** | **No** — runtime `setpci` only |
+| 802.3x flow control disabled | **Yes, verified** — PAUSE frames per transfer 372 → **0** | **No** — runtime `ethtool` only |
+| `nic-pcie-tune.service` deployed | **No** | — |
+| LAN apt cache | **No — deferred by decision 2026-08-24**, not rejected | — |
+
+> **Both fixes revert on reboot.** They live only in PCI config space and the
+> NIC's runtime settings. Until
+> [`nic-pcie-tune.service`](../scripts/proxmox/nic-pcie-tune.sh) is installed and
+> enabled, every reboot restores ASPM L0s and re-enables pause, and the AER storm
+> resumes at ~24,800/hour. Deploying it is three commands and needs no reboot of
+> its own — see [scripts/proxmox/README.md](../scripts/proxmox/README.md).
+
+## 6b. Observed consequence for the geralt maintenance pass
+
+geralt's first full maintenance pass (D7, [proposal 006](proposals/006-maintenance-and-upgrades.md))
+ran with the NIC in this state: **98 packages, including 31 security updates,
+downloaded at roughly 130 kB/s** because the packages come from
+`download.proxmox.com` at 172 ms RTT — precisely the path this RCA describes.
+The upgrade itself was unaffected; only the download phase was slow.
+
+This is the concrete cost of the defect, and the reason the LAN apt cache in §6
+is the mitigation that matters: at LAN RTT the same 5% loss yields 26–65 MB/s,
+so the identical download would finish in seconds rather than tens of minutes.
+Any future pass on geralt pays this tax until the cache exists.
+
 ## 7. Open
 
-- **Local apt cache — not built.** The recommended mitigation.
+- **Local apt cache — deferred 2026-08-24, not rejected.** The recommended
+  mitigation, and the only one that removes the download tax without new
+  hardware. Every geralt upgrade pays ~130 kB/s until it exists.
+- **`nic-pcie-tune.service` — written, not deployed.** Until it is, both fixes
+  in §3 and §4 are lost on every reboot (§6a).
 - **The 5% drop rate is unexplained at the hardware level.** It is reproducible,
   load-dependent, and independent of CPU, memory, ASPM and flow control. Whether
   it is a silicon limitation, an `alx` descriptor-refill bug, or a failing part
