@@ -366,6 +366,24 @@ users, no request history, no Jellyfin link — and reports a successful migrati
 `ls -la /data/stacks/servarr/seerr` and confirm `settings.json` and `db/` are present
 **before** `docker compose up -d seerr`.
 
+**Three settings must be set in the UI after migrating** (they are not in compose,
+and the first was wrong under Jellyseerr too):
+
+| Setting | Where | Value |
+|---|---|---|
+| Enable Proxy Support (`network.trustProxy`) | Settings → Network | **on** |
+| Application URL (`main.applicationUrl`) | Settings → General | `https://requests.kaermorhen.fyi` |
+| Application Title (`main.applicationTitle`) | Settings → General | `Seerr` |
+
+`trustProxy` was `false` in the pre-migration Jellyseerr config as well — this is a
+long-standing misconfiguration that Seerr merely started reporting. Left off, Express
+rejects Caddy's `X-Forwarded-For` and throws `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` on
+**every request**: client IPs are logged as the Caddy LXC rather than the real client,
+and rate limiting keys on the proxy, so one noisy client can rate-limit everyone. Fixed
+2026-08-24; the error stopped immediately on restart. Do not hand-edit `settings.json`
+for these — Seerr owns that file and rewrites it, the same trap as Jellyfin's
+`system.xml`.
+
 **Nothing outside the stack needed changing.** The Caddy route matches on
 `Host: requests.kaermorhen.fyi` and proxies to a literal `<CIRI_IP>:5055` — and Caddy runs
 in LXC 202 on *yennefer*, a different host, with no access to `servarr_net`, so it could
@@ -375,6 +393,23 @@ not per-service. The Uptime Kuma monitor keeps the same URL
 renamed, which is cosmetic.
 
 ## Caveats
+- **Seerr's update check logs a warning every ~30 s, and it is not Seerr's fault.**
+  `[GitHub API]: Failed to retrieve GitHub releases … Client network socket
+  disconnected before secure TLS connection was established`. Diagnosed 2026-08-24 and
+  **deliberately left unfixed** — it costs only the "is a newer version available"
+  banner. Requests, Jellyfin sync and the Sonarr/Radarr hand-off are all unaffected.
+  What it is: **certain destination IPs are unreachable for TLS from this line**, not a
+  DNS or SNI problem. TCP connects and the ClientHello goes out, then no ServerHello ever
+  comes back. Within one `/24`, `github.com` (`20.207.73.82`) works while
+  `api.github.com` (`.85`) and `codeload.github.com` (`.88`) time out; the
+  `githubusercontent.com` hosts (`185.199.x`) are fine. Swapping SNI proves it follows
+  the **IP**, not the hostname — `api.github.com` presented to `.82` succeeds, and
+  `github.com` presented to `.85` fails. DNS is identical from pihole, `1.1.1.1` and
+  `8.8.8.8`, so nothing is being hijacked. It affects untouched containers too
+  (`prowlarr` fails the same fetch), so it long predates the Seerr migration.
+  Incidental finding while probing: the WAN path MTU is **below 1500** — a 1500-byte
+  packet to `1.1.1.1` is dropped while 1400 passes, though every ciri interface is
+  MTU 1500. That is unrelated to this symptom but worth its own look someday.
 - **Slow shared disk** — bandwidth is shared with Jellyfin reads. In qBittorrent cap the
   global rate and max active torrents so a big download can't starve a live transcode.
   Disk is **disposable** — a drop means re-download. *(Corrected 2026-07-29: this said

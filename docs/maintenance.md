@@ -191,6 +191,10 @@ signed off**, since the previous image is half the rollback.
 - **Check any gluetun bump against `/v1/portforward`** — the sidecar hardcodes it.
 - **Jellyfin + Ollama are one change unit** (shared GPU via CDI).
 - **After a Jellyfin major, re-run the Samsung Tizen sideload.**
+- **Seerr**: after any move that resets it, re-check Settings → Network → **Enable
+  Proxy Support** and Settings → General → **Application URL**. Off, Express rejects
+  Caddy's `X-Forwarded-For` and rate limiting keys on the proxy instead of the client.
+  Never hand-edit `settings.json` — Seerr rewrites it, like Jellyfin's `system.xml`.
 - **Sure**: verify AI chat still answers — a bind-mounted initializer
   monkeypatches `Chat::UNDELIVERED_RESPONSE_TIMEOUT` and an upstream refactor
   breaks it silently.
