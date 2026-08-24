@@ -17,10 +17,11 @@ Services: `web` (Rails app), `worker` (Sidekiq), `db` (Postgres 16),
 
 ## Changes vs the upstream example compose
 
-- **App image uses `:stable`** — ghcr publishes no version tags for sure
-  (only `sha-<commit>` + `stable`), so the usual pin-the-version policy
-  doesn't apply; accepted deviation (2026-07-13). `stable` was v0.7.2 at
-  deploy time. Support images stay pinned: `postgres:16` (kept per the
+- **App image pinned to `0.7.3`** — ghcr publishes no semver tags for sure
+  (only `sha-<commit>` + `stable`), so `:stable` was used at deploy time
+  (2026-07-13) as an accepted deviation. It was pinned to the resolved
+  version 2026-08-23 (then v0.7.2) and bumped to **0.7.3 on 2026-08-24**, so a
+  rollback can name a version. Support images stay pinned: `postgres:16` (kept per the
   old-host analysis in `docs/docker-vm.md`), `redis:7.4-alpine`,
   `postgres-backup-local:16`.
 - **Bind mounts instead of named volumes** — `./storage`, `./postgres-data`,
@@ -49,7 +50,7 @@ Sure's `Provider::Openai` supports any OpenAI-compatible endpoint. Three
 |---|---|---|
 | `OPENAI_ACCESS_TOKEN` | `ollama` | presence check only — Sure's `configured?` and Ollama both accept any non-empty string |
 | `OPENAI_URI_BASE` | `http://<LAN_PREFIX>.150:11434/v1` | marks it a "custom provider" |
-| `OPENAI_MODEL` | `qwen3:8b` | **required** once `OPENAI_URI_BASE` is set |
+| `OPENAI_MODEL` | `qwen2.5:7b-instruct` | **required** once `OPENAI_URI_BASE` is set (was `qwen3:8b`, then `qwen3:30b-a3b`; changed 2026-08-24) |
 
 Behaviour that falls out of `provider/openai.rb` + `provider/registry.rb`
 (read from the running image 2026-07-31, ruby-openai 8.1.0):
@@ -63,8 +64,9 @@ Behaviour that falls out of `provider/openai.rb` + `provider/registry.rb`
   `OPENAI_SUPPORTS_RESPONSES_ENDPOINT` exists if it ever misdetects.
 - `supports_model?` returns true for any model name under a custom base, so
   `qwen3:*` isn't rejected by the `gpt-*`/`o1`/`o3` allow-list.
-- Timeout raised to 300 s (`OPENAI_REQUEST_TIMEOUT`, default 60) — local
-  inference plus qwen3's thinking tokens can exceed a minute.
+- Timeout raised to **420 s** (`OPENAI_REQUEST_TIMEOUT`, default 60) — local
+  inference plus thinking tokens can exceed a minute, and a tool-calling reply
+  chains several requests. Was 300 s until 2026-08-24.
 
 **Why the host IP and not `http://ollama:11434`**: `sure_net` and `ai_net` are
 separate bridge networks, and these containers pin `dns: 8.8.8.8/1.1.1.1` (the
@@ -110,7 +112,7 @@ enough — the watchdog still POSTs at 90 s, the server declines to act, the
 message survives, and the reply renders over Turbo Stream when Sidekiq
 finishes. That is what `initializers/zz_llm_response_timeout.rb` does; it is
 bind-mounted (not baked in) because `:stable` is a moving tag. Tune with
-`LLM_UNDELIVERED_RESPONSE_TIMEOUT` (default 240 s).
+`LLM_UNDELIVERED_RESPONSE_TIMEOUT` (now 400 s; was 240 s until 2026-08-24).
 
 Note this also means "just wait longer" never worked on stock Sure: the
 watchdog destroys the pending message at 90 s **whether or not you press
@@ -121,11 +123,14 @@ retry**.
 With the timeout raised, thinking models become viable and it is a plain
 quality/latency trade:
 
-| Model | Reply time | Notes |
-|---|---|---|
-| `qwen3:30b-a3b` | ~2–4 min | best comprehension; `tools` + `thinking` capabilities confirmed via `ollama show` |
-| `qwen3:8b` | ~1–2 min | middle ground |
-| `qwen2.5:7b-instruct` | ~20–30 s | no thinking; works on stock Sure with no patch |
+| Model | Reply time | GPU | Notes |
+|---|---|---|---|
+| `qwen3:30b-a3b` | ~2–5 min | **no — 18 GB vs 6 GB VRAM, runs on CPU at ~12 tok/s** | best comprehension; `tools` + `thinking` confirmed via `ollama show` |
+| `qwen3:8b` | ~1–2 min | partial (5.2 GB) | middle ground |
+| **`qwen2.5:7b-instruct`** | **~40 s** | **100% GPU (4.8 GB)** | **current choice (2026-08-24)**; no thinking, works on stock Sure with no patch |
+
+**Current setting: `qwen2.5:7b-instruct`** (changed 2026-08-24 — see "The 30b
+model never fit the GPU" below).
 
 **How much does thinking actually buy here?** Less than you would expect,
 because the arithmetic is not the model's job. Sure ships 15 tools
@@ -152,6 +157,42 @@ trivial reply to ~10 tokens). Sure sends neither, Ollama has no Modelfile
 parameter for it ([ollama#14809](https://github.com/ollama/ollama/issues/14809)),
 and qwen3's `/no_think` text switch is only partially honoured (419 → 285
 tokens). Hence: raise the timeout, or pick a non-thinking model.
+
+#### The 30b model never fit the GPU (found 2026-08-24)
+
+The 2026-07-31 analysis above framed this purely as a *thinking* problem. An
+RCA after the 0.7.3 upgrade found a second, larger factor that had been
+present the whole time: **`qwen3:30b-a3b` is an 18 GB model on a 6 GB card.**
+It never ran on the GPU at all. Ollama measured **11.99 tok/s**, i.e. CPU-speed
+inference, and `ollama ps` would have shown it — the check was simply never run
+for the 30b, only for the small models.
+
+Combined with multi-round-trip tool calling (each call re-emits a 700–800 token
+reasoning block), a two-part question cost **four LLM round trips and 311 s of
+job time**. Measured before and after switching to `qwen2.5:7b-instruct`:
+
+| | `qwen3:30b-a3b` | `qwen2.5:7b-instruct` |
+|---|---|---|
+| `AssistantResponseJob` | **311.5 s** | **40.3 s** |
+| Completion tokens/call | 374–1693 | 47–71 |
+| Single tool-call probe | ~225 s | **12.9 s** |
+| `ollama ps` PROCESSOR | CPU (18 GB model) | **100% GPU (4.8 GB)** |
+
+Both return a well-formed `finish_reason: tool_calls`, so nothing was lost on
+capability for this workload. **Check `ollama ps` before blaming latency on
+thinking** — a model that does not fit VRAM costs far more than reasoning does.
+
+The trigger for the RCA was AI chat appearing dead after the 0.7.3 upgrade. It
+was not: the mounted initializer loaded correctly in both `web` and `worker`
+(`Chat::UNDELIVERED_RESPONSE_TIMEOUT` still exists in 0.7.3 at `chat.rb:138`),
+the reply was generated, and it rendered ~3 min later. The 90 s browser
+watchdog is what made it look broken.
+
+One residual gap closed at the same time: the guard was **240 s against an
+observed 311 s job**, so a reload past 240 s could still have destroyed a live
+reply. Timeouts are now `LLM_UNDELIVERED_RESPONSE_TIMEOUT=400` and
+`OPENAI_REQUEST_TIMEOUT=420`, preserving the invariant that a hung HTTP call
+fails *after* the message guard rather than before it.
 
 ## Layout & ownership (in the VM)
 

@@ -13,7 +13,7 @@ x-db-env: &db_env
 
 services:
   webserver:
-    image: ghcr.io/paperless-ngx/paperless-ngx:2.20.15
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.0.5
     container_name: paperless
     restart: unless-stopped
     depends_on:
@@ -30,6 +30,9 @@ services:
       - ./consume:/usr/src/paperless/consume
     environment:
       PAPERLESS_REDIS: redis://broker:6379
+      # v3 no longer infers the engine from PAPERLESS_DBHOST — it must be
+      # explicit or paperless silently falls back to SQLite (migration-v3.md).
+      PAPERLESS_DBENGINE: postgresql
       PAPERLESS_DBHOST: db
       PAPERLESS_DBNAME: ${POSTGRES_DB:-paperless}
       PAPERLESS_DBUSER: ${POSTGRES_USER:-paperless}
@@ -38,6 +41,9 @@ services:
       PAPERLESS_TIME_ZONE: ${PAPERLESS_TIME_ZONE:-Asia/Kolkata}
       TZ: Asia/Kolkata
       PAPERLESS_OCR_LANGUAGE: ${PAPERLESS_OCR_LANGUAGE:-eng}
+      # v3 consumes duplicates by default; this preserves the v2 behaviour of
+      # discarding a re-scanned file instead of creating a second document.
+      PAPERLESS_CONSUMER_DELETE_DUPLICATES: ${PAPERLESS_CONSUMER_DELETE_DUPLICATES:-true}
       # Set only if served behind a reverse proxy / real hostname (CSRF origin).
       PAPERLESS_URL: ${PAPERLESS_URL:-}
     networks:

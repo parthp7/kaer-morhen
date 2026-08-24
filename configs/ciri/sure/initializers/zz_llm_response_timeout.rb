@@ -19,8 +19,10 @@
 #
 # Cost: a genuinely stuck reply now shows "Thinking…" for the full window
 # instead of surfacing an error at 90 s. Keep it comfortably above the slowest
-# real answer, and below OPENAI_REQUEST_TIMEOUT (300 s) so a hung HTTP call is
-# still the thing that fails first.
+# real answer, and below OPENAI_REQUEST_TIMEOUT so a hung HTTP call is still
+# the thing that fails first. NOTE the message age spans EVERY tool round trip,
+# not one HTTP call: a 4-call reply was measured at 311 s against a 240 s guard
+# (2026-08-24). Now 400 s here against OPENAI_REQUEST_TIMEOUT=420.
 #
 # Guarded so an upstream rename degrades to stock behaviour instead of a
 # boot-time NameError that would take the whole app down.

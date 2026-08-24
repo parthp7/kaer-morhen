@@ -48,7 +48,7 @@ services:
   web:
     # ghcr publishes no version tags (only sha-<commit> + stable); stable is a
     # moving tag, so `docker compose pull` upgrades to the newest release.
-    image: ghcr.io/we-promise/sure:0.7.2
+    image: ghcr.io/we-promise/sure:0.7.3
     container_name: sure
     volumes:
       - ./storage:/rails/storage
@@ -75,7 +75,7 @@ services:
       - sure_net
 
   worker:
-    image: ghcr.io/we-promise/sure:0.7.2
+    image: ghcr.io/we-promise/sure:0.7.3
     container_name: sure-worker
     command: bundle exec sidekiq
     volumes:

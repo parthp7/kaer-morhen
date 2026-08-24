@@ -2,8 +2,9 @@
 
 [Paperless-ngx](https://github.com/paperless-ngx/paperless-ngx) on **ciri**
 (VM 150), live at `ciri:/data/stacks/paperless/`, port **8000**.
-Deployed 2026-07-14, pinned at **2.20.15** (latest release at deploy time,
-includes the GHSA-8c6x-pfjq-9gr7 security fix).
+Deployed 2026-07-14 at **2.20.15**; upgraded to **3.0.5** on 2026-08-24
+(see "v3 upgrade" below — it is a one-way migration with a mandatory config
+change).
 
 Services: `webserver` (app + OCR workers), `db` (Postgres 16), `broker`
 (Redis), and an opt-in `backup` (daily `pg_dump`, `--profile backup`).
@@ -23,8 +24,12 @@ Based on upstream `docker-compose.postgres.yml`:
   only, saves ~1G RAM for future apps. Office/eml files won't be consumable;
   if that's ever needed, add the two services back from upstream's
   `docker-compose.postgres-tika.yml` plus the `PAPERLESS_TIKA_*` env vars.
-- **App image pinned** to `ghcr.io/paperless-ngx/paperless-ngx:2.20.15`
+- **App image pinned** to `ghcr.io/paperless-ngx/paperless-ngx:3.0.5`
   (upstream example uses `latest`).
+- **`PAPERLESS_DBENGINE: postgresql` is set explicitly** — mandatory from v3.
+- **`PAPERLESS_CONSUMER_DELETE_DUPLICATES: true`** — v3 consumes duplicates by
+  default and flags them in the UI; this keeps the v2 behaviour of discarding a
+  re-scanned file. Flip it to adopt the new default.
 - **Postgres 16 + Redis 7.4-alpine instead of upstream's postgres:18 /
   redis:8** — both supported by paperless, both already pulled on ciri for
   the sure stack, and postgres:16 keeps the familiar
@@ -72,6 +77,57 @@ As with sure, `postgres-data`/`redis-data` will show as owned by **beszel**
 - Upgrades are deliberate: bump the pinned tag in `compose.yaml`, check the
   [release notes](https://github.com/paperless-ngx/paperless-ngx/releases),
   then `docker compose pull && docker compose up -d`.
+
+## v3 upgrade (2026-08-24)
+
+Upgraded 2.20.15 → 3.0.5. Upstream supports the v3 jump **only from 2.20.15**,
+which is where this stack already was.
+
+**The footgun.** v3 stopped inferring PostgreSQL from `PAPERLESS_DBHOST`;
+`PAPERLESS_DBENGINE` is now required and defaults to `sqlite`. Without it
+paperless boots on an empty SQLite file and presents a working, *completely
+empty* instance — indistinguishable from total data loss at a glance, while
+the Postgres data sits untouched. Verify the engine, not just that the UI
+loads:
+
+```bash
+docker exec paperless python3 -c "
+import os,django; os.environ.setdefault('DJANGO_SETTINGS_MODULE','paperless.settings')
+django.setup()
+from django.conf import settings; print(settings.DATABASES['default']['ENGINE'])"
+# -> django.db.backends.postgresql
+```
+
+**Breaking changes that did NOT apply here** (checked against this compose and
+`.env` before upgrading): document/thumbnail encryption, `CONSUMER_BARCODE_SCANNER`,
+`OCR_MODE`/`OCR_SKIP_ARCHIVE_FILE`, pre/post-consume scripts, and the removed
+SSL/timeout variables — none were in use. `PAPERLESS_SECRET_KEY` was already
+explicit, so sessions survived. The NumPy `x86-64-v2` floor (which SIGILLs the
+classifier on pre-2008 CPUs) is a non-issue: ciri's i7-8750H has SSE4.2.
+
+**What the upgrade did on its own:** applied migrations (including a SHA-256
+checksum recompute over all documents), **dropped all task history**, and
+rebuilt the search index from scratch — Tantivy replaced Whoosh and the formats
+are incompatible. Startup is correspondingly slow; let it finish.
+
+**Search syntax changed.** `note:` → `notes.note:`, `custom_field:` →
+`custom_fields.value:`. Saved views with an explicit prefix are migrated
+automatically; *unqualified* queries that used to match note/custom-field text
+are not, and silently return fewer results.
+
+**Post-upgrade verification (all passed 2026-08-24):** engine is postgresql;
+8 active documents + 2 in trash = 10 rows, matching pre-upgrade; index rebuilt
+(`needs_rebuild()` → `False`) and full-text queries return hits.
+
+> ⚠️ Note when verifying by shell: `documents.index` no longer exists in v3 —
+> the package is `documents.search` (`get_backend`, `needs_rebuild(index_dir)`,
+> `SearchMode.QUERY|TEXT|TITLE`). And `search_ids(query, user)` filters by
+> viewer permission, so passing the wrong superuser returns **0 hits on a
+> perfectly healthy index**. The document-owning account here is `parth`
+> (id 4), not the unused `paperless` superuser (id 3).
+
+**Rollback** is the pre-v3 `pg_dump` + `{data,media}` tarball in
+`/data/backups/`, not the image tag — the schema migration is one-way.
 
 ## Backup story (important)
 

@@ -11,7 +11,7 @@
 
 services:
   immich-server:
-    image: ghcr.io/immich-app/immich-server:v3.0.2
+    image: ghcr.io/immich-app/immich-server:v3.1.0
     container_name: immich
     restart: unless-stopped
     depends_on:
@@ -36,7 +36,7 @@ services:
   immich-machine-learning:
     # CPU-only inference; if a GPU ever lands in ciri, switch per
     # https://docs.immich.app/features/ml-hardware-acceleration
-    image: ghcr.io/immich-app/immich-machine-learning:v3.0.2
+    image: ghcr.io/immich-app/immich-machine-learning:v3.1.0
     container_name: immich-ml
     restart: unless-stopped
     volumes:
@@ -53,7 +53,7 @@ services:
     # Pinned to the exact minor (2026-08-23): a bare `9` floats across the whole
     # major, so an incident cannot answer "what changed?" and a rollback has no
     # version to name. The running server already reports 9.1.0.
-    image: docker.io/valkey/valkey:9.1.0
+    image: docker.io/valkey/valkey:9.1.1
     container_name: immich-redis
     restart: unless-stopped
     environment:

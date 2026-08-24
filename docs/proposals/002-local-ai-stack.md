@@ -66,13 +66,23 @@ cache to 612 MiB and restored full-GPU residency. The research model gets
 system RAM. **Diagnostic**: `docker exec ollama ollama ps` — the `PROCESSOR`
 column must read `100% GPU` for qwen3:8b; any `% CPU` means it no longer fits.
 
+**Corollary found 2026-08-24:** the same diagnostic was never applied to
+`qwen3:30b-a3b`, which at **18 GB cannot fit the 6 GB card at all** — it had
+been running on CPU at ~12 tok/s since it was pulled. That is fine for
+interactive Open WebUI use (the thinking block renders as a collapsible
+section, so latency reads as normal), but it made Sure's AI chat look broken:
+a multi-tool reply took 311 s against a 90 s browser watchdog. Sure now uses
+`qwen2.5:7b-instruct` (100% GPU, 4.8 GB, ~40 s replies). **Run `ollama ps` for
+every model an API client uses, not just the small ones** — see
+[sure/README](../../configs/ciri/sure/README.md).
+
 ## 3. Stack (`configs/ciri/ai/` → `ciri:/data/stacks/ai/`)
 
 Three services, lab conventions (pinned tags, `container_name`,
 `restart: unless-stopped`, TZ=Asia/Kolkata, dedicated bridge network,
 secrets only from `.env`):
 
-- **ollama** `ollama/ollama:0.32.5` — port `11434:11434` (LAN API);
+- **ollama** `ollama/ollama:0.32.15` — port `11434:11434` (LAN API);
   GPU wired the same way as Jellyfin — originally
   `deploy.resources.reservations.devices`, **migrated to CDI**
   (`devices: ["nvidia.com/gpu=all"]`) on 2026-08-02 in lockstep with that
@@ -84,7 +94,7 @@ secrets only from `.env`):
   `OLLAMA_BASE_URL=http://ollama:11434`; web search via SearXNG (verify exact
   env names against v0.11 docs at deploy — they have churned across versions);
   data volume on `/data/docker` (chats/config DO get backed up).
-- **searxng** `searxng/searxng:2026.7.28-c01178d03` — internal-only (no
+- **searxng** `searxng/searxng:2026.8.22-9fea41204` — internal-only (no
   published port); `settings.yml` with `formats: [html, json]` (JSON is
   required by Open WebUI); limiter off.
 

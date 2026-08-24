@@ -1,8 +1,9 @@
 # immich — photo/video library (ciri stack)
 
 [Immich](https://immich.app) on **ciri** (VM 150), live at
-`ciri:/data/stacks/immich/`, port **2283**. Pinned at **v3.0.2** (latest
-release at draft time; v3.0.0 shipped 2026-07-01).
+`ciri:/data/stacks/immich/`, port **2283**. Pinned at **v3.1.0** (upgraded
+2026-08-24 from v3.0.2, alongside `valkey` 9.1.0 → 9.1.1; originally deployed
+at v3.0.2, and v3.0.0 shipped 2026-07-01).
 
 Services: `immich-server` (app/API, port 2283), `immich-machine-learning`
 (smart search + face recognition, CPU-only for now), `redis` (valkey),
@@ -45,7 +46,7 @@ features ever matter: NFS export from geralt instead.
 Based on the [v3.0.2 release
 compose](https://github.com/immich-app/immich/releases/download/v3.0.2/docker-compose.yml):
 
-- **Images pinned to `v3.0.2`** (upstream floats `release`); digest pins
+- **Images pinned to `v3.1.0`** (upstream floats `release`); digest pins
   stripped from the valkey/postgres images per repo pinning policy.
 - **`./thumbs:/data/thumbs` override** added (storage split above).
 - **Bind mounts instead of named volume** for the ML model cache.

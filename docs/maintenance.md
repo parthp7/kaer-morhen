@@ -197,7 +197,15 @@ signed off**, since the previous image is half the rollback.
   Never hand-edit `settings.json` — Seerr rewrites it, like Jellyfin's `system.xml`.
 - **Sure**: verify AI chat still answers — a bind-mounted initializer
   monkeypatches `Chat::UNDELIVERED_RESPONSE_TIMEOUT` and an upstream refactor
-  breaks it silently.
+  breaks it silently. Survived 0.7.3 (2026-08-24). "No reply" is far more often
+  **latency** than breakage: check `docker exec ollama ollama ps` for
+  `100% GPU` before suspecting the patch — a model larger than the 6 GB card
+  runs on CPU and a multi-tool reply can take 5 minutes, while the browser
+  watchdog gives up at a hardcoded 90 s.
+- **Paperless majors rewrite the DB one way.** For v3, `PAPERLESS_DBENGINE`
+  became mandatory — without it the app starts on an **empty SQLite** database
+  and looks exactly like total data loss while Postgres sits untouched. Verify
+  the engine after any major, not just that the page loads.
 - **`docker compose pull` skips profile-gated services** — the
   `postgres-backup-local` sidecars need `--profile backup` and must track the
   postgres major.
@@ -251,23 +259,24 @@ cannot name a version it never recorded.
 | 150 `ciri` | Docker Engine | **29.7.2** | docs said 29.6.1 — drift corrected |
 | 150 `ciri` | Docker Compose | **v5.5.0** | docs said v5.3.1 — drift corrected |
 | 150 `ciri` | nvidia-container-toolkit | **1.20.0** | docs said 1.19.1 — drift corrected |
+| 150 `ciri` | `/data` disk (scsi1) | **128 G** | grown from 64 G on 2026-08-24 (`qm resize` + online `resize2fs`, no downtime); 64 G free after the upgrade pass |
 
-## Container images (verified 2026-08-24)
+## Container images (verified 2026-08-24, post-upgrade pass)
 
 | Stack | Service | Current | Previous (rollback) | Tier |
 |---|---|---|---|---|
-| ai | ollama | `ollama/ollama:0.32.5` | — | 1 |
+| ai | ollama | `ollama/ollama:0.32.15` | `ollama/ollama:0.32.5` | 1 |
 | ai | open-webui | `ghcr.io/open-webui/open-webui:v0.11.0` | — | 1 |
-| ai | searxng | `searxng/searxng:2026.7.28-c01178d03` | — | 0 |
-| immich | server | `ghcr.io/immich-app/immich-server:v3.0.2` | — | 2 |
-| immich | machine-learning | `ghcr.io/immich-app/immich-machine-learning:v3.0.2` | — | 2 |
+| ai | searxng | `searxng/searxng:2026.8.22-9fea41204` | `searxng/searxng:2026.7.28-c01178d03` | 0 |
+| immich | server | `ghcr.io/immich-app/immich-server:v3.1.0` | `ghcr.io/immich-app/immich-server:v3.0.2` | 2 |
+| immich | machine-learning | `ghcr.io/immich-app/immich-machine-learning:v3.1.0` | `ghcr.io/immich-app/immich-machine-learning:v3.0.2` | 2 |
 | immich | database | `ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0` | — | 3 |
-| immich | redis | `valkey/valkey:9.1.0` | `:9` (floating) | 3 |
+| immich | redis | `valkey/valkey:9.1.1` | `valkey/valkey:9.1.0` | 3 |
 | jellyfin | jellyfin | `jellyfin/jellyfin:10.11.11` | — | 2 |
-| memos | memos | `neosmemo/memos:0.29.1` | — | 0 |
+| memos | memos | `neosmemo/memos:0.30.0` | `neosmemo/memos:0.29.1` | 0 |
 | nebula-sync | nebula-sync | `ghcr.io/lovelaze/nebula-sync:v0.11.2` | — | 0 |
 | obsidian-sync | couchdb | `couchdb:3.5.2.1` | — | 1 |
-| paperless | webserver | `ghcr.io/paperless-ngx/paperless-ngx:2.20.15` | — | 2 |
+| paperless | webserver | `ghcr.io/paperless-ngx/paperless-ngx:3.0.5` | `ghcr.io/paperless-ngx/paperless-ngx:2.20.15` ⚠️ **tag alone is not a rollback — see v3 note** | 2 |
 | paperless | db | `postgres:16` ⚠️ **floating** — now **16.15** | `rollback/paperless-postgres:16.14` | 3 |
 | paperless | broker | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | `rollback/paperless-redis:7.4.9` | 3 |
 | paperless | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
@@ -280,7 +289,7 @@ cannot name a version it never recorded.
 | servarr | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | — | 0 |
 | servarr | bazarr | `lscr.io/linuxserver/bazarr:version-v1.6.0` | — | 1 |
 | servarr | seerr | `ghcr.io/seerr-team/seerr:v3.4.1` | `fallenbagel/jellyseerr:2.7.3` (renamed 2026-08-24) | 1 |
-| sure | web / worker | `ghcr.io/we-promise/sure:0.7.2` | `:stable` (same digest) | 2 |
+| sure | web / worker | `ghcr.io/we-promise/sure:0.7.3` | `ghcr.io/we-promise/sure:0.7.2` | 2 |
 | sure | db | `postgres:16` ⚠️ **floating** — now **16.15** | — | 3 |
 | sure | redis | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | — | 3 |
 | sure | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
@@ -309,6 +318,11 @@ That the fix was needed at all is the argument for pinning these four.
   before relying on any post-upgrade monitoring.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
+- **Paperless 2.20.15 rollback images are still held** — `rollback/paperless:2.20.15`
+  plus the pre-v3 dump/tarball in `/data/backups/`. Release only once v3 is
+  signed off; the tag alone cannot undo the schema migration.
+- **`/mnt/torrents` is 100 G committed against ~32 M used** — thin, so it costs
+  nothing today, but it is the first place to reclaim under pool pressure.
 - **A LAN apt cache** — deferred by decision. geralt's D7 download phase ran at
   ~130 kB/s; every future pass pays that until the cache exists.
 - **Node version divergence was unexplained** (geralt 9.2.4 vs yennefer 9.2.11).

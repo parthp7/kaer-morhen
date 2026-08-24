@@ -13,7 +13,7 @@ plus image assets that previously lived on the old NAS mount.
 
 ## Changes vs the old-host compose
 
-- **Image pinned** (`0.29.1`, current stable at restore time) — house policy:
+- **Image pinned** (`0.30.0`, upgraded 2026-08-24 from 0.29.1) — house policy:
   no `:stable`/`:latest`. The backup DB was last written 2026-06-14, so the
   pinned version is ≥ the version that wrote it; Memos migrates the SQLite
   schema forward on first start if needed.

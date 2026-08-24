@@ -233,7 +233,7 @@ headroom, and `docker image prune` after.
 | 0.1 | **Kuma `resend_interval = 0` on ~29 of ~31 monitors** — Kuma notifies **once** on a down transition then goes silent forever. This turned a 10-second detection into a **12-day** outage. Set to 30, matching `media-export`/`media-mount`. Its own docs already call it *"the cheapest high-value fix"* and *"still the highest-value change in the lab"* | **OPEN — do this first.** A post-upgrade process that leans on Kuma is meaningless until it is done |
 | 0.2 | PVE enterprise repos disabled on both nodes | **DONE** — verified 2026-08-23: `pve-enterprise` and ceph enterprise both `Enabled: false`, `pve-no-subscription` active on both. Closes the open item in [backups.md](../backups.md) |
 | 0.3 | Backups green and datastore has headroom | **DONE** — verified 2026-08-23: all guests finished 04:00–04:08, `pbs-vault` **5.83%** used (894 GiB free) |
-| 0.4 | Pin the two floating tags (`sure:stable`, `valkey:9`) | **OPEN.** `sure:stable` currently resolves to **v0.7.2**. A rollback cannot name a version it never recorded |
+| 0.4 | Pin the two floating tags (`sure:stable`, `valkey:9`) | **DONE** — pinned 2026-08-23 (sure v0.7.2, valkey 9.1.0); both carried forward by the 2026-08-24 upgrade pass to **sure 0.7.3** and **valkey 9.1.1**. Four floating tags remain (`postgres:16`, `redis:7.4-alpine` ×2 stacks, `alpine:3.21`, `postgres-backup-local:16`) — tracked in [maintenance.md](../maintenance.md) |
 
 **[VERIFY]** re-run 0.2/0.3 at the start of any window:
 
