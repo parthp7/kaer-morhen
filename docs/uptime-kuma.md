@@ -157,7 +157,7 @@ Full set as of 2026-07-13:
 | sonarr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8989/ping` → `OK` | servarr (TV) |
 | radarr | HTTP-Keyword | `http://<LAN_PREFIX>.150:7878/ping` → `OK` | servarr (Movies) |
 | bazarr | HTTP-Keyword | `http://<LAN_PREFIX>.150:6767/` → `Bazarr` | servarr (subtitles) |
-| jellyseerr | HTTP-Keyword | `http://<LAN_PREFIX>.150:5055/api/v1/status` → `version` | servarr (requests) |
+| seerr | HTTP-Keyword | `http://<LAN_PREFIX>.150:5055/api/v1/status` → `version` | servarr (requests); renamed from `jellyseerr` 2026-08-24 — URL and keyword unchanged, the label is cosmetic |
 | qbittorrent | HTTP | `http://<LAN_PREFIX>.150:8080/` | servarr; **doubles as gluetun liveness** — the port is published through gluetun, so it reddens if the VPN container dies |
 | flaresolverr | HTTP-Keyword | `http://<LAN_PREFIX>.150:8191/` → `FlareSolverr is ready` | servarr (Cloudflare solver) |
 | photos-backup | **Push** (86400 s → **90000 s**) | fed by `restic-photos.sh` on geralt, daily 05:00 IST | dead-man switch for the nightly restic backup ([backups](../scripts/backup/README.md)); silent from 2026-07-16, fixed 2026-07-30 — see below |

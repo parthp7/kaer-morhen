@@ -36,14 +36,14 @@ good port meanwhile (see Caveats for the manual reconnect).
 
 | Service | Image tag | URL (from LAN) | Role |
 |---|---|---|---|
-| gluetun | `qmcgaw/gluetun:v3.41.1` | — | Proton WireGuard egress + kill-switch + port-forward |
-| qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13` | `http://<CIRI_IP>:8080` | Torrent client (inside gluetun's netns) |
+| gluetun | `qmcgaw/gluetun:v3.41.3` | — | Proton WireGuard egress + kill-switch + port-forward |
+| qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.14` | `http://<CIRI_IP>:8080` | Torrent client (inside gluetun's netns) |
 | qbit-port-sync | `alpine:3.21` | — | Applies gluetun's rotating Proton forwarded port to qBittorrent (in gluetun's netns) |
 | prowlarr | `lscr.io/linuxserver/prowlarr:version-2.5.2.5491` | `http://<CIRI_IP>:9696` | Indexer manager (feeds all *arr) |
 | sonarr | `lscr.io/linuxserver/sonarr:version-4.0.19.2979` | `http://<CIRI_IP>:8989` | TV |
 | radarr | `lscr.io/linuxserver/radarr:version-6.3.0.10514` | `http://<CIRI_IP>:7878` | Movies |
 | bazarr | `lscr.io/linuxserver/bazarr:version-v1.6.0` | `http://<CIRI_IP>:6767` | Subtitles for Sonarr/Radarr |
-| jellyseerr | `fallenbagel/jellyseerr:2.7.3` | `http://<CIRI_IP>:5055` | Request UI |
+| seerr | `ghcr.io/seerr-team/seerr:v3.4.1` | `http://<CIRI_IP>:5055` | Request UI (successor to Jellyseerr — see Migration below) |
 | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | `http://<CIRI_IP>:8191` | Cloudflare solver for Prowlarr indexers |
 
 **Audiobooks deferred:** Readarr was removed — it is EOL (frozen at 0.4.18) and its old
@@ -136,7 +136,8 @@ non-root service account; readers are read-only.
 | qBittorrent | `jaskier` (13000) | **rw** | `downloads/` **only** (no library) |
 | Sonarr / Radarr | `jaskier` (13000) | **rw** | full tree (import: read `downloads/`, hardlink into `library/`) |
 | Bazarr | `jaskier` (13000) | **rw** | writes subtitle sidecars into `library/` |
-| Prowlarr / Jellyseerr / FlareSolverr / qbit-port-sync | n/a | **none** | never touch media (indexers / requests / CF-solver / port-sync only) |
+| Prowlarr / FlareSolverr / qbit-port-sync | n/a | **none** | never touch media (indexers / CF-solver / port-sync only) |
+| Seerr | `node` (**1000**) | **none** | never touches media — config-only, so it sits outside the `jaskier` model deliberately (uid is baked into the image) |
 | Audiobookshelf | root process | **ro** | `library/audiobooks` read-only — cannot modify media |
 | Jellyfin | root process | **ro** (recommended, step 1a) / rw (current) | `library` — read-only removes its only root-write on media |
 
@@ -179,7 +180,7 @@ ssh lab-geralt 'qm shutdown 150 && sleep 20 && qm set 150 --memory 10240 && qm s
 
 If deploying this stack fresh on a smaller ciri, the fallback still applies:
 deploy **core-first** (gluetun, qbittorrent, prowlarr, sonarr, radarr) and add
-bazarr/jellyseerr/flaresolverr later.
+bazarr/seerr/flaresolverr later.
 
 ### 1. ⚙️ Create the `jaskier` service account, subdirectories, and ownership (on ciri)
 The writers run as a **dedicated non-root, non-login account `jaskier` (uid/gid 13000)** —
@@ -278,8 +279,8 @@ must lose all connectivity, proving no fall-back to the home line:
 - **Root folders**: Sonarr `/data/library/tv`, Radarr `/data/library/movies`
   (Settings → Media Management → Root Folders). Confirm the app reports hardlinking is possible.
 
-### 8. Jellyseerr (`:5055`) & Bazarr (`:6767`)
-- Jellyseerr: sign in with Jellyfin — point it at Jellyfin `http://<CIRI_IP>:8096` (cross-network,
+### 8. Seerr (`:5055`) & Bazarr (`:6767`)
+- Seerr: sign in with Jellyfin — point it at Jellyfin `http://<CIRI_IP>:8096` (cross-network,
   use the IP not the container name), then connect Radarr `http://radarr:7878` and
   Sonarr `http://sonarr:8989`.
 - Bazarr: Settings → connect Sonarr `http://sonarr:8989` and Radarr `http://radarr:7878`;
@@ -299,10 +300,10 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
 ## Integrate with the rest of the lab
 - **DNS** (edit **pihole-1 / LXC 101 only**; nebula-sync mirrors to pihole-2 hourly): add
   A-records → `<LAN_PREFIX>.150` for the UIs you want named, e.g.
-  `prowlarr / sonarr / radarr / qbittorrent / jellyseerr.kaermorhen.internal`.
+  `prowlarr / sonarr / radarr / qbittorrent / seerr.kaermorhen.internal`.
 - **Uptime-Kuma** (LXC 104): 7 monitors added 2026-07-26 (full table in
   [uptime-kuma.md](../../../docs/uptime-kuma.md)) — HTTP-Keyword on the `/ping` endpoints for
-  prowlarr/sonarr/radarr, keyword checks for bazarr/jellyseerr/flaresolverr, and a plain HTTP
+  prowlarr/sonarr/radarr, keyword checks for bazarr/seerr/flaresolverr, and a plain HTTP
   check on qbittorrent `:8080` that **doubles as gluetun liveness**. `gluetun` and
   `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel. These 7 are **liveness only**:
   they cannot see a VPN leak or port-forwarding stuck at 0.
@@ -318,6 +319,47 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
   per-container CPU/mem/net.
 - **Backups:** these `./config` dirs live on ciri's `/data` disk → already covered by the
   nightly PBS `--all` job. The media on `/mnt/media` stays unbacked/disposable by design.
+
+## Migration: Jellyseerr → Seerr (2026-08-24)
+
+The Jellyseerr and Overseerr projects **merged into a single successor, Seerr**
+(`ghcr.io/seerr-team/seerr`). Both predecessors are deprecated and get no further
+releases, so this stack moved `fallenbagel/jellyseerr:2.7.3` → `ghcr.io/seerr-team/seerr:v3.4.1`.
+The container, the compose service key and the on-disk config dir were all renamed
+`jellyseerr` → `seerr` at the same time.
+
+**Three things differ from Jellyseerr, all load-bearing:**
+
+- **It runs as the non-root `node` user (uid 1000)**, where Jellyseerr ran as root. The
+  config dir must be `chown -R 1000:1000` or Seerr cannot write its own DB. Do **not** add
+  a `user:` directive — upstream forbids overriding it, and `PUID`/`PGID` do nothing here
+  (the uid is baked into the image). Note this is uid 1000 = the human `ciri` user, *not*
+  `jaskier` (13000) like the writers. That is a deliberate, safe deviation from the
+  ownership model: Seerr holds only its own config on NVMe and has **no media mount at
+  all**, so it is outside the `jaskier` contract entirely.
+- **`init: true` is required** — the image ships no init process, so without it PID 1
+  reaps nothing and zombies accumulate.
+- **The DB migration is automatic and ONE-WAY.** Seerr rewrites the Jellyseerr database in
+  place on first start. Re-pinning the old tag is therefore *not* a rollback; the only way
+  back is the pre-migration tarball taken while the container was stopped:
+  `/data/backups/jellyseerr-pre-seerr-<date>.tar.gz`.
+
+**The `./seerr` bind has no missing-mount guard, and cannot have one.** Every
+media-adjacent bind in this stack uses `create_host_path: false` to fail loud, but this
+path is stack-local, so it uses short syntax where `create_host_path` defaults to **true**.
+If the directory rename ever fails or is misspelled, Docker silently creates an empty
+`seerr/` and Seerr comes up as a *pristine install that looks perfectly healthy* — no
+users, no request history, no Jellyfin link — and reports a successful migration. Always
+`ls -la /data/stacks/servarr/seerr` and confirm `settings.json` and `db/` are present
+**before** `docker compose up -d seerr`.
+
+**Nothing outside the stack needed changing.** The Caddy route matches on
+`Host: requests.kaermorhen.fyi` and proxies to a literal `<CIRI_IP>:5055` — and Caddy runs
+in LXC 202 on *yennefer*, a different host, with no access to `servarr_net`, so it could
+not resolve the container name even if it wanted to. Internal DNS records are per-guest,
+not per-service. The Uptime Kuma monitor keeps the same URL
+(`http://<CIRI_IP>:5055/api/v1/status`) and keyword (`version`); only its label was
+renamed, which is cosmetic.
 
 ## Caveats
 - **Slow shared disk** — bandwidth is shared with Jellyfin reads. In qBittorrent cap the

@@ -1,6 +1,7 @@
 # servarr — automated acquisition + import pipeline feeding Jellyfin (movies, TV).
-# Audiobooks are deferred: Readarr was removed (EOL, can't auth to qBittorrent 5.x)
-# and will be revisited separately. qBittorrent runs INSIDE gluetun's network
+# Readarr was removed (EOL, can't auth to qBittorrent 5.x) and audiobooks were
+# dropped outright on 2026-08-24 rather than carried as a deferred plan — this
+# stack is TV + Movies. qBittorrent runs INSIDE gluetun's network
 # namespace so every torrent packet exits through the Proton VPN (WireGuard +
 # port forwarding); if the tunnel drops, qBittorrent loses all connectivity
 # (kill-switch) — no home-IP leak.
@@ -12,13 +13,13 @@
 #   (in-flight scratch, local NVMe — proposal 005). Completed torrents land in
 #   /data/downloads/complete,
 #   where the *arr see them at the SAME path, so an import into
-#   /data/library/{movies,tv,audiobooks} — one NFS mount backed by one ext4
+#   /data/library/{movies,tv} — one NFS mount backed by one ext4
 #   filesystem on geralt — is an instant hardlink (0 extra bytes) instead of a
 #   slow copy. Keep downloads/ and library/ on the one /data mount inside each
 #   *arr; never split them into separate volumes there. incomplete/ is the ONLY
 #   piece allowed on a different filesystem — qBittorrent itself does that move.
 #
-# Lab conventions: pinned image tags (verified current 2026-07-24 — bump
+# Lab conventions: pinned image tags (verified current 2026-08-24 — bump
 # deliberately, read release notes, then `docker compose pull && up -d`),
 # container_name on every service, restart: unless-stopped, TZ=Asia/Kolkata,
 # dedicated bridge network, secrets only from .env (${VAR:?} fails loudly).
@@ -26,8 +27,8 @@
 # Least-privilege ownership: every writer runs as a DEDICATED non-root service
 # account `jaskier` (uid/gid 13000, the bard = media/entertainment) — not root,
 # and not the human `ciri` user (1000).
-# The media tree is chown'd 13000:13000 once (see README). Reader apps (Jellyfin,
-# Audiobookshelf) mount the library READ-ONLY. qBittorrent is scoped to
+# The media tree is chown'd 13000:13000 once (see README). Reader apps (Jellyfin)
+# mount the library READ-ONLY. qBittorrent is scoped to
 # downloads/ only — it never touches the library (the *arr do the import).
 
 x-arr-env: &arr_env
@@ -70,7 +71,7 @@ x-media-guard: &media_guard
 services:
   # ---- VPN egress + kill-switch -------------------------------------------
   gluetun:
-    image: qmcgaw/gluetun:v3.41.1
+    image: qmcgaw/gluetun:v3.41.3
     container_name: gluetun
     restart: unless-stopped
     cap_add:
@@ -102,7 +103,7 @@ services:
 
   # ---- Torrent client (no own network — lives in gluetun's netns) ----------
   qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13
+    image: lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.14
     container_name: qbittorrent
     restart: unless-stopped
     # All traffic goes through gluetun; dies with the tunnel (kill-switch).
@@ -272,15 +273,33 @@ services:
       - servarr_net
 
   # ---- Request UI (wired to Jellyfin + Sonarr + Radarr in its own web setup)-
-  jellyseerr:
-    image: fallenbagel/jellyseerr:2.7.3
-    container_name: jellyseerr
+  # Seerr — the successor to Jellyseerr AND Overseerr, which merged into one
+  # project. Migrated 2026-08-24 from fallenbagel/jellyseerr:2.7.3; both
+  # predecessors are deprecated and receive no further releases. The existing
+  # config/DB is migrated IN PLACE on first start — no manual export/import —
+  # which also means it is a one-way trip: the pre-migration tarball at
+  # /data/backups/jellyseerr-pre-seerr-<date>.tar.gz is the only way back.
+  #
+  # Two upstream requirements that differ from Jellyseerr, both load-bearing:
+  #   - It runs as the non-root `node` user (uid 1000), where Jellyseerr ran as
+  #     root, so ./seerr must be chown'd 1000:1000 or it cannot write its own DB.
+  #     Do NOT add a `user:` directive — upstream explicitly forbids overriding it.
+  #     Note 1000 is ciri's human user, not `jaskier` (13000) like the *arr: that
+  #     is deliberate and safe here, because this service only ever touches its
+  #     own config on NVMe and has no media mount at all (see the permissions
+  #     table in the README). uid is baked into the image; PUID/PGID do nothing.
+  #   - The image ships no init process, so `init: true` is REQUIRED — without it
+  #     PID 1 reaps nothing and zombie processes accumulate.
+  seerr:
+    image: ghcr.io/seerr-team/seerr:v3.4.1
+    container_name: seerr
+    init: true
     restart: unless-stopped
     environment:
       TZ: Asia/Kolkata
       LOG_LEVEL: info
     volumes:
-      - ./jellyseerr:/app/config
+      - ./seerr:/app/config
     ports:
       - "5055:5055"
     networks:

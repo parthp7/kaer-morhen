@@ -160,12 +160,13 @@ in the registry below → bump the tag in `configs/ciri/<stack>/compose.yaml` �
 **Pre-flight:** mount guards (`create_host_path: false`) make jellyfin,
 qbittorrent, sonarr, radarr, bazarr and ollama **refuse to start** on recreate if
 `/mnt/media/library`, `/mnt/torrents/incomplete` or `/mnt/ai-models` is missing.
-Check mounts *before* pulling; `docker image prune` after.
+Check mounts *before* pulling; `docker image prune` after — but **only once the stack is
+signed off**, since the previous image is half the rollback.
 
 | Tier | Services | Handling |
 |---|---|---|
 | 0 | nebula-sync, flaresolverr, searxng, alpine, memos | Bulk, one pass |
-| 1 | jellyseerr, bazarr, prowlarr, open-webui, ollama, couchdb (3.x) | One stack at a time |
+| 1 | seerr, bazarr, prowlarr, open-webui, ollama, couchdb (3.x) | One stack at a time |
 | 2 | Immich, Paperless, Sonarr, Radarr, qBittorrent, gluetun, Jellyfin, Sure | Own window each |
 | 3 | postgres majors, redis 7.4→8, valkey, Immich's pg14+VectorChord | **Own proposal** — dump+restore |
 
@@ -173,6 +174,20 @@ Check mounts *before* pulling; `docker image prune` after.
 
 - **Never restart `gluetun` alone** — it destroys the netns under qBittorrent.
   Recovery: `docker restart gluetun && sleep 8 && docker restart qbittorrent`.
+- **`qbit-port-sync` shares that same netns and is the one everyone forgets.** It is
+  joined to gluetun's *container ID* exactly as qBittorrent is
+  (`NetworkMode=container:<gluetun-id>`), but its image (`alpine:3.21`) rarely changes, so
+  `docker compose up -d` recreates gluetun and qBittorrent and leaves the sidecar attached
+  to a destroyed namespace. It fails **silently** — no crash, the forwarded port simply
+  stops tracking, and you notice days later. When bumping gluetun or qBittorrent, recreate
+  the whole triple in one go and let `depends_on` order it:
+  `docker compose up -d --force-recreate gluetun qbittorrent qbit-port-sync`.
+  Do **not** append the manual `docker restart gluetun && …` recovery afterwards — after a
+  correct compose recreate it destroys the namespace a second time and re-pairs only
+  qBittorrent, causing the exact fault the rule above prevents.
+- **Pull only the services you are changing** in this stack. A bare `docker compose pull`
+  also re-points `alpine:3.21`, stranding the running `qbit-port-sync` on an untagged
+  image ID — the shared-tag drift described at the end of this file.
 - **Check any gluetun bump against `/v1/portforward`** — the sidecar hardcodes it.
 - **Jellyfin + Ollama are one change unit** (shared GPU via CDI).
 - **After a Jellyfin major, re-run the Samsung Tizen sideload.**
@@ -194,6 +209,13 @@ Check mounts *before* pulling; `docker image prune` after.
   unrelated `up -d`.
 
 ## Rollback
+
+> ⚠️ **"Re-pin the previous tag" is only a complete rollback for ordinary version
+> bumps.** It does **not** hold for images that migrate their data on first start —
+> `seerr` (the Jellyseerr merge) and any Jellyfin major both rewrite their DB one-way. For
+> those, the rollback is restoring the pre-migration config tarball; the tag alone will
+> leave the old binary staring at a newer schema. Take that tarball with the container
+> **stopped**, and keep it until the upgrade is signed off.
 
 | Broken | Path |
 |---|---|
@@ -226,7 +248,7 @@ cannot name a version it never recorded.
 | 150 `ciri` | Docker Compose | **v5.5.0** | docs said v5.3.1 — drift corrected |
 | 150 `ciri` | nvidia-container-toolkit | **1.20.0** | docs said 1.19.1 — drift corrected |
 
-## Container images (verified 2026-08-23)
+## Container images (verified 2026-08-24)
 
 | Stack | Service | Current | Previous (rollback) | Tier |
 |---|---|---|---|---|
@@ -245,15 +267,15 @@ cannot name a version it never recorded.
 | paperless | db | `postgres:16` ⚠️ **floating** — now **16.15** | `rollback/paperless-postgres:16.14` | 3 |
 | paperless | broker | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | `rollback/paperless-redis:7.4.9` | 3 |
 | paperless | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
-| servarr | gluetun | `qmcgaw/gluetun:v3.41.1` | — | 2 |
-| servarr | qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13` | — | 2 |
+| servarr | gluetun | `qmcgaw/gluetun:v3.41.3` | `qmcgaw/gluetun:v3.41.1` | 2 |
+| servarr | qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.14` | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13` | 2 |
 | servarr | qbit-port-sync | `alpine:3.21` | — | 0 |
 | servarr | prowlarr | `lscr.io/linuxserver/prowlarr:version-2.5.2.5491` | — | 1 |
 | servarr | sonarr | `lscr.io/linuxserver/sonarr:version-4.0.19.2979` | — | 2 |
 | servarr | radarr | `lscr.io/linuxserver/radarr:version-6.3.0.10514` | — | 2 |
 | servarr | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | — | 0 |
 | servarr | bazarr | `lscr.io/linuxserver/bazarr:version-v1.6.0` | — | 1 |
-| servarr | jellyseerr | `fallenbagel/jellyseerr:2.7.3` | — | 1 |
+| servarr | seerr | `ghcr.io/seerr-team/seerr:v3.4.1` | `fallenbagel/jellyseerr:2.7.3` (renamed 2026-08-24) | 1 |
 | sure | web / worker | `ghcr.io/we-promise/sure:0.7.2` | `:stable` (same digest) | 2 |
 | sure | db | `postgres:16` ⚠️ **floating** — now **16.15** | — | 3 |
 | sure | redis | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | — | 3 |
