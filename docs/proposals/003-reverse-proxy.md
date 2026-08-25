@@ -354,12 +354,36 @@ told to expect. Each needs a one-line change, then a stack restart:
   in its `.env`, else every login POST fails CSRF origin checks.
 - **Sure** (Rails) — add the new host to its allowed hosts / `APP_DOMAIN`
   equivalent, same CSRF-origin reason.
-- **qBittorrent** — either add `header_up Host {upstream_hostport}` to its
-  `reverse_proxy` block, or enable "Bypass authentication for clients on
-  localhost/whitelisted subnets"; qBit's CSRF guard rejects a foreign `Host`
-  outright with a blank page.
-- **Ollama** — same `Host` sensitivity; the Caddyfile block carries
-  `header_up Host {upstream_hostport}`.
+- **qBittorrent** — set **Web UI → "Trust the following reverse proxies list"**
+  to `<LAN_PREFIX>.202` (done 2026-08-25; `WebUI\ReverseProxySupportEnabled=true`,
+  `WebUI\TrustedReverseProxiesList=<LAN_PREFIX>.202` in `qBittorrent.conf`).
+  This section previously prescribed `header_up Host {upstream_hostport}`
+  instead, which is what left the WebUI dead by name for weeks: qBit's CSRF
+  guard compares the browser's `Referer`/`Origin` against the target origin, so
+  a `Host` rewritten to `<LAN_PREFIX>.150:8080` mismatched every POST
+  (`WebUI: Referer header & Target origin mismatch!` in its log, 401 on the
+  login POST) while a plain `GET /` still returned the login page — hence the
+  "works on the bare IP, dead by name" shape that made it look like a proxy
+  problem. Trusting the proxy fixes it because qBit then takes the target
+  origin from `X-Forwarded-Host`, which Caddy sets to the original
+  `qbit.kaermorhen.fyi` regardless of the rewrite, and takes the client IP from
+  `X-Forwarded-For` — so logins are now logged and rate-limited against the
+  real client instead of all appearing as `.202` (five failed logins by name
+  used to ban the proxy and lock every user out over the domain).
+  The `header_up Host` line was then dropped from the qbit block as well
+  (2026-08-25, commented out and `systemctl reload caddy`), so the fix no
+  longer leans on `X-Forwarded-Host` or on the trust list surviving an LXC
+  rebuild: `WebUI\ServerDomains` is `*`, the original `Host` passes validation
+  on its own, and `Referer` matches it directly. Either change alone clears the
+  CSRF check — both are in place, and the trust list still earns its keep by
+  giving qBit the real client IP. Verified end-to-end after the reload: a
+  request through Caddy carrying a browser-like `Referer` now returns 403
+  (unauthenticated, CSRF passed) where it returned 401 (origin mismatch)
+  before, and the log records logins against the client rather than `.202`.
+- **Ollama** — `Host`-sensitive the *other* way from qBittorrent above: it
+  rejects a foreign `Host` outright, so its Caddyfile block does carry
+  `header_up Host {upstream_hostport}`. Do not generalise that to other
+  backends by reflex — check which way each one is sensitive.
 - **Immich** — set `request_body { max_size 0 }` on its block or large photo
   and video uploads fail at Caddy's default limit. Repoint the mobile app's
   server URL afterwards.

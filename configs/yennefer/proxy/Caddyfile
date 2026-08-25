@@ -109,11 +109,13 @@
 	@qbit host qbit.kaermorhen.fyi
 	handle @qbit {
 		# Published on gluetun's netns, not qbittorrent's (see servarr stack).
-		# The Host rewrite is mandatory: qBit's CSRF guard returns a blank
-		# page for any foreign Host header.
-		reverse_proxy <LAN_PREFIX>.150:8080 {
-			header_up Host {upstream_hostport}
-		}
+		# Do NOT add `header_up Host {upstream_hostport}` here. It was here
+		# until 2026-08-25 and broke the WebUI: qBit's CSRF guard compares the
+		# browser's Referer/Origin against the target origin, so a rewritten
+		# Host 401s every POST while GET / still serves the login page.
+		# WebUI\ServerDomains is `*` — the original Host validates fine.
+		# Unlike Ollama above, this backend wants the ORIGINAL Host.
+		reverse_proxy <LAN_PREFIX>.150:8080
 	}
 
 	@prowlarr host prowlarr.kaermorhen.fyi

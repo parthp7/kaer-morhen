@@ -76,9 +76,20 @@ No new certificate is needed — the wildcard already covers it.
 - **The wildcard covers one label only.** `*.kaermorhen.fyi` matches
   `sonarr.kaermorhen.fyi` but **not** `a.b.kaermorhen.fyi`. Keep service
   names flat — one label, no dots inside them.
-- **Host-header-sensitive backends** (qBittorrent, Ollama) need
-  `header_up Host {upstream_hostport}`; without it qBit returns a blank page
-  and Ollama 403s. Already set in the `Caddyfile`.
+- **`Host`-sensitive backends are sensitive in opposite directions.** Ollama
+  rejects a foreign `Host` and needs `header_up Host {upstream_hostport}`
+  (set in the `Caddyfile`). qBittorrent is the reverse: the same rewrite made
+  its CSRF guard reject every POST, because that guard compares the browser's
+  `Referer`/`Origin` against the target origin. Symptom to recognise — the
+  login *page* loads fine by name (a plain `GET`), then the login itself 401s,
+  so it looks like the proxy works and the app is broken. Fixed 2026-08-25 —
+  first by trusting the proxy inside qBit, then by dropping the rewrite here;
+  see proposal 003 §7. Do not add a `Host` rewrite to a new backend by reflex.
+- **A backend that reads `X-Forwarded-*` needs to be told to trust this proxy**
+  — qBittorrent's "Trust the following reverse proxies list", Jellyfin's Known
+  Proxies. Until it is, every client looks like `<LAN_PREFIX>.202`: logs name
+  the proxy instead of the user, and any per-IP rate limit or ban applies to
+  everyone arriving by name at once.
 - **Upload-heavy backends** (Immich, Paperless, CouchDB) need
   `request_body { max_size 0 }` or large uploads fail at Caddy's default limit.
 - **Some apps need their own config updated** to trust the new hostname —

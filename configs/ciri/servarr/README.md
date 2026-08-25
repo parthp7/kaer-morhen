@@ -273,6 +273,14 @@ must lose all connectivity, proving no fall-back to the home line:
 - Open `http://<CIRI_IP>:8080`, log in, **set a real password**.
 - Tools → Options → **Web UI → tick "Bypass authentication for clients on localhost"**
   (**required** — lets the `qbit-port-sync` sidecar set the forwarded listen port without creds).
+- Tools → Options → **Web UI → "Trust the following reverse proxies list"** = `<LAN_PREFIX>.202`
+  (the Caddy LXC). This is what makes logins log the **real client IP** instead of attributing
+  every request arriving by name to `.202` — where five bad passwords ban the proxy and lock all
+  users out over the domain while the bare IP keeps working.
+  It also, independently, satisfies qBit's CSRF check when a proxy rewrites the `Host` header:
+  that is how the WebUI was unblocked at `qbit.kaermorhen.fyi` on 2026-08-25, before the
+  offending rewrite was removed from the Caddy side. Both halves are in place now; see
+  proposal 003 §7 for the full story.
 - Downloads: default save path `/data/downloads/complete`, incomplete `/data/downloads/incomplete`,
   keep incomplete in that separate folder.
 
