@@ -1,11 +1,14 @@
 # Proposal 007 — UPS power protection for the lab
 
-- **Status**: **RESEARCH / NOT PURCHASED.** Evaluation only — no hardware bought,
-  nothing deployed. Decision and budget are the user's.
-- **Date**: 2026-08-26
+- **Status**: **DECIDED, NOT YET PURCHASED (2026-08-26).** Model selected —
+  **APC Back-UPS Pro BR1000G-IN**, §5 — pending budget; buy when a good price
+  appears. Nothing bought, nothing deployed.
+- **Date**: 2026-08-26 (revised same day after the requirements were sharpened
+  and two candidates were eliminated by hands-on inspection)
 - **Scope**: mains protection for the network switch, the two laptop nodes'
-  chargers, and headroom for a future mini-PC. Does **not** cover the ISP GPON
-  router (see §7), generator/inverter integration, or whole-home backup.
+  chargers, and headroom for a future mini-PC. The ISP GPON router is **already
+  covered** by its own dedicated mini-UPS and is out of scope (§7). Does not cover
+  generator/inverter integration or whole-home backup.
 - **Trigger**: not theoretical. See §1 — a power fluctuation caused an 8.7-hour
   outage on 2026-08-25.
 
@@ -73,10 +76,25 @@ since 2026-08-25. These link-downs are a different fault with a different cause.
 20 % of capacity, which is also where lead-acid runtime curves are most
 favourable. Buying 1500 VA buys runtime, not capability.
 
-**The laptops already have internal batteries.** They ride out a 60-second cut
-unaided — they were never what broke on 2026-08-25. This changes the sizing
-logic: the load that genuinely needs battery backing is the switch (~8 W) and,
-later, the mini-PC. At switch-only load any unit here runs for *hours*.
+**The laptops already have internal batteries**, and they are healthy enough to
+matter. Measured 2026-08-26 from `/sys/class/power_supply/BAT*`:
+
+| Node | Health vs design | Note |
+|---|---|---|
+| geralt | **64 %** | rides out a 34-83 s cut easily, but visibly aging |
+| yennefer | **86 %** | healthy |
+
+Both rode out every outage in §1 unaided — they were never what broke. **The only
+device in the rack with zero ride-through is the switch, at ~5-8 W.** On a 600-660 W
+unit that is ~1 % load; with both laptop chargers, ~9 %.
+
+**So capacity is not a differentiator between any of the candidates** — every one
+of them has runtime to spare at this load. The decision is entirely about
+features (§3), which is why the cheapest unit is not automatically the right one.
+
+Track geralt's battery as a related item: it is that node's own built-in
+ride-through, and below roughly 40 % of design the wall UPS becomes load-bearing
+for geralt too.
 
 There is also a mild argument for **not** putting the laptop chargers on battery
 outlets: during an outage the UPS battery ends up charging the laptop batteries
@@ -87,20 +105,47 @@ handles this cleanly.
 
 ## 3. Requirements (as stated) and how they map to specs
 
-| Requirement | What to actually look for |
-|---|---|
-| Display | LCD showing input V, load W, runtime remaining — not just status LEDs |
-| No continuous beeping | Mutable alarm: on-unit Quick Mute **and** permanent disable via software |
-| Replaceable battery, cheaper than the UPS | A published **RBC** (Replacement Battery Cartridge) part number, user-swappable, sold retail |
-| Good support reviews | India service presence, published response SLA, genuine RBC channel |
-| Lasts long, only battery replaced | Line-interactive with AVR — corrects brownouts without cycling the battery |
-| Future mini-PC support | Enough watts, and see the waveform trap in §4 |
-| 3–4 sockets | India 3-pin 6A sockets; IEC C13 needs adapters (§6) |
+Ranked as they actually bind, hardest first. Budget: **~₹10 k target, ₹13-15 k
+available immediately**; beyond that means months of saving.
+
+| # | Requirement | What to actually look for |
+|---|---|---|
+| 1 | **Battery level on the display** | LCD showing **minutes remaining** — a battery *health* indicator or a bar of LEDs does not satisfy this |
+| 2 | **No beeping during an outage** | See below — this one is sharper than it looks |
+| 3 | Longevity, 24/7 duty | Line-interactive with **AVR** |
+| 4 | 3-4 sockets | India 3-pin 6A; IEC C13 needs adapters (§5) |
+| 5 | Replaceable battery | **Soft** — acceptable to replace the whole unit if it is cheap enough |
+| 6 | Good support reviews | India service presence, published SLA, genuine RBC channel |
+
+**Requirements 1 and 2 are the same requirement.** The point of seeing minutes
+remaining is precisely so the UPS never has to *tell* you anything audibly.
+
+**The beeping requirement implies a USB port.** On every APC unit considered here
+the on-battery alarm is mutable **per event** (short press of the power button),
+but disabling it **permanently** requires PowerChute over USB. §1 records eight
+outages in two days — per-event muting means walking to the UPS eight times. So a
+data port is effectively mandatory, not a nice-to-have. This is what eliminated
+the cheapest candidate (§5).
 
 **AVR is the underrated one.** It corrects minor voltage swings *without*
 switching to battery. Given fluctuating mains, this is what determines whether
-the battery gets cycled a dozen times a day or left alone — i.e. whether "only
-ever replace the battery" is realistic.
+the battery gets cycled a dozen times a day or left alone.
+
+### The strategy fork behind requirement 5
+
+A UPS running 24/7 in Indian ambient heat with fluctuating mains will exhaust its
+battery in **2-3 years whatever it cost** — that is the dominant failure mode, not
+the electronics. So "replaceable battery" is soft only if the plan is to replace
+the unit:
+
+- **Buy once, run 8-10 years, swap batteries** → replaceability is not soft, it
+  *is* the plan.
+- **Buy cheap, replace the whole unit every ~3 years** → replaceability genuinely
+  does not matter.
+
+The money barely separates the two strategies — see the 9-year comparison in §6.
+**Since TCO is close to a wash, the choice falls entirely to requirements 1-3**,
+and that is what §5 decides on.
 
 ---
 
@@ -127,6 +172,12 @@ fine and pure sine is a waste of money. If it might mean a proper SFF box with a
 internal PSU, buy pure sine now. **This is the single decision that changes the
 budget**, roughly ₹15 k versus ₹30 k+.
 
+**RESOLVED 2026-08-26 — stepped wave accepted.** The planned future node is a
+brick-powered mini-PC, which is the case stepped wave handles without argument.
+The pure-sine Smart-UPS options (§5) are therefore out of scope on cost, and the
+budget question settles at ~₹13.6 k rather than ₹30 k+. Revisit only if the plan
+changes to an SFF/tower machine with an internal active-PFC PSU.
+
 ---
 
 ## 5. Candidates
@@ -145,14 +196,19 @@ budget**, roughly ₹15 k versus ₹30 k+.
 | Price (Aug 2026) | **~₹13,600–16,000** (Amazon.in / Flipkart; verify at purchase) |
 | RBC144 price | **~₹3,000–6,500** depending on seller — comfortably under the UPS price ✅ |
 
-**Why this one**: it is the only widely-stocked India-market unit that satisfies
-every stated requirement simultaneously — LCD, genuine user-replaceable RBC with
-a real retail channel, AVR, native India sockets, USB monitoring, 2-year warranty.
+**SELECTED 2026-08-26.** It is the only widely-stocked India-market unit that
+satisfies every requirement in §3 simultaneously — and, decisively, the only one
+of the three candidates that confirms **both** requirement 1 (minutes remaining on
+the LCD) and requirement 2 (USB → PowerChute → permanently disabled alarm). The
+two cheaper units each fail both. At ₹13,589 it sits at the top of the
+immediately-available budget, so purchase waits on a good price rather than on a
+decision.
 
-**The 4 + 2 socket split maps onto this lab exactly**: switch + (future) mini-PC +
-router on the four battery outlets; the two laptop chargers on the two surge-only
-outlets. That gets the laptops surge protection without spending battery runtime
-on devices that carry their own.
+**The 4 + 2 socket split maps onto this lab exactly**: switch + (future) mini-PC
+on the battery outlets — two of four used, real headroom — and the two laptop
+chargers on the surge-only pair. That gets the laptops surge protection without
+spending battery runtime on devices that carry their own (§2). The router needs
+no outlet here (§7).
 
 **Known caveats from owner reports**: battery life is typically **2–3 years** in
 Indian conditions (heat and poor mains both shorten it) — one long-term owner
@@ -173,6 +229,32 @@ C13 cable or adapter, which is fine for a mini-PC and annoying for laptop bricks
 No reliable India retail price found in this research; sold through distributors,
 so expect to request a quote.
 
+### Eliminated — APC **Easy UPS BVX1200LI-IN** (~₹7,850)
+
+Line-interactive, AVR, 6 India sockets, user-replaceable battery, 2 yr UPS / 1 yr
+battery — good on paper and the cheapest thing that nearly qualified. **Out on
+requirement 1**: it has an **LED status display, not an LCD** — utility/unit
+condition lights, no minutes-remaining readout. The BVX line is also known to
+alarm continuously on battery with no practical way to silence it, which fails
+requirement 2 as well.
+
+### Eliminated — APC **BX1100C-IN** (~₹6,620–7,599)
+
+The tempting one: ₹6 k cheaper than the BR, 1100 VA / 660 W, AVR, and the
+listings advertise an LCD. Published sources contradicted each other on both
+points that mattered, so it was **checked by hand 2026-08-26**:
+
+- **No USB / data port** on either the front or rear panel. Consistent with the
+  SKU's own name — *"without auto shutdown software"* — despite some resellers
+  claiming serial + PowerChute support. **Fails requirement 2**: without USB the
+  alarm can only be muted per event, and §1 says that would be eight trips to the
+  UPS in two days.
+- The display is a **battery *health* indicator, not a battery *level* indicator**.
+  **Fails requirement 1.**
+
+Recorded in full because the online sources are actively misleading here, and the
+next person pricing this will hit the same contradiction.
+
 ### Budget — Vertiv **Liebert ITON CX 1000VA** (~₹4,800–6,000)
 
 Cheap and widely available, but **offline/standby, not line-interactive**,
@@ -180,41 +262,52 @@ simulated sine wave, and no meaningful display. Fails the AVR, display, and
 "battery only ever replaced" criteria. Listed for completeness; not recommended
 against the stated requirements.
 
-### Not recommended — APC **BX** series (BX1100C-IN etc.)
-
-Cheaper sibling of the BR, and the trap to avoid: **battery is not user-
-replaceable**, 1-year warranty, simulated wave. When the battery dies you replace
-the whole unit — the exact opposite of the stated goal.
-
 ---
 
 ## 6. Total cost of ownership
 
-Over ~8 years, assuming a battery swap every 3 years:
+Over ~9 years, assuming the battery is exhausted every ~3 years either way (§3):
 
-| | BR1000G-IN | BX1100C-IN |
+| | BR1000G-IN (swap batteries) | BX1100C-IN (replace unit) |
 |---|---|---|
-| Unit | ~₹15,000 | ~₹8,000 |
-| Battery swaps | 2 × ~₹5,000 = ₹10,000 | not possible — replace unit |
-| Units needed | 1 | ~3 |
-| **8-year total** | **~₹25,000** | **~₹24,000** |
+| Unit | ~₹13,600 | ~₹7,000 |
+| Battery swaps | 2 × ~₹5,000 = ₹10,000 | — |
+| Units needed | 1 | 3 |
+| **9-year total** | **~₹23,600** | **~₹21,000** |
 
-Roughly equal on money — and the BR wins decisively on everything that isn't
-money: AVR, LCD, USB shutdown integration, 2-year warranty, and not re-buying and
+**Roughly a wash**, with the cheap-and-replace strategy marginally ahead on money
+alone. So money does not decide this — §3 requirements 1-3 do, and there the BR
+wins on the two things that were actually verified: a **minutes-remaining**
+readout rather than a health indicator, and a **USB port** for permanently
+disabling the alarm. Plus USB shutdown integration (§8.1) and not re-buying and
 re-cabling hardware every three years.
+
+Two caveats on the BX column, since the sources were unreliable (§5): its battery
+is sealed but described as replaceable by some sellers and not by others, and its
+warranty is quoted as both 1 and 2 years. If its battery *is* swappable its column
+improves — it still fails requirements 1 and 2, which is why it was eliminated on
+features rather than on cost.
 
 ---
 
-## 7. Gap: the ISP GPON router is not in scope
+## 7. The ISP GPON router — already covered, and cannot share this UPS
 
-The stated plan covers switch + two laptop chargers. **The ISP GPON router is
-not on that list.** Without it on battery, a mains cut still kills WAN — the LAN
-and all local services survive, but internet does not.
+**The router has its own dedicated mini-UPS and stays up through outages.** It
+also sits in a different room from the lab, reached over a long LAN run to the
+switch, so it could not share this UPS even if it needed to.
 
-For the 2026-08-25 incident that is *sufficient*, because what broke was the
-**switch** taking down LAN connectivity between ciri, the Pi-holes, and the
-gateway. But if the goal is "ride out a power cut", the router belongs on a
-battery outlet too. The BR1000G-IN has four; three are spoken for.
+The switch and both laptops sit together and currently run from one extension off
+a wall socket — a single UPS covers all three.
+
+This closes what would otherwise have been the obvious gap: with the router
+independently backed and the laptops carrying their own batteries (§2), the
+switch was genuinely the **only** unprotected link in the chain, which is exactly
+what §1 shows breaking. Of the BR1000G-IN's four battery outlets, only two are
+spoken for (switch, future mini-PC), leaving real headroom.
+
+**Wiring**: run it **wall → UPS → devices**. Do not hang the UPS off the end of
+the extension. With six sockets on the unit the extension may become unnecessary
+entirely.
 
 ---
 
@@ -236,16 +329,25 @@ battery outlet too. The BR1000G-IN has four; three are spoken for.
 
 ---
 
-## 9. Before buying — verify these
+## 9. Before buying — what is left
 
-- [ ] Current retail price of BR1000G-IN and of RBC144 (prices here are Aug 2026
-      and move; the RBC range ₹3,000–7,000 is unusually wide, so shop it)
-- [ ] Seller is an authorised APC channel — counterfeit RBCs are a known problem
-- [ ] Decide §4: mini-PC on a DC brick (stepped is fine) vs. future SFF box with
-      internal PSU (buy pure sine now)
-- [ ] Decide §7: does the GPON router go on a battery outlet
-- [ ] Confirm measured draw of the actual switch + chargers rather than the
-      estimates in §2 — a plug-in power meter settles it in five minutes
+Resolved: §4 (stepped wave accepted), §7 (router already covered), model choice
+(§5). Remaining:
+
+- [ ] Watch for a good price on BR1000G-IN — ₹13,589 was the Aug 2026 floor
+      against a ~₹16,000 ceiling, so the spread is worth waiting out
+- [ ] Seller must be an authorised APC channel — counterfeit RBCs are a known
+      problem, and the RBC144 spread (₹3,000–7,000) is wide enough to be a
+      warning sign in itself
+- [ ] Optional: confirm measured draw of the actual switch + chargers rather than
+      the estimates in §2 — a plug-in power meter settles it in five minutes.
+      Low priority now that §2 has established capacity is not a differentiator
+
+**On arrival**, before it is load-bearing:
+- [ ] Disable the audible alarm permanently via PowerChute over USB — this is the
+      whole reason for the model choice, so prove it works
+- [ ] Wire wall → UPS → devices (§7)
+- [ ] Set up `apcupsd`/NUT (§8.1)
 
 ---
 
