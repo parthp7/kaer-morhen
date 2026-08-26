@@ -47,12 +47,38 @@ write-up in [uptime-kuma.md](../uptime-kuma.md) and
 (the monitor's `exited` classifier, the stranded-client check,
 `HEALTH_RESTART_VPN`) is mitigation for a fault that would simply stop happening.
 
-**Second finding, worth recording separately**: ciri showed *nothing* in its logs
-during these outages. It is a VM, and the Linux bridge on geralt holds the
-guest's virtio link UP when the physical uplink dies — the guest sees silent
-packet loss, never a carrier event. **No VM or LXC in this lab can observe this
-class of outage.** Only geralt and yennefer can. This is a monitoring blind spot
-independent of the UPS decision (§8).
+**Second finding — and its limits.** ciri showed *nothing* in its logs during
+these outages. It is a VM, and the Linux bridge on geralt holds the guest's
+virtio link UP when the physical uplink dies, so the guest sees silent packet
+loss and never a carrier event. No VM or LXC can observe the *carrier* event;
+only geralt and yennefer can.
+
+**That is not the same as being blind, and an earlier draft of this doc wrongly
+said it was.** Uptime-Kuma catches these loudly, as an unmistakable simultaneous
+burst — `pihole2-dns, beszel, pbs, yennefer-ping, router, tailscale-1, sure,
+proxy-caddy, proxy-tls` all dropping within the same minute and recovering about
+two minutes later. Checked against Kuma's own heartbeat table, **7 of the 8
+outages above were caught**, and Kuma additionally recorded a ninth at 18:25 IST
+on 2026-08-26 that postdates the kernel log pull.
+
+The one it missed is the useful detail: the 35-second outage on 2026-08-25
+21:58:45 fell entirely between beats. The ping monitors run at **60 s intervals**,
+the beats at 21:58:35-39 were all up, and the next at 21:59:35-39 were up again.
+**Outages shorter than the ping interval can pass unrecorded** — whether that
+matters depends on whether a sub-60 s cut is enough to unseat gluetun; the 60 s
+one on 2026-08-25 certainly was.
+
+So the residual gap is narrow and is *not* detection:
+
+- Kuma records the **event**, never the **cause**. A simultaneous burst looks
+  identical to yennefer dying or to Kuma's own host losing its NIC. What proves
+  it is the switch is two machines with two different NIC chipsets logging
+  `Link Down` **at the same second**, and that lives only in kernel logs.
+- The burst was recognised in real time on every occurrence. What was not made
+  was the connection between "power blip, monitors flapped, back in two minutes"
+  and "gluetun has silently lost port forwarding for the next 8.7 hours". **That
+  is a correlation gap, not a monitoring gap** — and it is why this took two
+  RCAs (§8.2).
 
 **Not related**: geralt's PCIe/NIC defect
 ([geralt-nic-throughput.md](../geralt-nic-throughput.md)) has **not** regressed —
@@ -318,11 +344,13 @@ entirely.
    shut down cleanly on low battery instead of dropping. This is the main reason
    to prefer a UPS with real USB comms over a dumb one, and it fits the existing
    Proxmox setup directly.
-2. **Close the link-flap blind spot (§1).** Nothing currently records these
-   outages — the two hosts that can see them don't report them, and no guest can
-   see them at all. A small Kuma push or journal watch on geralt/yennefer for
-   `Link Down` would have identified this root cause in minutes rather than
-   across two RCAs.
+2. **Name the cause, don't just detect the event (§1).** Kuma already catches
+   these; it cannot say *why*. A small push monitor or journal watch on
+   geralt/yennefer for kernel `Link Down` would label the burst "switch
+   power-cycled" instead of leaving it as nine unrelated-looking failures, and
+   would also catch the sub-60 s outages the 60 s ping interval misses. Lower
+   priority than it looked while this was mistaken for a blind spot — the
+   detection exists, only the attribution is missing.
 3. **Revisit `HEALTH_RESTART_VPN`.** With the switch on battery, the spurious
    reconnects should stop; the setting can then be reconsidered on its merits
    rather than as damage control.
