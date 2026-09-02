@@ -338,6 +338,10 @@ labels above.
 
   `HUB_URL` is independent of the `KEY`/`TOKEN` registration pair, so this
   corrects an address without re-registering the system or losing history.
+  **Corrected on both PVE agents 2026-09-02**; all three now read `.204`.
+  Note the scheme: the hub serves **plain HTTP, no TLS listener** — a
+  `https://` HUB_URL fails with curl exit 35, and does so silently, because
+  nothing dials it under the default polling mode.
 
 ## Next steps (not yet built)
 
