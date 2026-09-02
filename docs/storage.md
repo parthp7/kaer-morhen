@@ -1098,8 +1098,9 @@ The disk now serves the entire worst case with headroom. **Rate limiting is
 therefore no longer warranted** and has been dropped (see below).
 
 **Still unproven: the drop rate.** 58 disconnects and 58 journal aborts this
-boot, the last at 22:00:55 — which was the swap itself. Zero since, but that is
-only minutes of evidence against a fault that averaged one every ~3–4 hours. The
+boot, the last at 22:00:55 — which was the swap itself. Still 58 at 23:45 with the
+link holding at 5000M: ~1 h 45 m clean against a fault that averaged one every
+~3–4 hours. Encouraging, not yet evidence. The
 old connector kept dropping right up to the end (16:19, 18:25, 18:52). **Do not
 call the drop fault fixed until the disk has held a SuperSpeed link across
 several days**, ideally through a full move-on-completion. If drops return on
@@ -1112,7 +1113,7 @@ the cause of the 08-10/22 link fault as well.
 |---|---|
 | **DONE 22:01:31** — connector replaced with the newer drive's | the root cause. 9.8 → 105 MB/s, 480M → 5000M, `max_sectors_kb` 120 → 1024. Removes the starvation condition outright |
 | **WATCHING** — drop rate on the new connector | the 58 drops. Needs days, not minutes. A brand-new cable is the next step if they recur |
-| **RECOMMENDED** — `nfsd` threads 16 → **32** | the 16-of-16 blocked pool. Cheap insurance, not a fix — see the sizing below for why 32 and not 64 |
+| **DONE 23:38:56** — `nfsd` threads 16 → **32** | the 16-of-16 blocked pool. Cheap insurance, not a fix — see the sizing below for why 32 and not 64. Applied and verified — see "Applied" below |
 | **PENDING** — an uncached read-latency probe in `media-mount-health.sh` | the detection gap. Every existing check passed during a total playback outage |
 | **DEFERRED** — re-test whether `quirks=…:u` is still needed | `queue_depth=1`. Now much less urgent: with the link fixed there is bandwidth to spare, and re-enabling UAS risks re-opening the 08-03 stall. Only worth trying if contention recurs *after* the connector is proven |
 | **DROPPED** — rate-limiting the move-on-completion | superseded by the connector fix. qBittorrent cannot do it natively anyway; the dead ends are recorded below so they are not re-attempted |
@@ -1156,6 +1157,30 @@ cat /proc/fs/nfsd/threads        # expect 32
 
 Test it live with `nfsdctl threads 32` first — it applies instantly and reverts
 on the next restart, so nothing is committed until the drop-in is edited.
+
+**Applied 2026-09-02 23:38:56 IST.** Verified at every layer:
+
+| Check | Result |
+|---|---|
+| `nfsdctl threads` | `pool-threads: 32` |
+| `/proc/fs/nfsd/threads`, `/proc/fs/nfsd/pool_threads` | `32`, `32` |
+| Actual kernel threads | `32` |
+| `threads=` lines in the drop-in | exactly 1 — the guarded append did not duplicate |
+| Export options | unchanged: `fsid=101`, `all_squash`, `anonuid=13000` |
+| ciri's mount | `nfs4` intact, 1 client, all 32 threads idle |
+| Read from ciri after the restart | **99 MB/s** direct, **203 MB/s** at 64K buffered |
+| Jellyfin | `Up (healthy)`, `/health` 200 |
+
+**Persistence is proven, not assumed:** the drop-in was written at **23:38:46**
+and `nfs-server` restarted at **23:38:56**, ten seconds later — so the running 32
+was read from the config file, not left behind by the live `nfsdctl` call.
+
+**One benign warning to ignore.** Every start logs `nfsdctl: lockd configuration
+failure`. It is **not** from this change: it appears on all six `nfs-server`
+starts since the share was built on 2026-08-23 — i.e. every start in the journal.
+`lockd` is the NFSv3 lock manager and this export is v4.2-only (`vers3=n`);
+NFSv4 has integrated locking and never uses it. Cosmetic, recorded so it is not
+chased later.
 
 #### Why 32 is the right number for this workload
 
