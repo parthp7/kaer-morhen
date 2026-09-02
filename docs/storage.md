@@ -930,3 +930,322 @@ design doing precisely its job — the failure was loud, local and cheap.
 | **DECLINED** — a Radarr/Sonarr quality or size cap | would have prevented the grab outright. The user declined it deliberately; do not re-propose. Consequently `max_active_downloads = 2` plus fail-fast preallocation are the *entire* guardrail, and 148 G still cannot hold a worst-case pair of 4K REMUXes — expect to hand-sequence large batches |
 | Resume errored torrents by hand after space frees | qBittorrent's refusal to retry. There is no automatic recovery path; a stuck `error` torrent is a manual step, always |
 
+## Incident 2026-09-02 (second) — one torrent move starved Jellyfin off the disk
+
+Same day and the **same three REMUXes** as the scratch-exhaustion incident above:
+one of them finished, qBittorrent began its move-on-completion onto the media
+disk, and that single sequential write took Jellyfin playback down for the
+duration. No hardware failed, nothing filled up, and no mitigation misfired —
+this is the media pipeline's two halves contending for one USB 2.0-linked SMR
+spindle, and the write winning totally.
+
+Two things had to be true at once. **`queue_depth=1`** (a consequence of the
+08-03 `IGNORE_UAS` mitigation) means a reader can never interleave behind a
+writer — that makes contention *unfair*. **A connector negotiating USB 2.0
+instead of SuperSpeed** left only ~10 MB/s to share — that is what made it
+*catastrophic*.
+
+Replacing the connector at 22:01 the same evening resolved it and settled which
+factor dominated: same `queue_depth=1`, same quirk, 9.8 → **105 MB/s**, problem
+gone. The analysis below is preserved as measured during the outage; the
+resolution and revised recommendations follow it.
+
+### What happened
+
+| When (IST) | Event |
+|---|---|
+| 14:01:04 | USB disconnect #54 this boot; dev 53 → 54, `sdm` → `sdn`, journal aborted and remounted 15 s later. Routine by now — see the 08-10/22 postscripts |
+| ~15:0x | qBittorrent completes `28.Years.Later.The.Bone.Temple.2026 … REMUX` (69.1 GiB) and starts moving it from the `scsi3` NVMe scratch to `/mnt/media/downloads/complete` over NFS |
+| 15:14–15:21 | every Jellyfin playback attempt fails. ffmpeg starts, emits `size=0KiB time=N/A bitrate=N/A speed=N/A`, the transcode kill timer fires, the client's segment GET dies with `A task was canceled` |
+| 15:2x | diagnosis; no intervention. The move was left to finish |
+
+Jellyfin itself was never unhealthy: container `Up (healthy)`, `/health` 200, GPU
+present and idle at 0 %, `/mnt/media` mounted and listable, every filesystem with
+room to spare.
+
+### It was not the GPU, and not the mount
+
+Two eliminations worth recording, because both are the obvious first guess:
+
+- **Not the GPU.** The failing jobs included plain remuxes (`-codec:v:0 copy`,
+  no `hevc_nvenc`, no CUDA filter) and they produced `0KiB` identically. A GPU or
+  CDI fault cannot explain a stream-copy producing nothing.
+- **Not a broken mount.** `ls` and a *cached* `dd` both returned instantly at
+  ~3 GB/s. A mount that is present, listable and fast on cached data looks
+  perfectly healthy to every check we have — including
+  `media-mount-health.sh`, whose byte-read probe reads the same early bytes that
+  are already in page cache.
+
+The reproduction that actually showed it, run inside the container against the
+file Jellyfin was failing on:
+
+```bash
+# ffmpeg remux to /dev/null — reads 440 frames instantly from page cache at
+# 36.5x, then falls off a cliff the moment it needs uncached data
+docker exec jellyfin /usr/lib/jellyfin-ffmpeg/ffmpeg -i "<file>" \
+  -c copy -t 20 -f null -
+# frame=440 … speed=36.5x   ← page cache
+# frame=482 … speed=0.621x  ← the disk
+```
+
+### Root cause: a half-speed link and `queue_depth=1`, plus one sustained writer
+
+Measured on geralt while the move ran:
+
+| Probe | Result |
+|---|---|
+| 64 MiB uncached read over NFS from ciri (`iflag=direct`, 1 GiB offset) | **did not complete in 180 s** (< 0.36 MB/s) |
+| Same read directly on geralt against `/dev/sdn` | **9.8 MB/s** |
+| `nfsd` threads in `D` state | **16 of 16** — all of them |
+| `lsof` on ciri | hung; stat of the mount blocks |
+| Move write rate | ~16 MiB/s sustained |
+
+All sixteen `nfsd` threads were blocked in uninterruptible I/O wait serving the
+write. There was no thread left to serve a read with, so Jellyfin's reads did not
+merely go slow — they went nowhere.
+
+Underneath that, the device geometry makes contention unwinnable:
+
+```
+/sys/block/sdn/device/queue_depth   1      ← usb-storage: ONE command in flight
+/sys/block/sdn/queue/nr_requests    2      ← clamped by the above
+/sys/block/sdn/queue/max_sectors_kb 120    ← usb-storage bulk transport default
+/sys/block/sdn/queue/scheduler      [mq-deadline]
+/sys/block/sdn/bdi/max_ratio        100    ← may claim the whole dirty budget
+/sys/block/sdn/bdi/strict_limit     0
+```
+
+`mq-deadline`'s `read_expire=500ms` is the right idea and cannot help here: with
+a two-slot queue and one command in flight, there is nothing to reorder. Every
+read waits for the in-flight write to finish on the wire.
+
+And the wire is half-speed. The drive is on the USB 2.0 bus while the SuperSpeed
+bus sits **empty**:
+
+```
+/:  Bus 001 … root_hub, xhci_hcd/16p, 480M
+    |__ Port 003: Dev 054, Mass Storage, usb-storage, 480M   ← the media disk
+/:  Bus 002 … root_hub, xhci_hcd/8p, 10000M                  ← nothing attached
+```
+
+This is the link fault from the 08-10/22 incident, still live: **54 disconnects
+and 54 journal aborts in the 9 days since boot.** Until now it was recorded as a
+reliability problem. It is also a throughput problem, and this incident is what
+made that visible.
+
+### The mitigation that caused it
+
+`/etc/modprobe.d/usb-storage-media.conf` carries `quirks=0bc2:ab24:u`
+(`US_FL_IGNORE_UAS`), added after 08-03 to stop the bus drops under sustained
+write. It works, and it is the direct cause of `queue_depth=1`: UAS is what
+provides command queuing on USB mass storage, and `usb-storage` has none. The
+120 KB `max_sectors_kb` comes from the same fallback.
+
+So the media disk's write path was hardened by removing exactly the capability
+that would have let a reader coexist with a writer. That was the correct trade in
+August — bus drops cost 14-hour outages.
+
+**But the quirk turned out not to be the binding constraint.** The connector swap
+below left `queue_depth=1` untouched and still took throughput from 9.8 to
+105 MB/s, which is enough for the whole workload with room to spare. The quirk
+makes read/write contention *unfair*; it did not make it *fatal*. Re-testing it
+is therefore now a low-priority experiment rather than a fix — and one that risks
+re-opening the 08-03 stall for a benefit the cable already delivered.
+
+### Why nothing alerted
+
+Nothing was down. Beszel saw free space everywhere, Kuma's HTTP check on Jellyfin
+got its 200, and `media-mount-health.sh` reads bytes that are already cached. The
+gap is that **we have no probe for media-disk read latency under load** — the one
+condition that actually breaks playback. A `dd … iflag=direct` from an uncached
+offset with a `timeout` is the check that would have caught this, and it is
+cheap. Note the probe must read from an **uncached offset**: `ls`, `df` and a
+cached `dd` all returned instantly at ~3 GB/s throughout.
+
+### Resolution — connector replaced 2026-09-02 22:01:31 IST
+
+**The cable was the whole story.** The connector was swapped for the one from a
+newer drive at **22:01:31 IST** (`usb 1-3` disconnect 22:00:55 → re-enumerated as
+`usb 2-3` 36 s later). The drive moved to the SuperSpeed bus and every number
+improved by an order of magnitude:
+
+| | Before (USB 2.0) | After (SuperSpeed) |
+|---|---|---|
+| Bus / link | `usb 1-3`, **480M** | `usb 2-3`, **5000M** |
+| `max_sectors_kb` | **120** | **1024** |
+| Sequential read, geralt, `iflag=direct` | **9.8 MB/s** | **105 MB/s** |
+| Sequential read over NFS from ciri | **< 0.36 MB/s** (did not finish in 180 s) | **127 MB/s** direct, **136 MB/s** buffered |
+| Small-block read over NFS (32K / 64K) | not measurable | **128 / 104 MB/s** |
+
+`max_sectors_kb` rising 120 → 1024 is the quiet half of the win: it is the
+`usb-storage` transfer ceiling, and at USB 2.0 it capped every command at 120 KB.
+Commands are now 8.5× larger over a 10× faster link.
+
+**This reframes the whole incident.** The disk was never slow — 105 MB/s is a
+healthy figure for a 2.5" SMR portable. It was being strangled by the connector,
+and the "SMR is too slow for concurrent read+write" reading of 08-03 was, in
+part, measuring a bad cable.
+
+Capacity against the real workload, using the post-swap numbers:
+
+| Load | Demand |
+|---|---|
+| 5 concurrent 4K streams @ 80–100 Mbps | ~50–60 MB/s |
+| one qBittorrent move-on-completion | whatever is left, ~45 MB/s |
+| \*arr metadata scans | negligible — cache hits, microseconds |
+
+The disk now serves the entire worst case with headroom. **Rate limiting is
+therefore no longer warranted** and has been dropped (see below).
+
+**Still unproven: the drop rate.** 58 disconnects and 58 journal aborts this
+boot, the last at 22:00:55 — which was the swap itself. Zero since, but that is
+only minutes of evidence against a fault that averaged one every ~3–4 hours. The
+old connector kept dropping right up to the end (16:19, 18:25, 18:52). **Do not
+call the drop fault fixed until the disk has held a SuperSpeed link across
+several days**, ideally through a full move-on-completion. If drops return on
+this connector, the next step is the brand-new cable; if they stop, the cable was
+the cause of the 08-10/22 link fault as well.
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| **DONE 22:01:31** — connector replaced with the newer drive's | the root cause. 9.8 → 105 MB/s, 480M → 5000M, `max_sectors_kb` 120 → 1024. Removes the starvation condition outright |
+| **WATCHING** — drop rate on the new connector | the 58 drops. Needs days, not minutes. A brand-new cable is the next step if they recur |
+| **RECOMMENDED** — `nfsd` threads 16 → **32** | the 16-of-16 blocked pool. Cheap insurance, not a fix — see the sizing below for why 32 and not 64 |
+| **PENDING** — an uncached read-latency probe in `media-mount-health.sh` | the detection gap. Every existing check passed during a total playback outage |
+| **DEFERRED** — re-test whether `quirks=…:u` is still needed | `queue_depth=1`. Now much less urgent: with the link fixed there is bandwidth to spare, and re-enabling UAS risks re-opening the 08-03 stall. Only worth trying if contention recurs *after* the connector is proven |
+| **DROPPED** — rate-limiting the move-on-completion | superseded by the connector fix. qBittorrent cannot do it natively anyway; the dead ends are recorded below so they are not re-attempted |
+| **OPTIONAL** — `bdi/max_ratio` on the media disk | writeback burstiness. Much less pressing at 105 MB/s |
+| Sequence large REMUX moves by hand outside viewing hours | the residual, if drops return and throughput collapses again |
+
+#### Setting the `nfsd` thread count — the options
+
+geralt runs **nfs-utils 2.8.3**, where `nfs-server.service` starts via
+`/usr/sbin/nfsdctl autostart || /usr/sbin/rpc.nfsd`. That changes which knobs are
+real:
+
+| Mechanism | Persistent | Notes |
+|---|---|---|
+| `[nfsd] threads=N` in **`/etc/nfs.conf.d/kaermorhen.conf`** | yes | **Use this.** The project already owns this drop-in (proposal 005 § B1) and it already has an `[nfsd]` section — one line to add |
+| `[nfsd] threads=N` in `/etc/nfs.conf` | yes | Same effect; the shipped line is commented at line 65. Editing the distro file instead of the drop-in breaks the project convention |
+| `nfsdctl threads N` | **no** | Runtime, takes effect immediately, no restart and no client disruption. Ideal for testing a value before committing it |
+| `echo N > /proc/fs/nfsd/threads` | **no** | Raw kernel interface, same immediate effect. Lowest-level fallback |
+| ~~`RPCNFSDCOUNT` in `/etc/default/nfs-kernel-server`~~ | — | **Gone.** nfs-utils 2.8.3 dropped it; that file now holds only `RPCNFSDPRIORITY` and `NEED_SVCGSSD`. Recorded so it is not tried |
+
+Recommended change — one line appended to the existing drop-in's `[nfsd]`
+section:
+
+```ini
+# /etc/nfs.conf.d/kaermorhen.conf
+[nfsd]
+host=<STORAGE_PREFIX>.21
+vers3=n
+vers4=y
+vers4.0=n
+vers4.1=n
+vers4.2=y
+threads=32
+```
+
+```bash
+systemctl restart nfs-server     # or, without restarting: nfsdctl threads 32
+nfsdctl threads                  # expect pool-threads: 32
+cat /proc/fs/nfsd/threads        # expect 32
+```
+
+Test it live with `nfsdctl threads 32` first — it applies instantly and reverts
+on the next restart, so nothing is committed until the drop-in is edited.
+
+#### Why 32 is the right number for this workload
+
+The measured facts that decide it:
+
+- **There is exactly one NFS client.** `/proc/fs/nfsd/clients` = 1 — ciri. Every
+  consumer (Jellyfin, the \*arrs, qBittorrent) is a container *inside* ciri
+  sharing that one mount, so "4–5 streaming clients" is 4–5 processes behind a
+  single NFS client, not 5 clients.
+- **The client is not the constraint.** `mountstats` shows the transport has run
+  up to **`max_slots` 1026** concurrent RPCs with **backlog utilisation 0** — it
+  has never had to queue for a slot. Whatever the server offers, the client can
+  fill.
+- **Threads are needed for *blocking* work, not total RPCs.** Metadata ops
+  (`getattr`, `lookup`, `readdir` — the \*arr scan pattern) are page/dentry-cache
+  hits that return in microseconds. A burst of a thousand of those drains through
+  a small pool almost instantly. Only disk-bound RPCs hold a thread.
+
+Sizing against the real load:
+
+| Source | Concurrent disk-bound RPCs |
+|---|---|
+| 5 streams × ~4 RPCs in flight (1 MB `rsize`, readahead pipelining) | ~20 |
+| one qBittorrent move-on-completion | ~8 |
+| \*arr metadata | ~0 sustained (cache hits) |
+| **total** | **~28** |
+
+**32 covers that with headroom**, which is the entire point: the failure was not
+"too little bandwidth", it was **every thread in the pool consumed at once**, so
+cache-hit operations that needed no disk at all could not be served. 16 sits
+below the sustained demand; 32 sits above it.
+
+**Going past 32 buys nothing here.** The device is `queue_depth=1` with
+`nr_requests=2` — extra threads cannot create device parallelism, they just block
+in block-layer request allocation. 64 is harmless but is headroom over headroom;
+32 is the honest number. Revisit only if a second NFS client is ever added.
+
+**Caveat on validating this empirically:** the classic tuning method is gone. The
+`th` line in `/proc/net/rpc/nfsd` reads `th 16 0 0.000 …` — modern kernels
+hardcode the histogram buckets to zero, so the "how often were all threads busy"
+signal no longer exists. `/proc/fs/nfsd/pool_stats` still counts
+`sockets-enqueued` (41.4M) against `packets-arrived` (22.8M), but on this kernel
+the enqueue path runs unconditionally rather than only on starvation, so the
+ratio is **not** a clean starvation metric either. The 32 above is reasoned from
+the workload, not measured from the counters — do not treat a change in those
+counters as proof it worked.
+
+#### Does limiting read vs write at the NFS layer make sense?
+
+Evaluated, and the answer is **no** — with one option worth keeping in mind.
+There is **no native bandwidth throttle in NFS**, so every option is an indirect
+lever:
+
+| Lever | Verdict |
+|---|---|
+| **Asymmetric `rsize`/`wsize`** (keep `rsize=1M`, cut `wsize` to 256K) | **No.** It does shorten how long a thread holds the device per write, but it shrinks writes on an **SMR** drive — the opposite of what SMR wants. Small writes trigger read-modify-write in the CMR cache band, which is the 08-03 stall mechanism. Do not do this |
+| **`sync` → `async` export** | **No, firmly.** It would free threads instantly, but `async` means the server acknowledges writes it has not committed. With 58 bus drops this boot, that is precisely the condition under which the client believes data is safe and it is not. `sync` is load-bearing on this disk. Revisit only after months of a clean drop record |
+| **Lower the client's readahead to throttle reads** | **No, and it was worth checking.** The NFS client's `read_ahead_kb` is **128 KB against a 1 MB `rsize`**, which looks like a bottleneck on paper. Measured, it is not: 128 MB/s at 32K reads and 104 MB/s at 64K. Nothing to fix, and nothing to gain by lowering it |
+| **`nconnect=4`** | **The one worth remembering.** All traffic currently shares **one TCP connection** (no `nconnect` in the mount options), so a 1 MB write RPC head-of-line-blocks reads at the transport. `nconnect` does not *limit* either side — it stops them sharing one pipe, which is strictly better than throttling. Costs a remount (all users must release the mount), so bundle it with the next maintenance window. Low priority at 105 MB/s |
+| **`tc` egress shaping on ciri** | Still the **only** true rate limit, and no longer needed. Kept in the note below purely as a recorded option |
+
+The dead ends, recorded so they are not re-attempted: **`docker run
+--device-write-bps` / cgroup v2 `io.max`** cannot work — the target is an NFS
+mount inside ciri, not a block device, and on geralt the writeback is done by
+kernel flush threads that belong to no cgroup. **`ionice`** fails for the same
+reason. **qBittorrent itself has no move-on-completion throttle** — its rate
+limits are peer-traffic only.
+
+Had a true rate limit still been wanted, the shape was: shape ciri's *egress*
+toward geralt (NFS writes are ciri→geralt; reads are ciri *ingress*, so egress
+shaping throttles the move and leaves playback untouched), helped by ciri
+reaching the storage network on a dedicated `eth1`. Recorded, not implemented.
+
+#### Optional — limiting the dirty-page budget of the slow disk
+
+Much less pressing post-swap, but still sound if writeback burstiness ever bites.
+With `vm.dirty_ratio=20` on 32 GB, up to ~6.4 GB of dirty pages can queue for the
+USB disk:
+
+```bash
+echo 5 > /sys/block/<dev>/bdi/max_ratio
+echo 1 > /sys/block/<dev>/bdi/strict_limit
+```
+
+Persist via a `udev` rule keyed on the drive's serial, never on `/dev/sdX` — the
+letter changes on every reconnect (`sdm` → `sdn` → `sdp` → `sdq` → `sdt` → `sdv`
+in one day):
+
+```
+# /etc/udev/rules.d/60-media-bdi.rules
+ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_SERIAL_SHORT}=="<MEDIA_USB_SERIAL>", \
+  ATTR{bdi/max_ratio}="5", ATTR{bdi/strict_limit}="1"
+```
