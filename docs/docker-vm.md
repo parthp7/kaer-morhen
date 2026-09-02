@@ -23,7 +23,7 @@ guest hostname = login user = `ciri`.
 | Network | **net0** virtio on `vmbr0`, static `<LAN_PREFIX>.150/24` via cloud-init, DNS `.101`/`.201` (the Pi-holes), search `kaermorhen.internal` (renamed from `….home.arpa` 2026-07-12 — see [dns.md](dns.md) gotchas). **net1** virtio on `vmbr1` → `eth1`, `<STORAGE_PREFIX>.150/24`, **no gateway** — NFS to geralt only, added 2026-08-23 ([proposal 005](proposals/005-nfs-media-share.md), [network.md](network.md)) |
 | Login | user `ciri`, SSH-key only (keys inherited from geralt's `/root/.ssh/authorized_keys`); no password unless set via `sudo passwd ciri` |
 | Docker | Engine 29.6.1 + Compose v5.3.1 from Docker's official apt repo; `ciri` in the `docker` group |
-| Monitoring | Beszel agent (binary, `beszel-agent.service`) → hub on `.204`; per-container Docker stats on the same dashboard. **Auto-update timer disabled** (house policy) |
+| Monitoring | Beszel agent (binary, `beszel-agent.service`) → hub on `.204`; per-container Docker stats on the same dashboard. **Auto-update timer disabled** (house policy). Watches `/` + four labelled extra filesystems — see runbook step 6 |
 | Backups | picked up automatically by geralt's nightly 04:00 `--all 1` PBS job; `qemu-guest-agent` gives `fs-freeze` consistent snapshots |
 | GPU | **GTX 1060 passed through 2026-07-16** (`hostpci0: 0000:01:00,pcie=1`, driver + container toolkit in guest) — see [gpu-passthrough.md](gpu-passthrough.md) |
 
@@ -221,6 +221,8 @@ sudo rm -rf /var/lib/docker      # only after the verify above
 # Beszel: agents watch / only — add the new fs, then confirm on the hub
 sudo systemctl edit beszel-agent   # [Service] Environment="EXTRA_FILESYSTEMS=/data"
 sudo systemctl restart beszel-agent
+# (superseded 2026-09-02 — the list now covers all four data disks with
+#  readable labels; see step 6)
 
 sudo reboot   # prove fstab + docker come back — never skip this
 ```
@@ -235,6 +237,34 @@ sudo systemctl start containerd docker.socket docker.service
 docker run --rm hello-world      # repulls; layers land in /data/containerd
 sudo rm -rf /var/lib/containerd  # abandoned pre-move remnant
 ```
+
+### 6. Beszel extra filesystems — coverage audit (2026-09-02)
+
+ciri mounts four data disks beyond `/`, but the agent only knew about `/data`,
+so `/mnt/ai-models`, `/mnt/torrents` and `/mnt/photos` had no usage panel and
+no disk alert. Current drop-in
+(`/etc/systemd/system/beszel-agent.service.d/override.conf`):
+
+```ini
+[Service]
+Environment="EXTRA_FILESYSTEMS=/data__docker-data,/mnt/ai-models__ai-models,/mnt/torrents__torrents,/mnt/photos__photos"
+Environment="DISK_USAGE_CACHE=5m"
+```
+
+- `path__label` (double underscore) sets the hub's display name — otherwise
+  panels read `sdb`, `sdc`, `sdd`. Agent ≥ 0.13.2; ciri runs 0.18.7.
+- **`/mnt/media` is deliberately absent.** It is the NFS mount of geralt's
+  `/mnt/media` — the same physical disk — so monitoring it here would duplicate
+  the panel and double-fire the 80 % alert. Watched at the source on geralt;
+  mount liveness is Kuma's and `media-mount-health.sh`'s job.
+- `DISK_USAGE_CACHE=5m` keeps a stalled network/virtiofs mount from blocking
+  the collector on `statfs`.
+- `/mnt/photos` is **virtiofs**, not a block device — it reports fine when
+  given by mount point, but it is the one entry worth re-checking on the hub
+  after an agent upgrade.
+
+Full cross-host rationale and the naming rules:
+[monitoring.md](monitoring.md) step 7 (all three agents, audited together).
 
 ## Gotchas hit (and the fixes)
 
@@ -336,7 +366,7 @@ groups ciri                             # includes docker
 systemctl is-active docker docker.socket beszel-agent qemu-guest-agent
 systemctl is-enabled beszel-agent-update.timer   # disabled
 lsblk; grep data /etc/fstab; df -h / /data
-systemctl cat beszel-agent | grep EXTRA_FILESYSTEMS   # /data
+systemctl show beszel-agent -p Environment   # EXTRA_FILESYSTEMS: 4 labelled mounts
 free -m
 resolvectl status | grep -A3 'DNS Servers'
 ```

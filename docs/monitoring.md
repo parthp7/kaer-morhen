@@ -103,14 +103,20 @@ curl -sL https://get.beszel.dev -o /tmp/install-agent.sh && chmod +x /tmp/instal
 
 Default connection mode: hub polls agent on port 45876 — fine on the flat LAN.
 
-Teach each agent about the non-root filesystems (default is `/` only):
+Teach each agent about the non-root filesystems (default is `/` only), and
+give each one a readable label with the `__` separator (agent ≥ 0.13.2 —
+see step 7):
 
 ```bash
-systemctl edit beszel-agent
-# geralt:    [Service]  Environment="EXTRA_FILESYSTEMS=/silver,/steel"
-# yennefer:  [Service]  Environment="EXTRA_FILESYSTEMS=/mnt/backup"
+systemctl edit beszel-agent   # writes .service.d/override.conf
+# geralt:    [Service]  Environment="EXTRA_FILESYSTEMS=/silver__silver-zfs,/steel__steel-zfs,/mnt/media__media-usb"
+# yennefer:  [Service]  Environment="EXTRA_FILESYSTEMS=/mnt/backup__pbs-backup"
 systemctl restart beszel-agent
 ```
+
+Labels shown here are the current (2026-09-02) values; the original build set
+bare paths and no labels. ciri's agent carries its own list — see
+[docker-vm.md](docker-vm.md).
 
 Temperatures (coretemp) and the SMART tab appeared without extra packages —
 PVE ships smartmontools; no lm-sensors needed on this hardware.
@@ -200,7 +206,7 @@ pct status 102
 pct exec 102 -- systemctl is-active beszel-hub
 curl -s -o /dev/null -w '%{http_code}\n' http://<LAN_PREFIX>.102:8090   # 200
 systemctl is-active beszel-agent zfs-zed smartmontools
-systemctl cat beszel-agent | grep EXTRA_FILESYSTEMS
+systemctl show beszel-agent -p Environment   # not `systemctl cat | grep` — see gotchas
 grep -E '^ZED_NTFY' /etc/zfs/zed.d/zed.rc
 grep -v '^#' /etc/smartd.conf | grep DEVICESCAN
 cat /etc/cron.d/zfsutils-linux            # TRIM 1st Sunday, scrub 2nd Sunday
@@ -208,7 +214,7 @@ cat /etc/pve/notifications.cfg           # webhook 'ntfy' + default-matcher
 
 # yennefer (same minus zed/zfs lines)
 systemctl is-active beszel-agent smartmontools
-systemctl cat beszel-agent | grep EXTRA_FILESYSTEMS
+systemctl show beszel-agent -p Environment
 grep -v '^#' /etc/smartd.conf | grep DEVICESCAN
 cat /etc/pve/notifications.cfg
 ```
@@ -255,6 +261,48 @@ yennefer's very next 04:30 run. Verified post-move: 204 running with correct
 config and fresh MAC, hub UI 200 on `.204`, both agents reporting, geralt
 guest-free, datastore holding only `ct/200` and `ct/204` groups.
 
+### 7. Extra filesystems: coverage audit + labels (2026-09-02)
+
+Agents show **`/` only** unless told otherwise, so every disk added after the
+original build was silently invisible on the hub. Audited all three agents
+(all on binary `beszel-agent` 0.18.7) and closed the gaps:
+
+| Host | Was monitored | Added | Final `EXTRA_FILESYSTEMS` |
+|---|---|---|---|
+| geralt | `/`, `/silver`, `/steel` | **`/mnt/media`** (sdm1, 916 G SMR USB) | `/silver__silver-zfs,/steel__steel-zfs,/mnt/media__media-usb` |
+| yennefer | `/`, `/mnt/backup` | — (already complete) | `/mnt/backup__pbs-backup` |
+| ciri | `/`, `/data` | **`/mnt/ai-models`**, **`/mnt/torrents`**, **`/mnt/photos`** | `/data__docker-data,/mnt/ai-models__ai-models,/mnt/torrents__torrents,/mnt/photos__photos` |
+
+The material gap was geralt's `/mnt/media` — the least trustworthy device in
+the lab ([storage.md](storage.md) SMR watchline) had no usage panel and no
+80 % alert for ~7 weeks.
+
+**Naming**: there is no rename field in the hub UI
+([issue 1472](https://github.com/henrygd/beszel/issues/1472) is open). The
+agent-side mechanism is a **double underscore** between device/mount and
+label — `/mnt/media__media-usb` — supported since agent 0.13.2. Commas are the
+list separator, so labels can't contain them; keep spaces out too. Beszel keys
+per-filesystem history by the displayed name, so a rename starts a fresh series
+and the old name's history stays behind — pick names once and don't churn them.
+
+**ciri deliberately omits `/mnt/media`** (the NFS mount from geralt): it is the
+same physical disk as geralt's `/mnt/media`, so including it would duplicate
+the panel and fire the 80 % disk alert twice for one event. Monitored at the
+source. Mount liveness is covered by Uptime-Kuma and
+[`media-mount-health.sh`](../scripts/monitoring/media-mount-health.sh) instead.
+ciri also sets `DISK_USAGE_CACHE=5m` — `statfs` on a stalled network mount can
+block the collector; cheap insurance given `/mnt/photos` is virtiofs and NFS
+may be added later.
+
+```bash
+# applied on all three via the existing .service.d/override.conf
+systemctl daemon-reload && systemctl restart beszel-agent
+systemctl show beszel-agent -p Environment     # effective value, drop-ins merged
+```
+
+Verified 2026-09-02: all three agents `active`, panels up on the hub with the
+labels above.
+
 ## Gotchas recap
 
 - Hub systemd unit is **`beszel-hub.service`**; host agents are
@@ -264,7 +312,32 @@ guest-free, datastore holding only `ct/200` and `ct/204` groups.
   sensors) — set it for the CPU; disks are smartd's job.
 - PVE notification config is per node — standalone nodes need it done twice.
 - `-m <nomailer>` must accompany smartd's `-M exec`.
-- Agents only watch `/` by default — `EXTRA_FILESYSTEMS` for everything else.
+- Agents only watch `/` by default — `EXTRA_FILESYSTEMS` for everything else,
+  and nothing warns you when a newly mounted disk goes unmonitored. Re-audit
+  after every disk add (step 7).
+- **Read the agent's env with `systemctl show beszel-agent -p Environment`, not
+  `systemctl cat beszel-agent | grep EXTRA_FILESYSTEMS`.** All three agents
+  have a `.service.d/override.conf`; grepping `cat` for one variable hides the
+  drop-in's other contents and invites the wrong conclusion about where a
+  setting lives. `show` prints the merged, effective value.
+- Extra-filesystem labels come from the agent (`path__label`), not the hub —
+  there is no rename in the UI, and renaming starts a fresh history series.
+- **The step 6 hub relocation did not update the agents' `HUB_URL`.** Both PVE
+  agents kept pointing at the retired hub LXC `.102` (found 2026-09-02); ciri,
+  built after the move, correctly says `.204`. Inert under the default
+  hub-polls-agent mode on 45876 — which is how all three report — but it would
+  break them if the connection is ever flipped to the agent-dials-hub
+  WebSocket mode. Override it in the drop-in rather than the installer-owned
+  unit file:
+
+  ```ini
+  # /etc/systemd/system/beszel-agent.service.d/override.conf
+  [Service]
+  Environment="HUB_URL=http://<LAN_PREFIX>.204:8090"
+  ```
+
+  `HUB_URL` is independent of the `KEY`/`TOKEN` registration pair, so this
+  corrects an address without re-registering the system or losing history.
 
 ## Next steps (not yet built)
 
