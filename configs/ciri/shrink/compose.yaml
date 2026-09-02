@@ -1,0 +1,62 @@
+# Stack: shrink — local PDF and image size reduction for upload forms.
+# Design + runbook: docs/proposals/009-document-shrinker.md
+# Mirror of ciri:/data/stacks/shrink/compose.yaml (CLAUDE.md mirror rule).
+#
+# The point of this stack is that sensitive documents never leave the lab.
+# Two consequences are load-bearing, not cosmetic:
+#   - stirling's /tmp is a tmpfs, so working copies live in RAM and never
+#     reach the zvol, a ZFS snapshot, or the nightly PBS job;
+#   - mazanoke has no volumes at all, because it compresses in the browser.
+
+services:
+  stirling:
+    image: docker.io/stirlingtools/stirling-pdf:2.14.3
+    container_name: stirling-pdf
+    restart: unless-stopped
+    ports:
+      # 8080 on ciri is qBittorrent's, published from gluetun's netns.
+      # The container port stays 8080; only the host side moves.
+      - "8081:8080"
+    volumes:
+      - ./stirling/configs:/configs
+      - ./stirling/logs:/logs
+    tmpfs:
+      # settings.yml.template: system.tempFileManagement.baseTmpDir defaults to
+      # <java.io.tmpdir>/stirling-pdf, i.e. under /tmp. Putting /tmp in RAM is
+      # therefore enough to keep every working copy off the disk.
+      - /tmp:rw,noexec,nosuid,nodev,size=1g
+    environment:
+      TZ: Asia/Kolkata
+      SYSTEM_DEFAULTLOCALE: en-GB
+      # Upstream default is null, which prompts the admin on first launch.
+      # This instance sees passports and bank statements: answer it here.
+      SYSTEM_ENABLEANALYTICS: "false"
+      # Login stays ON: the published LAN port bypasses Caddy entirely, so
+      # auth has to live in the app (proposal 008 §4 made the same call).
+      SECURITY_ENABLELOGIN: "true"
+      # Seeds the admin account on first start instead of leaving the
+      # documented admin/stirling default in place. Safe to delete once the
+      # account exists — /configs is the source of truth from then on.
+      SECURITY_INITIALLOGIN_USERNAME: ${STIRLING_USER:?set in .env}
+      SECURITY_INITIALLOGIN_PASSWORD: ${STIRLING_PASSWORD:?set in .env}
+      # Default is 24 h, which lets a 1 G tmpfs accumulate a day of scans in
+      # RAM. Cleanup runs every 30 min by default, so 1 h bounds it tightly.
+      SYSTEM_TEMPFILEMANAGEMENT_MAXAGEHOURS: "1"
+      # Server-side storage and link sharing are off upstream too. Set them
+      # explicitly so a future change of default cannot turn them on quietly.
+      STORAGE_ENABLED: "false"
+      STORAGE_SHARING_ENABLED: "false"
+
+  mazanoke:
+    image: ghcr.io/civilblur/mazanoke:v1.1.6
+    container_name: mazanoke
+    restart: unless-stopped
+    ports:
+      - "3474:80"
+    environment:
+      TZ: Asia/Kolkata
+      # Both must be set or basic auth is not applied at all. If the browser
+      # prompt breaks the home-screen install (test C6), delete both — there
+      # is no data behind this gate, only an open compressor.
+      USERNAME: ${MAZANOKE_USER:?set in .env}
+      PASSWORD: ${MAZANOKE_PASSWORD:?set in .env}

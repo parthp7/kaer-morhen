@@ -165,8 +165,8 @@ signed off**, since the previous image is half the rollback.
 
 | Tier | Services | Handling |
 |---|---|---|
-| 0 | nebula-sync, flaresolverr, searxng, alpine, memos | Bulk, one pass |
-| 1 | seerr, bazarr, prowlarr, open-webui, ollama, couchdb (3.x) | One stack at a time |
+| 0 | nebula-sync, flaresolverr, searxng, alpine, memos, mazanoke | Bulk, one pass |
+| 1 | seerr, bazarr, prowlarr, open-webui, ollama, couchdb (3.x), stirling-pdf | One stack at a time |
 | 2 | Immich, Paperless, Sonarr, Radarr, qBittorrent, gluetun, Jellyfin, Sure | Own window each |
 | 3 | postgres majors, redis 7.4→8, valkey, Immich's pg14+VectorChord | **Own proposal** — dump+restore |
 
@@ -393,6 +393,8 @@ cannot name a version it never recorded.
 | servarr | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | — | 0 |
 | servarr | bazarr | `lscr.io/linuxserver/bazarr:version-v1.6.0` | — | 1 |
 | servarr | seerr | `ghcr.io/seerr-team/seerr:v3.4.1` | `fallenbagel/jellyseerr:2.7.3` (renamed 2026-08-24) | 1 |
+| shrink | stirling | `docker.io/stirlingtools/stirling-pdf:2.14.3` | — | 1 |
+| shrink | mazanoke | `ghcr.io/civilblur/mazanoke:v1.1.6` | — | 0 |
 | sure | web / worker | `ghcr.io/we-promise/sure:0.7.3` | `ghcr.io/we-promise/sure:0.7.2` | 2 |
 | sure | db | `postgres:16` ⚠️ **floating** — now **16.15** | — | 3 |
 | sure | redis | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | — | 3 |

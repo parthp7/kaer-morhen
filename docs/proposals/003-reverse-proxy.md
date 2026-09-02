@@ -16,6 +16,8 @@
   2026-08-23, state and next experiment in §7.** Audiobookshelf was retired
   2026-08-24 — the plan was abandoned rather than deployed, and its route and
   DNS record were removed, so `books.kaermorhen.fyi` no longer exists (§3).
+  **Two routes added 2026-09-02** by [proposal 009](009-document-shrinker.md):
+  `pdf` and `img`, taking `dns.hosts` from 35 records to 37.
 - **Date**: 2026-08-08 (domain settled 2026-08-09)
 - **Scope**: new LXC 202 on `yennefer`; DNS records on pihole-1
   ([dns.md](../dns.md)); Tailscale split-DNS addition

@@ -167,11 +167,33 @@ Full set as of 2026-07-13:
 | ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — deployed 2026-08-05; runs a real NVENC encode inside the jellyfin container, see below |
 | proxy-caddy | Ping | `<LAN_PREFIX>.202` | reverse proxy liveness — added 2026-08-23 ([proposal 003](proposals/003-reverse-proxy.md)) |
 | proxy-tls | HTTPS | `https://memos.kaermorhen.fyi` | proxy **plus** certificate expiry (expiry notification on, TLS errors not ignored). Backend up + proxy-tls down isolates the fault to the proxy. Needs a static `/etc/hosts` entry on 104 — see gotchas |
+| pdf-stirling | HTTP | `http://<LAN_PREFIX>.150:8081` | Stirling-PDF, added 2026-09-02 ([shrink](../configs/ciri/shrink/README.md)). Green on a **plain** monitor despite login being on: Spring answers a browser `Accept` with 302 → `/login` → 200, and only `Accept: */*` gets a bare 401 |
+| image-mazanoke | HTTP + Basic Auth | `http://<LAN_PREFIX>.150:3474` | Mazanoke, added 2026-09-02. **Needs Kuma's HTTP Basic Auth**: nginx answers every HTML path with 401 regardless of `Accept`, so a plain monitor reports a healthy service down. See below |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's
 per-container view (and gluetun indirectly by the qbittorrent monitor). Note these are
 liveness only: **they cannot see a VPN leak or port-forwarding degraded to 0** — see Next steps.
+
+Shrink monitors added 2026-09-02 ([proposal 009](proposals/009-document-shrinker.md)).
+Both services require a login, and the two behaved differently, which is worth
+knowing before adding any monitor to an authenticated app:
+
+- **Stirling passes a plain HTTP monitor.** Spring Security content-negotiates
+  its rejection: an API-style `Accept: */*` gets a bare **401**, while a
+  browser-style `Accept: text/html` gets a **302** to `/login`, which renders
+  200. Kuma sends browser-ish headers and follows the redirect, so the monitor
+  is green *and* is genuinely proving the app renders a page. A `curl -I` by
+  hand returns 401 and looks alarming; it is not.
+- **Mazanoke does not.** Its nginx basic auth answers **401** to every HTML
+  path regardless of `Accept`, so a default monitor calls a healthy service
+  down. Fixed by setting the monitor's authentication method to **HTTP Basic
+  Auth** with the stack's credentials, which also proves the real page is
+  served. Two alternatives were rejected: adding `401` to the accepted status
+  codes (keeps credentials out of Kuma, but then a broken bundle behind a
+  working nginx still reads green), and pointing at `/manifest.json`, which is
+  one of the few paths that answers 200 unauthenticated but is undocumented
+  and could vanish in a version bump.
 
 ### The media-mount Push monitor (added 2026-07-29) — and what it fixes
 

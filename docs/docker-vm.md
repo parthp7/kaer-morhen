@@ -399,6 +399,7 @@ plus `.env.example` + README).
 | servarr | 2026-07-25 | TV + Movies download/import stack: gluetun (Proton WireGuard **kill-switch verified**) + qBittorrent, Prowlarr, Sonarr, Radarr, Bazarr, Seerr, FlareSolverr. Writers run as dedicated non-root `jaskier` (13000); imports **hardlink** into `/mnt/media/library`. Ports 8080/9696/8989/7878/6767/5055/8191. Open follow-up: Proton port-forward → qBit. Audiobooks (Readarr) dropped as EOL ([as-built](../configs/ciri/servarr/README.md)) |
 | ai | 2026-07-31 | local LLM stack — Ollama (11434, OpenAI-compatible LAN API), Open WebUI (8090, chat + web search + RAG), SearXNG (internal-only). GPU via CDI, **shares the 1060 with Jellyfin**; model weights on the `backup=0` scsi2 disk at `/mnt/ai-models`. Drives Sure's AI chat ([proposal 002](proposals/002-local-ai-stack.md), [as-built](../configs/ciri/ai/README.md)) |
 | obsidian-sync | 2026-08-05 | CouchDB 3.5.2.1 (5984) as the replication target for Obsidian Self-hosted LiveSync; Obsidian itself runs on the client, and its AI comes from the `ai` stack over the LAN ([as-built](../configs/ciri/obsidian-sync/README.md)) |
+| shrink | 2026-09-02 | document size reduction for upload forms: Stirling-PDF (8081 — 8080 is qBit's) + Mazanoke (3474). Stirling's `/tmp` is a **tmpfs**, so working copies of scans never reach the zvol or the PBS job; Mazanoke compresses in the browser and holds no volumes at all ([proposal 009](proposals/009-document-shrinker.md), [as-built](../configs/ciri/shrink/README.md)) |
 
 ## Next steps (not yet built)
 
