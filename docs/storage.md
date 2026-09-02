@@ -33,7 +33,7 @@ deliberately excluded from backup:
 | scsi0 | 64 G | `/` | yes |
 | scsi1 | 64 G | `/data` — Docker data-root + every stack's app data | yes |
 | scsi2 | 64 G | `/mnt/ai-models` — Ollama model weights | **no — `backup=0`** |
-| scsi3 | 100 G | `/mnt/torrents` — in-flight torrent scratch (`incomplete/`) | **no — `backup=0`** |
+| scsi3 | 150 G | `/mnt/torrents` — in-flight torrent scratch (`incomplete/`) | **no — `backup=0`** |
 
 scsi2 was added 2026-07-31 for the AI stack ([proposal 002](proposals/002-local-ai-stack.md)).
 The `backup=0` flag is the point of it: ~29 GB of GGUF weights are
@@ -48,6 +48,20 @@ that is deleted the moment a download completes. Its real job is to keep random
 write I/O off the SMR USB disk — qBittorrent downloads to NVMe, then performs its
 own move-on-completion to the media share as a single **sequential** write, which
 is the SMR-friendliest workload there is.
+
+**Grown 100 G → 150 G on 2026-09-02**, online and with no restart — exactly the
+procedure [proposal 005](proposals/005-nfs-media-share.md) §"Sizing the scratch
+disk" anticipated:
+
+```bash
+⚙️ ssh lab-geralt 'qm resize 150 scsi3 +50G'
+⚙️ ssh lab-ciri   'sudo resize2fs /dev/disk/by-label/torrents'
+```
+
+The trigger was three concurrent 4K UHD REMUXes overrunning the original 100 G —
+see [Incident 2026-09-02](#incident-2026-09-02--torrent-scratch-exhausted-by-three-4k-remuxes).
+The 100 G figure was sized for "two season packs + two movies ≈ 80–120 G", an
+assumption 4K REMUX invalidates on its own.
 
 (`/mnt/photos` is a virtiofs share and `/mnt/media` an NFS mount; both are
 excluded for a different reason — PBS only sees the guest's own disks.)
@@ -717,3 +731,202 @@ things written above:
 **Still open:** `resend_interval` on ~29 remaining monitors — which, note, is the
 one fix on the list above that would have shortened *this* incident, and it is
 still the cheapest.
+
+### Postscript 2026-09-02 — the link fault is still live, and self-healing hid it
+
+Measured on geralt at **uptime 8 d 21 h**: **54 `USB disconnect` events and 54
+`Aborting journal on device` events.** The disk drops off `usb 1-3` every few
+hours — 09-01 at 07:15, 09:18, 09:58, 10:05, 13:03, 17:30, 20:20, 22:12, 22:27;
+09-02 at 02:08, 04:16, 05:14, 05:43, 11:25, 14:01 — and re-enumerates under a new
+kernel name each time (it has walked `sdm → sdn → sdp → sdq → sdv …`; always
+address it as `/dev/disk/by-id/usb-Seagate_BUP_Slim_BK_<SERIAL>-0:0`, never
+`/dev/sdX`).
+
+**The SMR question is now closed, definitively.** `188 Command_Timeout` reads
+**65558** — the *same value* recorded at the 08-22 diagnosis. That is **+0 in
+eleven days** and **+1 in the twenty-nine days** since the 08-04 baseline of
+65557, across +687 power-on hours. The UAS quirk beat the stall mechanism and
+kept beating it. The platters remain pristine:
+
+| Attribute | 08-22 | 09-02 |
+|---|---|---|
+| 188 Command_Timeout | 65558 | **65558** |
+| 5 Reallocated_Sector_Ct | 0 | 0 |
+| 197 Current_Pending_Sector | 0 | 0 |
+| 198 Offline_Uncorrectable | 0 | 0 |
+| 187 Reported_Uncorrect | 0 | 0 |
+| 199 UDMA_CRC_Error_Count | 0 | 0 |
+| 9 Power_On_Hours | 2119 | 2396 |
+| 12 Power_Cycle_Count | — | 311 |
+| 4 Start_Stop_Count | — | 667 |
+| 191 G-Sense_Error_Rate | 10 | 10 |
+| 194 Temperature_Celsius | — | **47 (max 51)** |
+
+**This reverses the 08-23 note that the cable is "less urgent than it was".**
+`/sys/bus/usb/devices/1-3/speed` reads **480** again, having been back at 5000 on
+08-23. With the SMR mechanism ruled out and every media counter at zero, the
+physical link is not merely the leading suspect — it is the only one left. The
+cable, the port and the enclosure's power delivery are the cheap tests, and
+47 °C (max 51) in a plastic 2.5" enclosure is worth ruling out alongside them.
+
+### The uncomfortable part: the fix worked, and that is why nobody noticed
+
+[Proposal 005](proposals/005-nfs-media-share.md)'s self-healing mount performed
+exactly as designed, 54 times. The 14:01 drop is representative:
+
+```
+14:01:04  usb 1-3: USB disconnect, device number 53
+14:01:04  EXT4-fs (sdm1): shut down requested (2) / Aborting journal on device sdm1-8
+14:01:04  usb 1-3: new high-speed USB device number 54 … attaches as sdn
+14:01:15  media-autoheal: /mnt/media is mounted but not readable — detaching the dead mount
+14:01:28  media-autoheal: /mnt/media remounted and readable
+14:01:29  media-autoheal: export refreshed — media path healed end to end
+```
+
+**~14 s, end to end**, matching the 13 s measured under fault injection on 08-23.
+ciri blocks on the `hard` NFS mount and resumes; no container restarts, no VM
+restart, no human.
+
+That is the correct outcome, and it carries a cost this incident log should
+record plainly: **a hardware fault that fires every few hours produced no outage,
+and therefore produced no pressure to fix the hardware.** The 08-10 incident ran
+twelve days and was impossible to ignore once seen. Its successor ran fifty-four
+times in nine days and was invisible. Detection is not the gap this time —
+`media-autoheal` and the Kuma monitors all fired correctly; each event simply
+heals faster than it can accumulate into anything a human would look at.
+
+The one place the deterioration stayed visible was a service nobody was reading
+the logs of. qBittorrent, seeding from `/data/downloads/complete`, floods:
+
+```
+File error alert. Torrent: "…". File: "/data/downloads/complete/….mkv".
+  Reason: "… file_read (…) error: I/O error"
+```
+
+every one to two seconds while the mount is dead. Two second-order effects:
+
+- **It shreds qBittorrent's own log history.** qBittorrent rotates
+  `qbittorrent.log` at 64 KB and keeps *every* `.bak` — the directory held
+  **1,301 files / 92 MB** at diagnosis. The `No space left on device` entries
+  from the 13:40 event the same day had already been rotated out of reach within
+  the hour.
+- **That directory lives on ciri's `scsi1` (`/data`), which _is_ in the nightly
+  PBS job** — unlike the two `backup=0` scratch disks. It is small in absolute
+  terms today and growing on a fault-driven schedule.
+
+**Standing lesson:** an auto-healer that hides a fault completely must be paired
+with something that *counts* the fault. A drop that self-repairs in 14 s is still
+a drop, and 54 of them is a hardware trend. `dmesg -T | grep -c "USB disconnect"`
+against uptime is the whole check.
+
+### Fixes, and which failure each one answers (2026-09-02)
+
+| Fix | Answers |
+|---|---|
+| **Replace the USB cable; if the drops persist, the enclosure** — then confirm `/sys/bus/usb/devices/1-3/speed` returns to `5000` and stays there | the **root cause**, now the only remaining suspect. Promoted back to urgent — this reverses the 08-23 downgrade |
+| Check thermals — 47 °C running, 51 °C peak | a plausible contributing mechanism for bus-power drops, and free to eliminate |
+| **Count the drops.** A monitor on `USB disconnect` events per unit uptime, alerting on rate rather than on outage | the fact that 54 faults produced no signal a human acted on, because each one healed in 14 s |
+| Cap qBittorrent's log retention | 1,301 files / 92 MB of rotated logs on a PBS-backed disk, and the loss of forensic history exactly when it is needed |
+| ~~Auto-remount on re-enumeration~~ — **DONE 2026-08-23**, verified 54× in production | the 12-day outage. This one is finished; the evidence above is it working, not failing |
+
+## Incident 2026-09-02 — torrent scratch exhausted by three 4K REMUXes
+
+The first failure of the `scsi3` scratch disk added by
+[proposal 005](proposals/005-nfs-media-share.md), and the first media-stack
+incident with **no hardware fault and no collateral** — a pure capacity-planning
+miss. Detection worked, the blast radius was exactly what the design predicted,
+and the whole thing was contained to the disposable disk.
+
+### What happened
+
+Radarr grabbed three 4K UHD BluRay REMUXes within one minute:
+
+| Torrent | Full size |
+|---|---|
+| `Crime.101.2026 … REMUX` | 79.9 G |
+| `28.Years.Later.The.Bone.Temple.2026 … REMUX` | 69.1 G |
+| `Minions.And.Monsters.2026 … REMUX` | 62.1 G |
+| **combined** | **211.1 G** onto a 100 G disk |
+
+| When (IST) | Event |
+|---|---|
+| 12:44–12:45 | all three added; `max_active_downloads` was **3**, so all three ran at once |
+| 13:40:36 | `/mnt/torrents` hits 0 bytes free. All three error in the *same second*: `file_write (…) error: No space left on device` |
+| 13:40 → | Beszel alerts on `/mnt/torrents` |
+| ~13:55 | user pauses two, resizes 100 G → 150 G, sets `max_active_downloads` 3 → 2 and preallocation **on** |
+| 13:57:08 | `EXT4-fs (sdd): resized filesystem from 26214400 to 39321600 blocks` — online, no restart |
+
+Only **one** of the three could ever have completed. Usable space was ~93 G
+(5 % ext4 root reserve; qBittorrent runs as `jaskier`/13000). The largest alone,
+79.9 G, fits. The two *smallest* together — 62.1 + 69.1 = 131.2 G — do not.
+
+### Why it filled silently instead of refusing at add time
+
+`preallocate_all` was **off**, so libtorrent wrote sparse files. Apparent size on
+disk was 213 G against 93 G actually allocated: qBittorrent accepted all three
+without complaint, wrote for **56 minutes**, and discovered the wall only when
+the last block of the filesystem was gone. With preallocation on, the third add
+fails immediately and loudly instead of taking the other two down with it an hour
+later.
+
+Verified after the change: a newly-added torrent got a full-size file with **0
+blocks allocated** and errored at 0 % within seconds. Note the scope —
+**preallocation only binds torrents added after the change.** libtorrent stores
+the storage mode in resume data, so the three already in flight stayed sparse
+(one showed 50 G allocated against 70 G apparent while running).
+
+### Why the pipeline stopped rather than degraded
+
+Three compounding behaviours, all worth knowing before the next time:
+
+- **qBittorrent never retries an errored torrent.** It stays errored after space
+  is freed; it needs a manual resume. A client or VM restart does not help — it
+  rechecks, resumes, and re-errors in seconds if space is still short.
+- **Errored torrents still hold download-queue slots.** With
+  `max_active_downloads = 3` and all three slots held by torrents that could
+  never finish, the next Radarr grab sat in `queuedDL` behind them. Every
+  subsequent \*arr grab would have queued behind them too — head-of-line
+  blocking, indefinitely.
+- **Radarr will not clean up after itself.** It maps qBittorrent's `error` state
+  to **Warning, not Failed** (`errorMessage: "qBittorrent is reporting an
+  error"`), so despite `removeFailedDownloads: true` it does **not** blacklist
+  the release, re-search, or remove anything. The upside is no re-grab storm
+  chewing bandwidth; the downside is no self-recovery and no timeout. It waits
+  forever.
+
+### Why detection worked this time
+
+**Beszel alerted on `/mnt/torrents`**, which is the first media-adjacent incident
+in this log where the alerting story is simply "it worked". Proposal 005 §
+Monitoring had deliberately deferred a dedicated check — *"Beszel's agent already
+graphs guest disks; add a dedicated check only if it ever actually bites."* It
+bit, and the deferred-by-design coverage held. **No Uptime Kuma monitor is needed
+for scratch free space.**
+
+### Collateral
+
+**None**, and by construction. The `backup=0` scratch zvol is the only thing that
+filled:
+
+| Filesystem | State during the incident |
+|---|---|
+| `/mnt/torrents` (scsi3, scratch) | **100 % full** — the entire blast radius |
+| `/data` (scsi1, Docker + app data) | 49 % — untouched |
+| `/mnt/media` (NFS from geralt) | 52 %, 443 G free — untouched |
+| `pve-root` | untouched |
+
+The hardlink contract held, no nightly PBS snapshot was inflated, no import ran
+against the wrong filesystem, and nothing repeated the 07-27 pattern. Wasted
+bandwidth across the three torrents totalled 0.22 G. This is the separate-disposable-disk
+design doing precisely its job — the failure was loud, local and cheap.
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| **DONE** — `scsi3` 100 G → 150 G, online | the immediate exhaustion. 4K REMUX at 60–90 G per title invalidates the original "two season packs + two movies ≈ 80–120 G" sizing |
+| **DONE** — `max_active_downloads` 3 → 2 | three oversized torrents occupying every slot at once |
+| **DONE** — `preallocate_all` **on** | the 56-minute silent fill. Now fails at 0 % in seconds, at add time, on the torrent that does not fit — and only that one |
+| **DECLINED** — a Radarr/Sonarr quality or size cap | would have prevented the grab outright. The user declined it deliberately; do not re-propose. Consequently `max_active_downloads = 2` plus fail-fast preallocation are the *entire* guardrail, and 148 G still cannot hold a worst-case pair of 4K REMUXes — expect to hand-sequence large batches |
+| Resume errored torrents by hand after space frees | qBittorrent's refusal to retry. There is no automatic recovery path; a stuck `error` torrent is a manual step, always |
+

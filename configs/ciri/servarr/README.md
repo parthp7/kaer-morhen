@@ -73,6 +73,23 @@ a local NVMe scratch disk (`/mnt/torrents/incomplete`), so in-flight random writ
 off the USB disk. Completed files are moved to `downloads/complete` by qBittorrent
 itself, back onto the share — so the import is still a hardlink.
 
+**Scratch sizing, and the limits that protect it (revised 2026-09-02).** The
+scratch is `scsi3`, **150 G** (grown from 100 G), `backup=0`. Three settings hold
+the line together — all three matter, none is sufficient alone:
+
+| Setting | Value | Why |
+|---|---|---|
+| `scsi3` size | **150 G** | 4K UHD REMUX runs 60–90 G *per title*; the original 100 G was sized for "two season packs + two movies ≈ 80–120 G" |
+| `max_active_downloads` | **2** (was 3) | three concurrent REMUXes (211 G combined) filled the 100 G disk in 56 minutes on 2026-09-02 |
+| `preallocate_all` | **on** (was off) | a torrent that does not fit now fails at 0 % within seconds, at add time. Sparse mode let it fill silently for an hour, then error *every* in-flight download at once |
+
+A Radarr/Sonarr quality or size cap was **declined deliberately** — so those
+three are the *entire* guardrail, and 150 G still cannot hold a worst-case pair
+of 4K REMUXes. Expect to hand-sequence large batches. Note `preallocate_all`
+binds only torrents added *after* the change: libtorrent stores the storage mode
+in resume data, so anything already in flight stays sparse. Full incident:
+[storage.md](../../../docs/storage.md#incident-2026-09-02--torrent-scratch-exhausted-by-three-4k-remuxes).
+
 ```
 Prowlarr ─(indexers, via FlareSolverr for CF sites)→ Sonarr / Radarr / Seerr(requests)
                               │ grab → qBittorrent API (http://gluetun:8080)
@@ -283,6 +300,11 @@ must lose all connectivity, proving no fall-back to the home line:
   proposal 003 §7 for the full story.
 - Downloads: default save path `/data/downloads/complete`, incomplete `/data/downloads/incomplete`,
   keep incomplete in that separate folder.
+- Downloads → **"Pre-allocate disk space for all files" = ON** (set 2026-09-02). This is what
+  makes an oversized grab fail loudly at 0 % instead of filling the scratch disk silently over
+  an hour and then erroring every in-flight torrent at once.
+- Tools → Options → BitTorrent → **Maximum active downloads = 2** (was 3). See the scratch
+  sizing table above — with 4K REMUX in the mix this is a capacity limit, not a bandwidth one.
 
 ### 7. Prowlarr → *arr wiring (TV + Movies)
 - **Apps**: Prowlarr (`:9696`) → Settings → Apps → add **Sonarr** (`http://sonarr:8989`) and
@@ -418,6 +440,32 @@ renamed, which is cosmetic.
   Incidental finding while probing: the WAN path MTU is **below 1500** — a 1500-byte
   packet to `1.1.1.1` is dropped while 1400 passes, though every ciri interface is
   MTU 1500. That is unrelated to this symptom but worth its own look someday.
+- **When the scratch disk fills, the pipeline stops — it does not degrade.** Three
+  behaviours compound, and none of them self-heals (learned 2026-09-02):
+  1. **qBittorrent never retries an errored torrent.** It stays errored after space is
+     freed and needs a **manual resume**. Restarting the container or the VM does *not*
+     help — it rechecks, resumes, and re-errors in seconds if space is still short.
+  2. **Errored torrents still hold download-queue slots.** Fill every slot with torrents
+     that can never finish and the next \*arr grab sits in `queuedDL` behind them
+     indefinitely — head-of-line blocking, not slowdown.
+  3. **Radarr will not clean up after itself.** It maps qBittorrent's `error` state to
+     **Warning, not Failed** (`errorMessage: "qBittorrent is reporting an error"`), so
+     despite `removeFailedDownloads: true` it does **not** blacklist the release,
+     re-search, or remove anything. No re-grab storm — but no timeout and no recovery
+     either. It waits forever.
+
+  Diagnose with `ssh lab-ciri 'df -h /mnt/torrents'` and qBittorrent's own log; **Beszel
+  already alerts on this mount** (it fired correctly on 2026-09-02), so no Uptime Kuma
+  monitor is needed for scratch free space.
+- **A `file_read … error: I/O error` flood on `/data/downloads/complete` is not a servarr
+  problem** — it is the media USB disk dropping off geralt's bus. Check
+  `ssh lab-geralt 'dmesg -T | grep -c "USB disconnect"'` against geralt's uptime *before*
+  suspecting anything in this stack (54 drops in 8 d 21 h at the 2026-09-02 reading). The
+  005 auto-healer repairs each one in ~14 s, so the mount looks fine by the time you look.
+  Two side effects worth knowing: the flood rotates qBittorrent's log hard (it rotates at
+  64 KB and keeps *every* `.bak` — 1,301 files / 92 MB at diagnosis, on `/data`, which
+  **is** in the nightly PBS job), and it destroys forensic history exactly when you want
+  it. See [storage.md](../../../docs/storage.md#postscript-2026-09-02--the-link-fault-is-still-live-and-self-healing-hid-it).
 - **Slow shared disk** — bandwidth is shared with Jellyfin reads. In qBittorrent cap the
   global rate and max active torrents so a big download can't starve a live transcode.
   Disk is **disposable** — a drop means re-download. *(Corrected 2026-07-29: this said
