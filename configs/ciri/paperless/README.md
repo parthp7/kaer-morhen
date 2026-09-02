@@ -208,12 +208,30 @@ qpdf --encrypt --user-password=testpw123 --owner-password=own456 --bits=256 -- \
 | mount | `rw=false` — the container cannot alter the hook or the password list |
 | `title-test__pw=testpw123.pdf` (post-consume, doc 15) | title and `original_filename` → `title-test`; original + archive not encrypted |
 | search index after the rename | `title-test` → `[15]`, `CHARLIE` → `[15]`, `testpw123` → `[14]` only (doc 14 predates the hook) |
+| a real encrypted PDF, plain filename, password from the list | `matched via password file line 1`, decrypted, consumed; stored original `--is-encrypted` and `--requires-password` both exit 2 |
+| post-consume gate on that upload | exited 0 in **85 ms** — no `__pw=` in the name, so no Django bootstrap (vs ~8 s when it does run) |
 
-> A *successful* match through `pdf-passwords.txt` has not been exercised yet —
-> the first test matched via the filename suffix, and the list entry was loaded
-> and tried (the log says "loaded N password(s)") but did not match that file.
-> The decrypt path itself is shared, so this is a gap in coverage, not a known
-> defect.
+All three password routes are now exercised: the empty password is tried on
+every encrypted file, the `__pw=` suffix was covered by the synthetic tests, and
+a real encrypted PDF was consumed with its password read from
+`pdf-passwords.txt` (`matched via password file line 1`) with no filename
+gymnastics — which is the everyday path this was built for.
+
+### A decrypted document with no archive PDF is normal
+
+A document that came through this hook may show `archive_path = None`. That is
+**not** a symptom of the decryption. `should_produce_archive()`
+(`consumer.py:122`) skips the PDF/A archive for *born-digital* PDFs under the
+default `ARCHIVE_FILE_GENERATION=auto`: the original already carries a real text
+layer, so it is the readable, searchable copy and a rendition would add nothing.
+Scanned/image documents, and PDFs whose text layer is too thin to count as born
+digital, still get one.
+
+This is worth knowing because the pre-hook failure mode *also* produced a
+document with no archive — but with **empty content**. The two look alike in the
+document list and are opposites underneath. The discriminator is `content`: a
+healthy born-digital import has text (a real 1-page document verified here had
+975 characters); the old encrypted-import failure had zero.
 
 ## v3 upgrade (2026-08-24)
 
