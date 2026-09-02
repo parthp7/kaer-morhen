@@ -28,6 +28,9 @@ services:
       - ./media:/usr/src/paperless/media
       - ./export:/usr/src/paperless/export
       - ./consume:/usr/src/paperless/consume
+      # Pre-consume hook + its password list. Read-only: the container never
+      # writes here, and the image ships no /usr/src/paperless/scripts to shadow.
+      - ./scripts:/usr/src/paperless/scripts:ro
     environment:
       PAPERLESS_REDIS: redis://broker:6379
       # v3 no longer infers the engine from PAPERLESS_DBHOST — it must be
@@ -44,6 +47,15 @@ services:
       # v3 consumes duplicates by default; this preserves the v2 behaviour of
       # discarding a re-scanned file instead of creating a second document.
       PAPERLESS_CONSUMER_DELETE_DUPLICATES: ${PAPERLESS_CONSUMER_DELETE_DUPLICATES:-true}
+      # Decrypts password-protected PDFs before the parser sees them. Without
+      # it, ocrmypdf raises EncryptedPdfError, the parser swallows it, and the
+      # file imports as a silently empty, unsearchable document whose stored
+      # original still prompts for a password. See scripts/pre-consume-decrypt.sh.
+      PAPERLESS_PRE_CONSUME_SCRIPT: /usr/src/paperless/scripts/pre-consume-decrypt.sh
+      # Cosmetic follow-up: strips the `__pw=` suffix the pre-consume escape
+      # hatch leaves in the title, which paperless takes from the upload
+      # filename and the hook above cannot rename. Never fails a consume.
+      PAPERLESS_POST_CONSUME_SCRIPT: /usr/src/paperless/scripts/post-consume-strip-pw.sh
       # Set only if served behind a reverse proxy / real hostname (CSRF origin).
       PAPERLESS_URL: ${PAPERLESS_URL:-}
     networks:

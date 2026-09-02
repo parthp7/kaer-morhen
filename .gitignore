@@ -1,1 +1,5 @@
 secrets.local.*
+
+# Real PDF ingest passwords for the paperless pre-consume hook.
+# The .example template stays tracked; the live file exists only on ciri.
+pdf-passwords.txt
