@@ -273,6 +273,19 @@ true NVMe drives.
 ## Switch
 
 - **Model**: TP-Link TL-SG108E — 8-port Gigabit "Easy Smart" switch
+- **Hardware version**: **V6**. The rear label reads `IN/6.8`, which is TP-Link's
+  `Region Code/X.X` label format — region IN (India), hardware version 6.8. Their
+  version-equivalency rule folds sub-versions into the primary (`Vx.6`/`Vx.8`/`Vx.9`
+  → `Vx.0`), so **every V6 spec and firmware applies**. Confirmed against TP-Link's
+  V6 download page; the latest published firmware is
+  `TL-SG108E(UN)_V6_1.0.0 Build 20230218` (not applied — the unit still ships its
+  factory build). **Upgrading is deliberately deferred** until the VLAN work in
+  [network.md](network.md) actually starts — there is nothing to gain before then,
+  and an interrupted flash on this model is a documented way to lose the web UI
+  permanently. Record this, because version-blind advice about this model is
+  frequently wrong: V1 has no web UI at all, and V1–V3 take a different supply
+  voltage (see below).
+- **Serial / MAC**: `<SWITCH_SERIAL>` / `<SWITCH_MAC>`
 - **Type**: Easy Smart (L2 lite-managed) — web GUI management, not CLI/SSH-managed.
   Supports port-based/802.1Q VLANs (up to 32), port-based & 802.1p/DSCP QoS (4 queues),
   port mirroring, static link aggregation (LAG), IGMP snooping, and broadcast storm
@@ -287,6 +300,49 @@ true NVMe drives.
 | 2–6 | Unused |
 | 7 | geralt |
 | 8 | yennefer |
+
+### Power requirement — verified 2026-09-04 against the TP-Link V6 spec sheet
+
+| Field | Value |
+|---|---|
+| Adapter output | **5 VDC / 0.6 A** (3 W DC) |
+| Max power consumption | 3.68 W @ 220 V/50 Hz |
+| Max heat dissipation | 12.55 BTU/h |
+| DC barrel connector | **3.5 × 1.35 mm, centre positive** |
+| AC side | 2-pin Type C wall wart, fits a Type D 5 A socket |
+
+Two traps, both version-linked — check the hardware version before buying anything
+that plugs into this switch:
+
+- **V1–V3 take 9 VDC / 0.6 A.** This unit is V6, so 5 V is correct. Never source a
+  replacement adapter or a DC UPS from the model name alone.
+- **The barrel is 3.5 × 1.35 mm, not the ubiquitous 5.5 × 2.1 mm.** Nearly every
+  generic adapter and every router mini-UPS sold in India terminates in 5.5 × 2.1 mm
+  and will not physically fit without a pigtail.
+
+With only 3 of 8 ports linked (uplink + geralt + yennefer) real draw sits well under
+the 3.68 W ceiling — budget **~1.5–2.5 W** when sizing backup.
+
+### DC backup options for this switch
+
+Scope note: [proposal 007](proposals/007-ups-power-protection.md) sizes a lab-wide
+**AC** UPS for the Proxmox nodes. This section covers only the switch's own **DC**
+requirement, which is small enough to solve independently and far more cheaply.
+
+Both nodes hold working batteries and are already on an incidental UPS (see the
+battery notes above), so during a mains cut the switch and the ISP's GPON router are
+what actually drop. **Backing up the switch alone buys nothing** — if the router is
+down the LAN is dead regardless — so any solution must cover both, or be paired with
+router backup.
+
+| Option | Cost | Notes |
+|---|---|---|
+| Pass-through USB power bank + USB-A → DC 3.5 × 1.35 mm cable | **₹159–290** | Cheapest by far. USB is natively 5 V, so no conversion and no pigtail. Only behaves as a true UPS if the bank supports pass-through charging. |
+| Resonate RouterUPS CRU5V (5 V / 2 A) | ₹1,799–1,999 list | Correct voltage; needs a 5.5 × 2.1 → 3.5 × 1.35 pigtail. Out of stock everywhere except IndiaMART (₹2,911) as of 2026-09-04. |
+| Oakter Mini UPS Basic / Cuzor 12 V 2 A | ₹899–1,499 | **Do not buy — these are 12 V.** Feeding 12 V to a 5 V switch destroys it. They are the cheapest units on the market and the easiest mistake to make here. |
+
+At ~2 W, a 4000 mAh (≈14.8 Wh) pack yields roughly **6–8 h** of switch uptime; vendor
+"4 hour" claims assume a 12 V/1 A router drawing ~12 W, i.e. 5–6× this load.
 
 ## Proxmox-specific notes
 
