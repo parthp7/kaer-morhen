@@ -216,6 +216,20 @@ runs as the Beszel agent here.
   compose up -d web worker` moves to the newest release. Check the
   [release notes](https://github.com/we-promise/sure/releases) first.
 
+## API integrations
+
+- **HDFC SMS ingest** (n8n, [proposal 010](../../../docs/proposals/010-bank-alerts-to-sure.md),
+  [stack](../n8n/README.md)) — **planned 2026-09-04, not yet wired.** Writes
+  through `POST /api/v1/transactions` with an API key created in Settings →
+  API Keys (`read_write`; recorded as `SURE_API_KEY_N8N` in
+  `secrets.local.yaml`). Every write carries `external_id` + `source:
+  "hdfc-sms"`: 0.7.3's controller returns the existing entry (200) for a
+  repeated pair instead of creating a duplicate, verified against the
+  `v0.7.3` tag on 2026-09-04. Re-check that behaviour after any upgrade —
+  it is what makes retries and re-delivered mails safe. The ingest tags its
+  rows `auto:sms` (create the tag once in Settings → Tags and put its id in
+  the n8n `.env`), so hand-entered and automated rows stay distinguishable.
+
 ## Follow-ups
 
 - DNS name on pihole-1 (nebula-sync mirrors to pihole-2)

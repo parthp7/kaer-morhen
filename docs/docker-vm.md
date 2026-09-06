@@ -400,6 +400,7 @@ plus `.env.example` + README).
 | ai | 2026-07-31 | local LLM stack — Ollama (11434, OpenAI-compatible LAN API), Open WebUI (8090, chat + web search + RAG), SearXNG (internal-only). GPU via CDI, **shares the 1060 with Jellyfin**; model weights on the `backup=0` scsi2 disk at `/mnt/ai-models`. Drives Sure's AI chat ([proposal 002](proposals/002-local-ai-stack.md), [as-built](../configs/ciri/ai/README.md)) |
 | obsidian-sync | 2026-08-05 | CouchDB 3.5.2.1 (5984) as the replication target for Obsidian Self-hosted LiveSync; Obsidian itself runs on the client, and its AI comes from the `ai` stack over the LAN ([as-built](../configs/ciri/obsidian-sync/README.md)) |
 | shrink | 2026-09-02 | document size reduction for upload forms: Stirling-PDF (8081 — 8080 is qBit's) + Mazanoke (3474). Stirling's `/tmp` is a **tmpfs**, so working copies of scans never reach the zvol or the PBS job; Mazanoke compresses in the browser and holds no volumes at all ([proposal 009](proposals/009-document-shrinker.md), [as-built](../configs/ciri/shrink/README.md)) |
+| n8n | **planned** (2026-09-04) | workflow engine (n8n 2.37.10, 5678); first job is HDFC alert SMS → Sure transactions via a relay Gmail + IMAP, regex parser with a local-Ollama fallback, idempotent writes on Sure's `external_id`. Designed and parser-tested on the Mac; **not deployed** ([proposal 010](proposals/010-bank-alerts-to-sure.md), [stack dir](../configs/ciri/n8n/README.md)) |
 
 ## Next steps (not yet built)
 

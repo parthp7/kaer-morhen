@@ -169,6 +169,8 @@ Full set as of 2026-07-13:
 | proxy-tls | HTTPS | `https://memos.kaermorhen.fyi` | proxy **plus** certificate expiry (expiry notification on, TLS errors not ignored). Backend up + proxy-tls down isolates the fault to the proxy. Needs a static `/etc/hosts` entry on 104 — see gotchas |
 | pdf-stirling | HTTP | `http://<LAN_PREFIX>.150:8081` | Stirling-PDF, added 2026-09-02 ([shrink](../configs/ciri/shrink/README.md)). Green on a **plain** monitor despite login being on: Spring answers a browser `Accept` with 302 → `/login` → 200, and only `Accept: */*` gets a bare 401 |
 | image-mazanoke | HTTP + Basic Auth | `http://<LAN_PREFIX>.150:3474` | Mazanoke, added 2026-09-02. **Needs Kuma's HTTP Basic Auth**: nginx answers every HTML path with 401 regardless of `Accept`, so a plain monitor reports a healthy service down. See below |
+| n8n | HTTP | `http://<LAN_PREFIX>.150:5678/healthz` | workflow engine, **planned** by [proposal 010](proposals/010-bank-alerts-to-sure.md) — not yet created. `/healthz` answers 200 without auth; the editor itself only logs in over HTTPS |
+| n8n-hdfc-ingest | **Push** (172800 s) | fed by the `HDFC SMS -> Sure` workflow on ciri after every successful Sure write | **functional, not liveness** — **planned** (proposal 010). Silence for 48 h means no transactions *or* a dead pipeline; the `n8n` HTTP monitor tells them apart. Parse failures do not go here at all — they go to ntfy directly with the raw SMS |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's

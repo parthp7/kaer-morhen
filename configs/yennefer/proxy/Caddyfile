@@ -213,6 +213,18 @@
 		}
 	}
 
+	# ---- Automation (proposal 010) ------------------------------------------
+
+	@n8n host n8n.kaermorhen.fyi
+	handle @n8n {
+		# n8n's own login gates the editor. HTTPS here is load-bearing, not
+		# cosmetic: N8N_SECURE_COOKIE=true means the session cookie is only
+		# ever set over TLS, so the bare port on .150 cannot log in at all.
+		# Editor and execution views use WebSockets; Caddy proxies them
+		# without extra directives.
+		reverse_proxy <LAN_PREFIX>.150:5678
+	}
+
 	# ---- Anything else ------------------------------------------------------
 	# A name that resolves to .202 but has no block above lands here, rather
 	# than getting a confusing default response.

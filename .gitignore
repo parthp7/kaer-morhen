@@ -3,3 +3,7 @@ secrets.local.*
 # Real PDF ingest passwords for the paperless pre-consume hook.
 # The .example template stays tracked; the live file exists only on ciri.
 pdf-passwords.txt
+
+# n8n stack (proposal 010): unredacted real bank SMS used to test the parser.
+# The redacted fixtures/hdfc-sms.txt stays tracked.
+configs/ciri/n8n/parser/fixtures/private/

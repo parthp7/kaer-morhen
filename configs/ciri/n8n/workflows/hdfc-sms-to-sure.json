@@ -1,0 +1,544 @@
+{
+  "name": "HDFC SMS -> Sure (proposal 010)",
+  "nodes": [
+    {
+      "id": "010-01-imap",
+      "name": "Relay inbox (IMAP)",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "read",
+        "format": "simple",
+        "options": {
+          "customEmailConfig": "[\"UNSEEN\", [\"SUBJECT\", \"HDFC-SMS\"]]",
+          "forceReconnect": 60
+        }
+      },
+      "credentials": {
+        "imap": {
+          "id": "<SET IN UI>",
+          "name": "relay mailbox (Gmail IMAP)"
+        }
+      }
+    },
+    {
+      "id": "010-02-parse",
+      "name": "Parse HDFC SMS",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        260,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// hdfc.js — turn one HDFC Bank alert SMS into a Sure transaction payload.\n//\n// Pure functions, no I/O, no n8n globals. The same text is embedded verbatim\n// into the \"Parse HDFC SMS\" Code node by workflows/build-workflow.js, and run\n// against parser/fixtures/ by parser/run-fixtures.js. Edit it here only.\n//\n// Contract:\n//   parseSms(text, opts)  -> { status, txn?, reason?, raw }\n//       status: 'ok'        txn is complete and safe to post\n//               'skip'      not a transaction (OTP, promo, reminder, decline…)\n//               'unparsed'  looks like a transaction but no template matched\n//               'reject'    a template matched but a required field is\n//                           missing or the instrument is unknown\n//   toSure(txn, env)      -> the JSON body for POST /api/v1/transactions\n//\n// Design rules (proposal 010 §4):\n//   - never guess an account: an SMS naming an instrument that is not one of\n//     the configured last-4s is rejected, not routed to a default;\n//   - never invent a reference: external_id is the bank's own ref when the\n//     SMS carries one, else a hash of the normalised text;\n//   - amounts are always positive here; Sure's `nature` carries the sign.\n\n'use strict';\n\n// ---------------------------------------------------------------- helpers --\n\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,\n  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };\n\nfunction pad2(n) { return String(n).padStart(2, '0'); }\n\n// dd/mm/yy, dd-mm-yy, dd-mm-yyyy, dd-MMM-yy, dd-MMM-yyyy, yyyy-mm-dd — with\n// or without a trailing :HH:MM:SS. Returns 'YYYY-MM-DD' or null.\nfunction parseDate(s) {\n  if (!s) return null;\n  let m = s.match(/(\\d{4})-(\\d{2})-(\\d{2})/);\n  if (m) return `${m[1]}-${m[2]}-${m[3]}`;\n  m = s.match(/(\\d{1,2})[-/]([A-Za-z]{3})[-/](\\d{2,4})/);\n  if (m) {\n    const mon = MONTHS[m[2].toLowerCase()];\n    if (!mon) return null;\n    const y = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);\n    return `${y}-${pad2(mon)}-${pad2(m[1])}`;\n  }\n  m = s.match(/(\\d{1,2})[-/](\\d{1,2})[-/](\\d{2,4})/);\n  if (m) {\n    const y = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);\n    const mon = Number(m[2]);\n    const d = Number(m[1]);\n    if (mon < 1 || mon > 12 || d < 1 || d > 31) return null;\n    return `${y}-${pad2(mon)}-${pad2(d)}`;\n  }\n  return null;\n}\n\n// \"Rs.1,234.50\", \"Rs 1234\", \"INR 5,000.00\" -> 1234.5 (number) or null.\nfunction parseAmount(s) {\n  if (!s) return null;\n  const m = s.match(/(?:Rs\\.?|INR)\\s*([\\d,]+(?:\\.\\d{1,2})?)/i);\n  if (!m) return null;\n  const n = Number(m[1].replace(/,/g, ''));\n  return Number.isFinite(n) && n > 0 ? n : null;\n}\n\n// Collapse whitespace and drop the boilerplate tail so templates stay short.\nfunction normalise(text) {\n  return String(text || '')\n    .replace(/\\r/g, '')\n    .replace(/\\s+/g, ' ')\n    .replace(/\\s*(?:Not\\s*You\\??|If not done by you|If not you)\\b.*$/i, '')\n    .replace(/\\s*(?:Avl|Avail(?:able)?)\\.?\\s*(?:bal|balance)\\b.*$/i, (t) => ` ${t.trim()}`)\n    .trim();\n}\n\n// Words that mark a non-transaction. Checked before any template.\nconst NOISE = [\n  /\\bOTP\\b/i, /one[- ]time password/i, /verification code/i,\n  /\\bwill be debited\\b/i, /\\bis due\\b/i, /\\bdue on\\b/i, /\\breminder\\b/i,\n  /\\bmandate\\b/i, /\\bautopay\\b/i, /\\be-?NACH\\b/i, /\\bSI\\b.*\\bregistered\\b/i,\n  /\\bdeclined\\b/i, /\\bfailed\\b/i, /\\bunsuccessful\\b/i, /could not be processed/i,\n  /\\brequested\\b.*\\b(?:money|payment|Rs)/i, /\\bcollect request\\b/i,\n  /\\bapply\\b/i, /\\boffer\\b/i, /\\bcashback of up to\\b/i, /\\bT&C\\b/i,\n  /\\bstatement\\b.*\\bgenerated\\b/i, /\\bmini statement\\b/i,\n  /\\bbal(?:ance)? (?:as on|is|in)\\b/i, /\\bblocked\\b/i, /\\bhotlisted\\b/i,\n  /\\blogin\\b/i, /\\bpassword\\b/i, /\\bPIN\\b/i,\n];\n\nconst CHANNEL_HINTS = [\n  [/\\bUPI\\b|\\bVPA\\b|@[a-z]{2,}\\b/i, 'upi'],\n  [/\\bNEFT\\b/i, 'neft'], [/\\bIMPS\\b/i, 'imps'], [/\\bRTGS\\b/i, 'rtgs'],\n  [/\\bATM\\b|\\bwithdrawn\\b/i, 'atm'],\n  [/\\bcard\\b|\\bPOS\\b|\\bECOM\\b/i, 'card'],\n];\n\nfunction channelOf(text) {\n  for (const [re, ch] of CHANNEL_HINTS) if (re.test(text)) return ch;\n  return 'other';\n}\n\n// The bank's own reference, if any. Order matters: UPI/RRN first.\nfunction refOf(text) {\n  const pats = [\n    /\\bUPI\\s*(?:Ref(?:erence)?\\.?\\s*(?:No\\.?)?)?\\s*[:#-]?\\s*(\\d{12})\\b/i,\n    /\\(UPI\\s*(\\d{12})\\)/i,\n    /\\bRRN\\s*[:#-]?\\s*(\\d{12})\\b/i,\n    /\\bRef(?:erence)?\\.?\\s*(?:No\\.?|Number)?\\s*[:#-]?\\s*([A-Z]?\\d{9,18})\\b/i,\n    /\\bIMPS\\s*(?:Ref(?:erence)?\\.?\\s*(?:No\\.?)?)?\\s*[:#-]?\\s*(\\d{12})\\b/i,\n    /\\bNEFT\\s*(?:Cr|Dr)?[- ]*(?:Ref\\.?\\s*)?[:#-]?\\s*([A-Z]\\d{12,16})\\b/i,\n  ];\n  for (const re of pats) {\n    const m = text.match(re);\n    if (m) return m[1];\n  }\n  return null;\n}\n\n// Last four digits of the account or card named in the SMS.\nfunction last4Of(text) {\n  const pats = [\n    /\\b(?:A\\/?C|Acct|Account|a\\/c)\\.?\\s*(?:no\\.?\\s*)?(?:ending\\s*(?:with\\s*)?)?[Xx*]*\\s?(\\d{4})\\b/,\n    /\\bCard\\s*(?:no\\.?\\s*)?(?:ending\\s*(?:with\\s*)?)?[Xx*]*\\s?(\\d{4})\\b/i,\n    /\\bending\\s*(?:with\\s*)?[Xx*]*(\\d{4})\\b/i,\n    /[Xx*]{2,}(\\d{4})\\b/,\n  ];\n  for (const re of pats) {\n    const m = text.match(re);\n    if (m) return m[1];\n  }\n  return null;\n}\n\nfunction clean(s) {\n  return String(s || '').replace(/\\s+/g, ' ').replace(/[.\\s]+$/, '').trim();\n}\n\n// ------------------------------------------------------------- templates --\n// Each template: a regex over the normalised text and a mapper returning the\n// fields it can vouch for. Anything it does not return is filled from the\n// generic extractors above. Keep them specific: a template that matches\n// everything is worse than no template, because 'unparsed' goes to the LLM\n// fallback and a human, while a wrong 'ok' goes straight into Sure.\nconst TEMPLATES = [\n  {\n    id: 'upi-sent',\n    re: /^Sent\\s+(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+From\\s+HDFC\\s+Bank\\s+(?<acct>A\\/C\\s*[Xx*]*\\d{4})\\s+To\\s+(?<to>.+?)\\s+On\\s+(?<date>\\S+)/i,\n    // The \"Sent … Ref <12 digits>\" shape never says \"UPI\" in the body (the\n    // word only appears in the stripped \"SMS BLOCK UPI\" tail), so name the\n    // channel here rather than letting the generic hint fall to 'other'.\n    map: (g) => ({ kind: 'debit', counterparty: g.to, instrument: 'account', channel: 'upi' }),\n  },\n  {\n    id: 'upi-debited-vpa',\n    re: /(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:has been\\s+)?debited\\s+from\\s+(?:HDFC\\s+Bank\\s+)?(?<acct>a\\/c\\s*[Xx*]*\\d{4}).*?\\bto\\s+(?:VPA\\s+)?(?<to>\\S+@\\S+|[^()]+?)(?:\\s+on\\s+(?<date>\\S+))?\\s*(?:\\(UPI|\\bUPI\\b)/i,\n    map: (g) => ({ kind: 'debit', counterparty: g.to, instrument: 'account' }),\n  },\n  {\n    id: 'account-debited',\n    re: /(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:has been\\s+)?debited\\s+from\\s+(?:HDFC\\s+Bank\\s+)?(?<acct>a\\/c\\s*(?:no\\.?\\s*)?[Xx*]*\\d{4})\\s+on\\s+(?<date>\\S+)(?:\\s+(?:to|at|for|towards)\\s+(?<to>.+?))?(?:\\s+Avl|\\s*$)/i,\n    map: (g) => ({ kind: 'debit', counterparty: g.to || null, instrument: 'account' }),\n  },\n  {\n    id: 'account-credited',\n    re: /(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:is\\s+|has been\\s+)?(?:credited\\s+to|deposited\\s+in(?:to)?)\\s+(?:your\\s+)?(?:HDFC\\s+Bank\\s+)?(?<acct>a\\/c\\s*(?:no\\.?\\s*)?[Xx*]*\\d{4})\\s+on\\s+(?<date>\\S+)(?:\\s+(?:from|for|by|towards)\\s+(?<from>.+?))?(?:\\s+Avl|\\s*$)/i,\n    map: (g) => ({ kind: 'credit', counterparty: g.from || null, instrument: 'account' }),\n  },\n  {\n    id: 'upi-received',\n    re: /^Received\\s+(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:in|to)\\s+(?:your\\s+)?(?:HDFC\\s+Bank\\s+)?(?<acct>A\\/C\\s*[Xx*]*\\d{4})\\s+from\\s+(?<from>.+?)\\s+On\\s+(?<date>\\S+)/i,\n    map: (g) => ({ kind: 'credit', counterparty: g.from, instrument: 'account', channel: 'upi' }),\n  },\n  {\n    id: 'card-spent',\n    re: /(?:^|\\b)(?:Spent|Txn of|Transaction of)?\\s*(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:spent\\s+)?(?:on|using)\\s+(?:your\\s+)?HDFC\\s+Bank\\s+(?:(?<ctype>Credit|Debit)\\s+)?Card\\s*(?<card>(?:no\\.?\\s*)?(?:ending\\s*)?[Xx*]*\\d{4})\\s+(?:at|on|for)\\s+(?<at>.+?)\\s+on\\s+(?<date>\\S+)/i,\n    map: (g) => ({ kind: 'debit', counterparty: g.at, instrument: 'card', cardType: (g.ctype || '').toLowerCase() || null }),\n  },\n  {\n    id: 'card-payment-received',\n    re: /Payment\\s+of\\s+(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:has been\\s+)?(?:received|credited)\\s+(?:towards|to|on)\\s+(?:your\\s+)?HDFC\\s+Bank\\s+Credit\\s+Card\\s*(?<card>(?:ending\\s*)?[Xx*]*\\d{4})(?:\\s+on\\s+(?<date>\\S+))?/i,\n    map: () => ({ kind: 'credit', counterparty: 'Credit card payment', instrument: 'card', cardType: 'credit' }),\n  },\n  {\n    id: 'refund-reversal',\n    re: /(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:has been\\s+)?(?:refunded|reversed|credited back)\\s+(?:to|on)\\s+(?:your\\s+)?(?:HDFC\\s+Bank\\s+)?(?<inst>(?:Credit\\s+|Debit\\s+)?Card|a\\/c)\\s*(?<acct>(?:ending\\s*)?[Xx*]*\\d{4})(?:\\s+on\\s+(?<date>\\S+))?(?:\\s+(?:for|from|by)\\s+(?<from>.+?))?(?:\\s+Avl|\\s*$)/i,\n    map: (g) => ({ kind: 'credit', counterparty: g.from || 'Refund', instrument: /card/i.test(g.inst) ? 'card' : 'account' }),\n  },\n  {\n    id: 'atm-withdrawal',\n    re: /(?<amt>(?:Rs\\.?|INR)\\s*[\\d,]+(?:\\.\\d{1,2})?)\\s+(?:has been\\s+)?withdrawn\\s+(?:from\\s+)?(?:HDFC\\s+Bank\\s+)?(?<acct>a\\/c\\s*[Xx*]*\\d{4})?.*?\\bon\\s+(?<date>\\S+)/i,\n    map: () => ({ kind: 'debit', counterparty: 'ATM withdrawal', instrument: 'account', channel: 'atm' }),\n  },\n];\n\n// A message that names money moving but matched no template. Cheap gate so\n// the LLM fallback only sees plausible transactions.\nconst LOOKS_LIKE_TXN = /(?:Rs\\.?|INR)\\s*[\\d,]+/i;\nconst MOVEMENT = /\\b(?:sent|debited|spent|paid|withdrawn|credited|deposited|received|refund(?:ed)?|reversed|purchase)\\b/i;\n\n// ------------------------------------------------------------------ main --\n\n// opts: { receivedAt: 'YYYY-MM-DD' (fallback date), hash: fn(text)->hex }\nfunction parseSms(text, opts) {\n  const o = opts || {};\n  const raw = String(text || '');\n  const norm = normalise(raw);\n  const out = { raw, norm };\n\n  if (!norm) return Object.assign(out, { status: 'skip', reason: 'empty' });\n  if (!/\\bHDFC\\b/i.test(norm)) return Object.assign(out, { status: 'skip', reason: 'not-hdfc' });\n  for (const re of NOISE) {\n    if (re.test(norm)) return Object.assign(out, { status: 'skip', reason: `noise:${re.source.slice(0, 24)}` });\n  }\n  if (!LOOKS_LIKE_TXN.test(norm) || !MOVEMENT.test(norm)) {\n    return Object.assign(out, { status: 'skip', reason: 'no-money-movement' });\n  }\n\n  let hit = null;\n  for (const t of TEMPLATES) {\n    const m = norm.match(t.re);\n    if (m) { hit = { t, g: m.groups || {} }; break; }\n  }\n  if (!hit) return Object.assign(out, { status: 'unparsed', reason: 'no-template' });\n\n  const g = hit.g;\n  const mapped = hit.t.map(g);\n  const txn = {\n    template: hit.t.id,\n    kind: mapped.kind,\n    amount: parseAmount(g.amt || norm),\n    currency: 'INR',\n    date: parseDate(g.date || '') || parseDate(norm) || o.receivedAt || null,\n    last4: last4Of(g.acct || g.card || '') || last4Of(norm),\n    instrument: mapped.instrument,\n    cardType: mapped.cardType || null,\n    channel: mapped.channel || channelOf(norm),\n    counterparty: clean(mapped.counterparty) || null,\n    ref: refOf(norm),\n  };\n\n  const missing = ['kind', 'amount', 'date', 'last4'].filter((k) => !txn[k]);\n  if (missing.length) {\n    return Object.assign(out, { status: 'reject', reason: `missing:${missing.join(',')}`, txn });\n  }\n  txn.externalId = txn.ref\n    ? `ref:${txn.ref}`\n    : `sha:${(o.hash ? o.hash(norm) : fallbackHash(norm)).slice(0, 40)}`;\n  return Object.assign(out, { status: 'ok', txn });\n}\n\n// Only used when no crypto hash is supplied (fixtures runner supplies one;\n// the Code node supplies require('crypto')). Deterministic, not\n// cryptographic — good enough to make an external_id stable per text.\nfunction fallbackHash(s) {\n  let h1 = 0x811c9dc5, h2 = 0x01000193;\n  for (let i = 0; i < s.length; i++) {\n    h1 = Math.imul(h1 ^ s.charCodeAt(i), 0x01000193) >>> 0;\n    h2 = Math.imul(h2 + s.charCodeAt(i), 0x811c9dc5) >>> 0;\n  }\n  return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');\n}\n\n// env: { HDFC_SAVINGS_LAST4, HDFC_CC_LAST4, SURE_ACCOUNT_ID_SAVINGS,\n//        SURE_ACCOUNT_ID_CC, SURE_TAG_ID_AUTO_SMS }\n// Returns { ok:true, body } or { ok:false, reason }.\nfunction toSure(txn, env) {\n  const e = env || {};\n  let accountId = null;\n  let isCard = false;\n  if (txn.last4 === e.HDFC_CC_LAST4) { accountId = e.SURE_ACCOUNT_ID_CC; isCard = true; }\n  else if (txn.last4 === e.HDFC_SAVINGS_LAST4) { accountId = e.SURE_ACCOUNT_ID_SAVINGS; }\n  if (!accountId) return { ok: false, reason: `unknown-instrument:${txn.last4}` };\n\n  // Sure: expense/outflow store positive (money leaving), income/inflow\n  // negative. For a credit card, spend is an expense and a payment or\n  // refund is an inflow (it reduces the liability, it is not income).\n  let nature;\n  if (txn.kind === 'debit') nature = 'expense';\n  else nature = isCard ? 'inflow' : 'income';\n\n  const name = txn.counterparty || (txn.kind === 'debit' ? 'HDFC debit' : 'HDFC credit');\n  const notes = [\n    `channel=${txn.channel}`,\n    txn.ref ? `ref=${txn.ref}` : null,\n    `template=${txn.template}`,\n    `sms: ${txn.raw || ''}`.trim(),\n  ].filter(Boolean).join('\\n');\n\n  const body = {\n    transaction: {\n      account_id: accountId,\n      date: txn.date,\n      amount: txn.amount,\n      currency: txn.currency || 'INR',\n      name: name.slice(0, 120),\n      nature,\n      notes: notes.slice(0, 2000),\n      external_id: txn.externalId,\n      source: 'hdfc-sms',\n    },\n  };\n  if (e.SURE_TAG_ID_AUTO_SMS) body.transaction.tag_ids = [e.SURE_TAG_ID_AUTO_SMS];\n  return { ok: true, body };\n}\n\n\n// ---- n8n glue (generated by workflows/build-workflow.js) -------------------\nconst crypto = require('crypto');\nconst sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');\nconst ENV = {\n  HDFC_SAVINGS_LAST4: $env.HDFC_SAVINGS_LAST4,\n  HDFC_CC_LAST4: $env.HDFC_CC_LAST4,\n  SURE_ACCOUNT_ID_SAVINGS: $env.SURE_ACCOUNT_ID_SAVINGS,\n  SURE_ACCOUNT_ID_CC: $env.SURE_ACCOUNT_ID_CC,\n  SURE_TAG_ID_AUTO_SMS: $env.SURE_TAG_ID_AUTO_SMS || '',\n};\n\n// The relay mail: subject \"HDFC-SMS\", body = the SMS as the Shortcut sent it.\n// Prefer text/plain; fall back to a tag-stripped HTML body (Mail.app sends\n// both). The Message trigger hands the Shortcut only the text, so nothing\n// else is expected in the body.\nfunction bodyOf(j) {\n  let t = j.textPlain || '';\n  if (!t && j.textHtml) {\n    t = String(j.textHtml).replace(/<br\\s*\\/?>/gi, '\\n').replace(/<\\/p>/gi, '\\n')\n      .replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');\n  }\n  return t.trim();\n}\n\nconst out = [];\nfor (const item of $input.all()) {\n  const j = item.json || {};\n  const sms = bodyOf(j);\n  // Fallback date (only used when the SMS itself carries none): the mail's\n  // Date header, shifted to IST before taking the calendar day — an alert\n  // at 01:00 IST is 19:30 UTC the previous day.\n  const received = (j.date ? new Date(j.date) : new Date());\n  const receivedAt = isNaN(received) ? null\n    : new Date(received.getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);\n  const res = parseSms(sms, { receivedAt, hash: sha256 });\n  const rec = {\n    status: res.status,\n    reason: res.reason || null,\n    sms,\n    subject: j.subject || null,\n    receivedAt,\n    txn: res.txn || null,\n    sure: null,\n  };\n  if (res.status === 'ok') {\n    const s = toSure(res.txn, ENV);\n    if (s.ok) rec.sure = s.body; else { rec.status = 'reject'; rec.reason = s.reason; }\n  }\n  out.push({ json: rec });\n}\nreturn out;\n"
+      }
+    },
+    {
+      "id": "010-03-route",
+      "name": "Route by status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cond-ok",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "ok",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ok"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cond-unparsed",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "unparsed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "unparsed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cond-reject",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "reject",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "reject"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "cond-skip",
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "skip",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "skip"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      }
+    },
+    {
+      "id": "010-04-sure",
+      "name": "Create in Sure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        820,
+        120
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SURE_URL }}/api/v1/transactions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.sure) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "<SET IN UI>",
+          "name": "Sure API key (X-Api-Key)"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "010-05-ollama",
+      "name": "Ollama extract (fallback)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        820,
+        360
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OLLAMA_URL }}/api/chat",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: $env.OLLAMA_MODEL || 'qwen2.5:7b-instruct',\n  stream: false,\n  format: {\n \"type\": \"object\",\n \"properties\": {\n  \"is_transaction\": {\n   \"type\": \"boolean\"\n  },\n  \"kind\": {\n   \"type\": \"string\",\n   \"enum\": [\n    \"debit\",\n    \"credit\"\n   ]\n  },\n  \"amount\": {\n   \"type\": \"number\"\n  },\n  \"date\": {\n   \"type\": \"string\",\n   \"description\": \"YYYY-MM-DD, or empty if the SMS has no date\"\n  },\n  \"account_last4\": {\n   \"type\": \"string\",\n   \"description\": \"last 4 digits of the account or card named in the SMS\"\n  },\n  \"instrument\": {\n   \"type\": \"string\",\n   \"enum\": [\n    \"account\",\n    \"card\"\n   ]\n  },\n  \"channel\": {\n   \"type\": \"string\",\n   \"enum\": [\n    \"upi\",\n    \"card\",\n    \"neft\",\n    \"imps\",\n    \"rtgs\",\n    \"atm\",\n    \"other\"\n   ]\n  },\n  \"counterparty\": {\n   \"type\": \"string\"\n  },\n  \"reference\": {\n   \"type\": \"string\",\n   \"description\": \"bank reference / UPI ref / RRN if present, else empty\"\n  }\n },\n \"required\": [\n  \"is_transaction\",\n  \"kind\",\n  \"amount\",\n  \"date\",\n  \"account_last4\",\n  \"instrument\",\n  \"channel\",\n  \"counterparty\",\n  \"reference\"\n ]\n},\n  options: { temperature: 0, num_ctx: 2048 },\n  messages: [\n    { role: 'system', content: \"You extract fields from Indian bank alert SMS messages (HDFC Bank). Return ONLY JSON matching the schema. Copy amounts, digits and references exactly as they appear; never invent a value that is not in the text. is_transaction is true only for money that has actually moved (debited, credited, spent, sent, received, refunded, withdrawn). OTPs, reminders, mandates, offers, failed or declined transactions are NOT transactions. Dates in the SMS are day-first (dd/mm/yy or dd-mm-yy) unless written yyyy-mm-dd.\" },\n    { role: 'user', content: 'SMS received on ' + ($json.receivedAt || 'unknown date') + ':\\n' + $json.sms }\n  ]\n}) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "010-06-validate",
+      "name": "Validate LLM output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        360
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "'use strict';\nfunction toSure(txn, env) {\n  const e = env || {};\n  let accountId = null;\n  let isCard = false;\n  if (txn.last4 === e.HDFC_CC_LAST4) { accountId = e.SURE_ACCOUNT_ID_CC; isCard = true; }\n  else if (txn.last4 === e.HDFC_SAVINGS_LAST4) { accountId = e.SURE_ACCOUNT_ID_SAVINGS; }\n  if (!accountId) return { ok: false, reason: `unknown-instrument:${txn.last4}` };\n\n  // Sure: expense/outflow store positive (money leaving), income/inflow\n  // negative. For a credit card, spend is an expense and a payment or\n  // refund is an inflow (it reduces the liability, it is not income).\n  let nature;\n  if (txn.kind === 'debit') nature = 'expense';\n  else nature = isCard ? 'inflow' : 'income';\n\n  const name = txn.counterparty || (txn.kind === 'debit' ? 'HDFC debit' : 'HDFC credit');\n  const notes = [\n    `channel=${txn.channel}`,\n    txn.ref ? `ref=${txn.ref}` : null,\n    `template=${txn.template}`,\n    `sms: ${txn.raw || ''}`.trim(),\n  ].filter(Boolean).join('\\n');\n\n  const body = {\n    transaction: {\n      account_id: accountId,\n      date: txn.date,\n      amount: txn.amount,\n      currency: txn.currency || 'INR',\n      name: name.slice(0, 120),\n      nature,\n      notes: notes.slice(0, 2000),\n      external_id: txn.externalId,\n      source: 'hdfc-sms',\n    },\n  };\n  if (e.SURE_TAG_ID_AUTO_SMS) body.transaction.tag_ids = [e.SURE_TAG_ID_AUTO_SMS];\n  return { ok: true, body };\n}\n\n\n\n// Runs once per item so $('Parse HDFC SMS').item resolves through n8n's\n// paired-item tracking to the exact record this Ollama reply belongs to.\nconst crypto = require('crypto');\nconst sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex');\nconst ENV = {\n  HDFC_SAVINGS_LAST4: $env.HDFC_SAVINGS_LAST4,\n  HDFC_CC_LAST4: $env.HDFC_CC_LAST4,\n  SURE_ACCOUNT_ID_SAVINGS: $env.SURE_ACCOUNT_ID_SAVINGS,\n  SURE_ACCOUNT_ID_CC: $env.SURE_ACCOUNT_ID_CC,\n  SURE_TAG_ID_AUTO_SMS: $env.SURE_TAG_ID_AUTO_SMS || '',\n};\nconst src = $('Parse HDFC SMS').item.json;\nconst sms = src.sms || '';\nlet llm = null;\ntry {\n  const content = $json.message && $json.message.content;\n  llm = typeof content === 'string' ? JSON.parse(content) : content;\n} catch (e) { llm = null; }\nconst fail = (why) => ({ json: { ...src, status: 'reject', reason: 'llm:' + why, llm } });\n\nif (!llm || typeof llm !== 'object') return fail('no-json');\nif (llm.is_transaction !== true) return { json: { ...src, status: 'skip', reason: 'llm:not-a-transaction', llm } };\nconst amount = Number(llm.amount);\nif (!Number.isFinite(amount) || amount <= 0) return fail('bad-amount');\n// The amount must literally appear in the SMS (with or without separators).\nconst digits = sms.replace(/,/g, '');\nconst a1 = amount.toFixed(2), a2 = String(amount), a0 = String(Math.trunc(amount));\nif (!(digits.includes(a1) || digits.includes(a2) || digits.includes(a0 + '.') || digits.includes(a0 + ' '))) return fail('amount-not-in-text');\nif (!['debit', 'credit'].includes(llm.kind)) return fail('bad-kind');\nconst last4 = String(llm.account_last4 || '');\nif (!/^\\d{4}$/.test(last4) || !sms.includes(last4)) return fail('last4-not-in-text');\nconst date = /^\\d{4}-\\d{2}-\\d{2}$/.test(llm.date || '') ? llm.date : src.receivedAt;\nif (!date) return fail('no-date');\nconst ref = llm.reference && sms.includes(String(llm.reference)) ? String(llm.reference) : null;\nconst norm = sms.replace(/\\s+/g, ' ').trim();\nconst txn = {\n  template: 'llm', kind: llm.kind, amount, currency: 'INR', date, last4,\n  instrument: llm.instrument === 'card' ? 'card' : 'account',\n  channel: llm.channel || 'other',\n  counterparty: (llm.counterparty || '').toString().slice(0, 120) || null,\n  ref, raw: sms,\n  externalId: ref ? 'ref:' + ref : 'sha:' + sha256(norm).slice(0, 40),\n};\nconst s = toSure(txn, ENV);\nif (!s.ok) return fail(s.reason);\nreturn { json: { ...src, status: 'ok', reason: 'llm', txn, sure: s.body, llm } };\n"
+      }
+    },
+    {
+      "id": "010-07-route2",
+      "name": "LLM result ok?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        360
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "llm-ok",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "010-08-ntfy",
+      "name": "ntfy: needs review",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        560
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://ntfy.sh/{{ $env.NTFY_TOPIC }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "=HDFC SMS needs review ({{ $json.status }}: {{ $json.reason || \"\" }})"
+            },
+            {
+              "name": "Tags",
+              "value": "bank,warning"
+            },
+            {
+              "name": "Priority",
+              "value": "3"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ ($json.sms || $json.message || JSON.stringify($json)).toString().slice(0, 900) }}",
+        "options": {
+          "timeout": 15000
+        }
+      }
+    },
+    {
+      "id": "010-09-skip",
+      "name": "Skip (not a transaction)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        820,
+        600
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "010-10-kuma-if",
+      "name": "Kuma push configured?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1080,
+        120
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "kuma-set",
+              "leftValue": "={{ $env.KUMA_PUSH_URL || \"\" }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "010-11-kuma",
+      "name": "Kuma push (heartbeat)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        120
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.KUMA_PUSH_URL }}",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "up"
+            },
+            {
+              "name": "msg",
+              "value": "=sure {{ $json.statusCode }} {{ $json.body && $json.body.id ? $json.body.id : \"\" }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Relay inbox (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "Parse HDFC SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse HDFC SMS": {
+      "main": [
+        [
+          {
+            "node": "Route by status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by status": {
+      "main": [
+        [
+          {
+            "node": "Create in Sure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ollama extract (fallback)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ntfy: needs review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Skip (not a transaction)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ntfy: needs review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ollama extract (fallback)": {
+      "main": [
+        [
+          {
+            "node": "Validate LLM output",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ntfy: needs review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate LLM output": {
+      "main": [
+        [
+          {
+            "node": "LLM result ok?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM result ok?": {
+      "main": [
+        [
+          {
+            "node": "Create in Sure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ntfy: needs review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create in Sure": {
+      "main": [
+        [
+          {
+            "node": "Kuma push configured?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ntfy: needs review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Kuma push configured?": {
+      "main": [
+        [
+          {
+            "node": "Kuma push (heartbeat)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveExecutionProgress": false,
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all"
+  },
+  "meta": {
+    "generatedBy": "configs/ciri/n8n/workflows/build-workflow.js",
+    "instanceId": "<n8n instance>"
+  }
+}

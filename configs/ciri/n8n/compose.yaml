@@ -1,0 +1,105 @@
+# Stack: n8n — workflow engine; first job is HDFC alert SMS -> Sure transactions.
+# Design + runbook: docs/proposals/010-bank-alerts-to-sure.md
+# Mirror of ciri:/data/stacks/n8n/compose.yaml (CLAUDE.md mirror rule).
+#
+# What this container holds is financial: every bank alert passes through it
+# and the credentials for the relay mailbox and Sure's API live in its
+# encrypted store. Three consequences are load-bearing:
+#   - N8N_ENCRYPTION_KEY is pinned from .env, so a restore of ./n8n-data on a
+#     fresh container can still decrypt the credentials (n8n otherwise
+#     generates a key on first start and stores it inside the data dir);
+#   - nothing here listens beyond ciri's LAN address; the only reachable name
+#     is n8n.kaermorhen.fyi through Caddy (LXC 202), tailnet included;
+#   - outbound calls are Gmail IMAP (relay inbox), Sure and Ollama on this
+#     same VM, Kuma on .104, and ntfy.sh — nothing else.
+
+services:
+  n8n:
+    # Pinned 2026-09-04 from the `stable` tag (2.37.10, published the same
+    # day). 2.x runs Code nodes in a task runner (internal mode) by default;
+    # N8N_RUNNERS_ENABLED is deprecated and deliberately not set.
+    image: docker.io/n8nio/n8n:2.37.10
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      # 5678 is n8n's default and was free on ciri (proposal 010 §3).
+      - "5678:5678"
+    volumes:
+      # SQLite database, credentials, workflow history, binary data.
+      # Must be owned by uid 1000 (the image's `node` user).
+      - ./n8n-data:/home/node/.n8n
+    environment:
+      TZ: Asia/Kolkata
+      # Schedule/Cron nodes use this one, not TZ.
+      GENERIC_TIMEZONE: Asia/Kolkata
+      # Behind Caddy: the editor needs to know its public origin or OAuth
+      # callbacks, webhook URLs and the secure cookie all point at the wrong
+      # place. N8N_WEBHOOK_URL replaced WEBHOOK_URL in 2.35.
+      N8N_HOST: n8n.kaermorhen.fyi
+      N8N_PROTOCOL: https
+      N8N_PORT: "5678"
+      N8N_EDITOR_BASE_URL: https://n8n.kaermorhen.fyi
+      N8N_WEBHOOK_URL: https://n8n.kaermorhen.fyi
+      N8N_PROXY_HOPS: "1"
+      # Default is true, kept explicit: the login cookie only travels over
+      # HTTPS, i.e. only via Caddy. The bare port on .150 will show a
+      # "secure cookie" notice instead of a login form — that is intended.
+      N8N_SECURE_COOKIE: "true"
+      # Generate: openssl rand -hex 32. Losing this loses every credential.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set in .env}
+      # Owner account for the editor (seeded on first start, no setup wizard
+      # left open on the LAN). Change the password in the UI afterwards if
+      # you like; the DB is the source of truth from then on.
+      N8N_USER_MANAGEMENT_DISABLED: "false"
+      # This instance sees bank alerts: no telemetry, no template gallery
+      # calls, no personalisation survey, no hiring banner.
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
+      # The workflow reads its account mapping and endpoints from $env
+      # (Code nodes + expressions). Default is false already; set explicitly
+      # because 2.x's hardening docs list it, and a future default flip would
+      # silently break every $env lookup below.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # The parser Code node hashes SMS bodies for external_id fallbacks.
+      # Built-in module imports are off by default; allow exactly this one.
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      # Keep execution history small: the raw SMS text is in every run's
+      # data, and Sure holds the durable copy. 7 days is enough to debug.
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "168"
+      EXECUTIONS_DATA_SAVE_ON_SUCCESS: all
+      EXECUTIONS_DATA_SAVE_ON_ERROR: all
+      # WAL mode: one writer (n8n) plus the pruner; the default rollback
+      # journal locks the whole file during pruning.
+      DB_SQLITE_POOL_SIZE: "2"
+      # ---- pipeline configuration, read by the workflow via $env ----------
+      # Sure (same VM; host IP because sure_net is a separate bridge).
+      SURE_URL: ${SURE_URL:?set in .env}
+      SURE_ACCOUNT_ID_SAVINGS: ${SURE_ACCOUNT_ID_SAVINGS:?set in .env}
+      SURE_ACCOUNT_ID_CC: ${SURE_ACCOUNT_ID_CC:?set in .env}
+      SURE_TAG_ID_AUTO_SMS: ${SURE_TAG_ID_AUTO_SMS:-}
+      # Which HDFC instruments feed which Sure account (last 4 digits).
+      HDFC_SAVINGS_LAST4: ${HDFC_SAVINGS_LAST4:?set in .env}
+      HDFC_CC_LAST4: ${HDFC_CC_LAST4:?set in .env}
+      # Ollama fallback extractor (same VM). Non-thinking model, per
+      # configs/ciri/ai README: a thinking model needs think:false per call.
+      OLLAMA_URL: ${OLLAMA_URL:?set in .env}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct}
+      # Health + alerts. Kuma by IP (never by name — see uptime-kuma.md).
+      KUMA_PUSH_URL: ${KUMA_PUSH_URL:-}
+      NTFY_TOPIC: ${NTFY_TOPIC:?set in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - n8n_net
+
+networks:
+  n8n_net:
+    driver: bridge

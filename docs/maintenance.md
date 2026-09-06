@@ -395,6 +395,7 @@ cannot name a version it never recorded.
 | servarr | seerr | `ghcr.io/seerr-team/seerr:v3.4.1` | `fallenbagel/jellyseerr:2.7.3` (renamed 2026-08-24) | 1 |
 | shrink | stirling | `docker.io/stirlingtools/stirling-pdf:2.14.3` | — | 1 |
 | shrink | mazanoke | `ghcr.io/civilblur/mazanoke:v1.1.6` | — | 0 |
+| n8n | n8n | `docker.io/n8nio/n8n:2.37.10` (**planned**, proposal 010 — not deployed) | — | 1 |
 | sure | web / worker | `ghcr.io/we-promise/sure:0.7.3` | `ghcr.io/we-promise/sure:0.7.2` | 2 |
 | sure | db | `postgres:16` ⚠️ **floating** — now **16.15** | — | 3 |
 | sure | redis | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | — | 3 |
