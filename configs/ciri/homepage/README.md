@@ -11,7 +11,11 @@ Caddy serves `home`, `olivetin` and `pulse`; the three collectors write real
 JSON on their timers; the forced-command whitelist refuses everything else.
 Pulse lives in its own LXC 205 on yennefer, outside this stack. Contract tests
 E1–E3 and E5–E9 passed; **E4 (a live qBittorrent move) is still unobserved** —
-it needs a large torrent to finish.
+it needs a large torrent to finish, and is deferred by decision rather than
+pending work. That and one privilege-narrowing item are the two things to look
+at later: see "Follow-ups" in
+[proposal 008](../../../docs/proposals/008-lab-dashboard.md) and
+[Open items](../../../docs/maintenance.md#open-items).
 
 | Piece | Port on ciri | Behind Caddy as |
 |---|---|---|

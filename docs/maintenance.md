@@ -427,6 +427,18 @@ That the fix was needed at all is the argument for pinning these four.
 
 ## Open items
 
+- **Pulse's monitoring token holds two privileges wider than read-only**
+  (deferred 2026-09-07, [proposal 008](proposals/008-lab-dashboard.md)). Its
+  setup script created `pulse-monitor@pve` with `PVEDatastoreAdmin` on
+  `/storage` — which can *allocate and delete* storage content, backups
+  included — and `VM.GuestAgent.FileRead`, which reads files inside any guest
+  running the agent. Both are the installer's defaults and both are live on
+  geralt and yennefer today. To narrow them, drop the two grants and re-verify
+  that Pulse's Backups tab and per-guest disk figures still populate
+  (`Datastore.Audit` may be enough, possibly with
+  `Datastore.AllocateSpace`); PBS's own token is already `Audit`-only and needs
+  nothing. Nothing about the dashboard depends on the wider rights, so this is
+  a tightening exercise, not a fix.
 - **Kuma `resend_interval = 0` on ~29 monitors** — notifies once, then never
   again. Caused a 12-day silent outage. **Highest-value fix in the lab**; do it
   before relying on any post-upgrade monitoring.

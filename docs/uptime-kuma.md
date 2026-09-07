@@ -647,3 +647,4 @@ destroyed.
   the section below for what it does and does not prove.
 - **Pi-hole node-reboot failover test** still pending ([dns.md](dns.md)) — the
   pihole DNS monitors here will provide the alerting evidence during it.
+- **The dashboard's qBit move tile has never been seen under load** ([proposal 008](proposals/008-lab-dashboard.md) contract test E4, deferred 2026-09-07). No Kuma monitor covers it: the tile reads a JSON file that is refreshed every minute and currently always says `idle`. Watch it on the next large torrent rather than adding a monitor for it.

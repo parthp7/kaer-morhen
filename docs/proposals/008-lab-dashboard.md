@@ -3,7 +3,9 @@
 - **Status**: **BUILT — designed 2026-09-02, executed 2026-09-02/03 and
   2026-09-07.** Phases A–F complete. Contract tests E1–E3 and E5–E9 passed;
   **E4 (watching a real qBittorrent move) is still unobserved** and waits for a
-  large torrent to finish. Read "As-built deviations" before touching any of
+  large torrent to finish. Two items were deferred by decision, not forgotten
+  — E4 itself and the width of Pulse's PVE token; both are in
+  "Follow-ups". Read "As-built deviations" before touching any of
   it: thirteen things differed from this design, and six of them (8–13) are
   ones the runbook got wrong, not merely incomplete — the nodes are not a
   cluster, every PVE/PBS certificate needs a pinned fingerprint, Pulse's pause
@@ -763,7 +765,9 @@ the IP:3010 path now redirects to the login like the FQDN path.
     `PVEAuditor` on `/` *plus* `PVEDatastoreAdmin` on `/storage`; PBS got
     `Audit` on `/` only. `PVEDatastoreAdmin` can allocate and delete storage
     content and `VM.GuestAgent.FileRead` reads files inside any guest with the
-    agent. Left at the installer's defaults, flagged for review.
+    agent. Left at the installer's defaults; **deferred by decision
+    2026-09-07** and tracked in [Open items](../maintenance.md#open-items),
+    which carries the narrowing procedure.
 13. **`media-df.sh` could not see a dead NFS server** (found by E5). Stopping
     `nfs-server` on geralt leaves the client's nfs4 mount in the table, so the
     findmnt check still said `mounted: true`; and because the mount is `hard`,
@@ -785,6 +789,24 @@ return JSON, `updates; id`, an empty request and `id; ls /` all `refused`
 with exit 126, and `sudo -n` denies non-whitelisted argv; sudoers parses.
 
 ## Follow-ups (not in scope)
+
+**Deferred by decision on 2026-09-07 — both are watch-items, not blockers:**
+
+- **E4 is the one contract test never observed.** Everything else in Phase E
+  passed. E4 needs a large torrent to finish so the qBit move tile can be
+  watched showing a name and a climbing percentage, then falling back to
+  `moving: 0`. Until it is seen once, the tile's *behaviour under load* is
+  unproven — the collector itself runs clean every minute and reports `idle`.
+  Watch it on the next 4K REMUX (the scratch zvol and its 2026-09-02 incident
+  are in [storage.md](../storage.md)) rather than starting a download just to
+  run the test.
+- **Pulse's PVE token is wider than read-only.** `PVEDatastoreAdmin` on
+  `/storage` and `VM.GuestAgent.FileRead`, both from the installer's own setup
+  script, on both nodes — see deviation 12 and [Open
+  items](../maintenance.md#open-items) for what to check when narrowing them.
+  Nothing on the dashboard depends on the extra rights.
+
+**Ideas, unscheduled:**
 
 - Dockge as its own stack if restart-from-browser is ever wanted; it would sit
   on the same `home.*` page as a link tile.
