@@ -213,6 +213,25 @@
 		}
 	}
 
+	# ---- Dashboard (proposal 008) -------------------------------------------
+	# All three carry their own login (Homepage 2.x gate, OliveTin local user,
+	# Pulse admin); Caddy is a plain proxy here like everywhere else.
+
+	@home host home.kaermorhen.fyi
+	handle @home {
+		reverse_proxy <LAN_PREFIX>.150:3010
+	}
+
+	@olivetin host olivetin.kaermorhen.fyi
+	handle @olivetin {
+		reverse_proxy <LAN_PREFIX>.150:1337
+	}
+
+	@pulse host pulse.kaermorhen.fyi
+	handle @pulse {
+		reverse_proxy <LAN_PREFIX>.205:7655
+	}
+
 	# ---- Automation (proposal 010) ------------------------------------------
 
 	@n8n host n8n.kaermorhen.fyi

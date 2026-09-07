@@ -1,0 +1,115 @@
+# homepage — lab dashboard (proposal 008): Homepage + OliveTin + Docker socket
+# proxy + a static server for script results. READ-ONLY by construction: the
+# socket proxy refuses POST, every API token is an auditor/read role, and
+# OliveTin can only run a fixed whitelist over forced-command ssh.
+#
+# Lab conventions: pinned tags (checked 2026-09-02), container_name everywhere,
+# restart: unless-stopped, TZ=Asia/Kolkata, dedicated bridge network, secrets
+# only from .env (${VAR:?} fails loudly). NOTE the `build:` on olivetin — bump
+# the FROM in olivetin/Dockerfile and `docker compose build --pull` on upgrade.
+
+services:
+  # ---- Docker API, GET-only, never published ------------------------------
+  socket-proxy:
+    image: lscr.io/linuxserver/socket-proxy:3.4.4
+    container_name: homepage-socket-proxy
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /run
+    environment:
+      TZ: Asia/Kolkata
+      CONTAINERS: "1"     # /containers/json, /containers/{id}/json, /containers/{id}/stats
+      POST: "0"           # no start/stop/restart/exec — anything but GET is 403
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - homepage_net
+
+  # ---- The dashboard -------------------------------------------------------
+  homepage:
+    image: ghcr.io/gethomepage/homepage:v2.2.0
+    container_name: homepage
+    restart: unless-stopped
+    depends_on:
+      - socket-proxy
+    ports:
+      - "3010:3000"       # host 3010: Sure already owns 3000 on ciri. Caddy (LXC 202) and Kuma reach it here; gated by HOMEPAGE_AUTH_*
+    environment:
+      TZ: Asia/Kolkata
+      PUID: "1000"
+      PGID: "1000"
+      HOMEPAGE_ALLOWED_HOSTS: ${HOMEPAGE_ALLOWED_HOSTS:?set in .env}
+      # 2.x login gate — covers the published port, not just the Caddy route (§4)
+      HOMEPAGE_AUTH_ENABLED: "true"
+      HOMEPAGE_AUTH_SECRET: ${HOMEPAGE_AUTH_SECRET:?set in .env}
+      HOMEPAGE_AUTH_PASSWORD: ${HOMEPAGE_AUTH_PASSWORD:?set in .env}
+      HOMEPAGE_EXTERNAL_URL: https://home.kaermorhen.fyi
+      # {{HOMEPAGE_VAR_*}} substitutions used by homepage/*.yaml
+      HOMEPAGE_VAR_LAN_PREFIX: ${LAN_PREFIX:?set in .env}
+      HOMEPAGE_VAR_PVE_TOKEN: ${PVE_HOMEPAGE_TOKEN:?set in .env}
+      HOMEPAGE_VAR_PVE_TOKEN_YENNEFER: ${PVE_HOMEPAGE_TOKEN_YENNEFER:?set in .env}
+      HOMEPAGE_VAR_PBS_TOKEN: ${PBS_HOMEPAGE_TOKEN:?set in .env}
+      HOMEPAGE_VAR_QBIT_USER: ${QBIT_USER:?set in .env}
+      HOMEPAGE_VAR_QBIT_PASSWORD: ${QBIT_PASSWORD:?set in .env}
+      HOMEPAGE_VAR_RADARR_KEY: ${RADARR_API_KEY:?set in .env}
+      HOMEPAGE_VAR_SONARR_KEY: ${SONARR_API_KEY:?set in .env}
+      HOMEPAGE_VAR_PROWLARR_KEY: ${PROWLARR_API_KEY:?set in .env}
+      HOMEPAGE_VAR_BAZARR_KEY: ${BAZARR_API_KEY:?set in .env}
+      HOMEPAGE_VAR_SEERR_KEY: ${SEERR_API_KEY:?set in .env}
+      HOMEPAGE_VAR_JELLYFIN_KEY: ${JELLYFIN_API_KEY:?set in .env}
+      HOMEPAGE_VAR_IMMICH_KEY: ${IMMICH_API_KEY:?set in .env}
+      HOMEPAGE_VAR_PAPERLESS_TOKEN: ${PAPERLESS_API_TOKEN:?set in .env}
+      HOMEPAGE_VAR_PIHOLE_PASSWORD: ${PIHOLE_APP_PASSWORD:?set in .env}
+    volumes:
+      - ./homepage:/app/config
+      # local disks for the `resources` tile — read-only, always present.
+      # /mnt/media is deliberately NOT here (§5): an absent NFS mount would show
+      # ciri's root disk. The media share has its own script tile.
+      - /data:/host/data:ro
+      - /mnt/torrents:/host/torrents:ro
+    networks:
+      - homepage_net
+
+  # ---- Script runner: buttons + cron, everything over forced-command ssh ---
+  olivetin:
+    build:
+      context: ./olivetin
+      dockerfile: Dockerfile
+    image: kaermorhen/olivetin:3000.19.0     # local tag of the build; base pinned in the Dockerfile
+    container_name: olivetin
+    restart: unless-stopped
+    ports:
+      - "1337:1337"       # LAN, for Caddy; OliveTin's own login gate applies
+    environment:
+      TZ: Asia/Kolkata
+    volumes:
+      - ./olivetin/config.yaml:/config/config.yaml:ro
+      - ./olivetin/scripts:/scripts:ro
+      # The image runs as user `olivetin` (uid 1000 upstream — CONFIRM with
+      # `docker compose exec olivetin id` in B4; ciri is 1000 on the host, so the
+      # 600/700 files below are readable only if the uids match). Mounted at the
+      # user's own ~/.ssh so ssh finds config/key/known_hosts without flags.
+      - ./olivetin/ssh:/home/olivetin/.ssh:ro
+      - ./results:/results
+    networks:
+      - homepage_net
+
+  # ---- Results for the customapi tiles — internal only ---------------------
+  results:
+    image: docker.io/joseluisq/static-web-server:2.44.0
+    container_name: homepage-results
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Kolkata
+      SERVER_PORT: "80"        # documented defaults, stated for clarity
+      SERVER_ROOT: /public     # directory listing is off by default
+    volumes:
+      - ./results:/public:ro
+    networks:
+      - homepage_net
+    # no ports: — reachable as http://results/ from homepage only
+
+networks:
+  homepage_net:
+    driver: bridge

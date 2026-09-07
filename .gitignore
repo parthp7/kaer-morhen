@@ -4,6 +4,17 @@ secrets.local.*
 # The .example template stays tracked; the live file exists only on ciri.
 pdf-passwords.txt
 
+# homepage stack (proposal 008): the ops ssh key, its known_hosts and the
+# address-bearing ssh config exist only on ciri. config.example stays tracked.
+configs/ciri/homepage/olivetin/ssh/*
+!configs/ciri/homepage/olivetin/ssh/config.example
+
+# Every stack's live .env holds real tokens and lives only in the VM (chmod
+# 600); the tracked .env.example carries placeholders. Belt for the whole tree,
+# because scp'ing a stack dir back from ciri pulls the .env with it.
+.env
+**/.env
+
 # n8n stack (proposal 010): unredacted real bank SMS used to test the parser.
 # The redacted fixtures/hdfc-sms.txt stays tracked.
 configs/ciri/n8n/parser/fixtures/private/

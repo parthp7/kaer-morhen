@@ -171,6 +171,9 @@ Full set as of 2026-07-13:
 | image-mazanoke | HTTP + Basic Auth | `http://<LAN_PREFIX>.150:3474` | Mazanoke, added 2026-09-02. **Needs Kuma's HTTP Basic Auth**: nginx answers every HTML path with 401 regardless of `Accept`, so a plain monitor reports a healthy service down. See below |
 | n8n | HTTP | `http://<LAN_PREFIX>.150:5678/healthz` | workflow engine, **planned** by [proposal 010](proposals/010-bank-alerts-to-sure.md) — not yet created. `/healthz` answers 200 without auth; the editor itself only logs in over HTTPS |
 | n8n-hdfc-ingest | **Push** (172800 s) | fed by the `HDFC SMS -> Sure` workflow on ciri after every successful Sure write | **functional, not liveness** — **planned** (proposal 010). Silence for 48 h means no transactions *or* a dead pipeline; the `n8n` HTTP monitor tells them apart. Parse failures do not go here at all — they go to ntfy directly with the raw SMS |
+| home | HTTP | `http://<LAN_PREFIX>.150:3010/` | Homepage dashboard, added 2026-09-07 ([proposal 008](proposals/008-lab-dashboard.md)). **Accepted codes must include 300-399**: the built-in login gate answers `/` with a 307 to `/auth/signin`, so Kuma's 2xx default calls a healthy dashboard down. The IP:port must also be in `HOMEPAGE_ALLOWED_HOSTS` or Homepage returns 400 to the monitor while browsers on the FQDN stay fine |
+| olivetin | HTTP-Keyword | `http://<LAN_PREFIX>.150:1337/` → `OliveTin` | script runner behind the dashboard, added 2026-09-07. Keyword rather than plain HTTP because its login page is a 200 either way |
+| pulse | HTTP | `http://<LAN_PREFIX>.205:7655/` | Pulse, LXC 205, added 2026-09-07. Watches the per-guest Proxmox view itself; Pulse's own alerting stays off (§8 of proposal 008) |
 
 servarr monitors added 2026-07-26. The `/ping` endpoints answer 200 without auth (cleanest
 liveness). `gluetun` and `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel's
@@ -178,6 +181,19 @@ per-container view (and gluetun indirectly by the qbittorrent monitor). Note the
 liveness only: **they cannot see a VPN leak or port-forwarding degraded to 0** — see Next steps.
 
 Shrink monitors added 2026-09-02 ([proposal 009](proposals/009-document-shrinker.md)).
+
+**The `lab` status page is load-bearing, not decoration.** Homepage's
+`uptimekuma` widget reads `/api/status-page/lab`, not the monitor list, so a
+monitor that exists but is not added to that page is invisible to the
+dashboard's up/down count (`configs/ciri/homepage/homepage/services.yaml`).
+Adding a monitor is therefore two steps: create it, then add it to the page's
+Services group. Its JSON is public and unauthenticated, which makes it the
+cheapest way to audit the roster from anywhere on the LAN:
+
+```bash
+curl -s http://<LAN_PREFIX>.104:3001/api/status-page/lab \
+  | jq -r '.publicGroupList[].monitorList[].name'
+```
 Both services require a login, and the two behaved differently, which is worth
 knowing before adding any monitor to an authenticated app:
 

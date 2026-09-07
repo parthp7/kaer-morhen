@@ -1,0 +1,68 @@
+# OliveTin — proposal 008. Every action is `ssh <host> <word>`; the word is
+# matched by a forced-command dispatcher on the target (scripts/ops/). Nothing
+# here can take arguments, and nothing here can write to anything but /results.
+listenAddressSingleHTTPFrontend: 0.0.0.0:1337
+pageTitle: kaer morhen — ops
+logLevel: info
+
+# Login required; one local user. Argon2id hash generated in Phase B3.
+authRequireGuestsToLogin: true
+authLocalUsers:
+  enabled: true
+  users:
+    - username: ciri
+      usergroup: admins
+      password: "<OLIVETIN_PASSWORD_HASH>"
+
+# Allow-list model (OliveTin docs "some actions require admin"): everything is
+# denied by default, then granted per ACL. GOTCHA: with ACLs on, cron-triggered
+# runs execute as the pseudo-user `cron`, which must be granted exec explicitly
+# or the timers silently never fire. Each action names the ACLs that apply.
+defaultPermissions:
+  view: false
+  exec: false
+  logs: false
+accessControlLists:
+  - name: admins
+    matchUsergroups: [admins]
+    permissions: { view: true, exec: true, logs: true }
+  - name: cron
+    matchUsernames: [cron]
+    permissions: { exec: true }
+
+# No execOnStartup: the docs don't say which pseudo-user a startup run uses
+# under ACLs, and the one-minute cron makes it unnecessary.
+actions:
+  - id: qbit-move
+    title: qBittorrent move progress
+    icon: "&#x1F4E6;"
+    shell: /scripts/collect.sh qbit-move ciri
+    timeout: 60
+    execOnCron:
+      - "* * * * *"
+    acls: [admins, cron]
+
+  - id: media-df
+    title: Media share free space
+    icon: "&#x1F4BF;"
+    shell: /scripts/collect.sh media-df ciri
+    timeout: 30
+    execOnCron:
+      - "*/5 * * * *"
+    acls: [admins, cron]
+
+  - id: updates
+    title: Refresh package updates (all hosts)
+    icon: "&#x1F504;"
+    shell: /scripts/collect-updates.sh geralt yennefer ciri
+    timeout: 300
+    execOnCron:
+      - "30 7 * * *"
+    acls: [admins, cron]
+
+  - id: show-updates
+    title: Show last updates report
+    icon: "&#x1F4CB;"
+    shell: jq . /results/updates.json
+    timeout: 10
+    acls: [admins]

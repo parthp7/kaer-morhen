@@ -1,0 +1,249 @@
+# services.yaml — every tile on the dashboard (proposal 008 §5).
+# `server: ciri` + `container: <name>` = status dot + stats via the socket
+# proxy; names must match `docker ps` exactly. Secrets come in through
+# {{HOMEPAGE_VAR_*}} from the stack .env — nothing real lives in this file.
+# Group order/columns are in settings.yaml.
+
+- Lab:
+    - geralt:
+        icon: proxmox.png
+        href: https://geralt.kaermorhen.fyi
+        description: PVE node · ciri, pihole-1, tailscale-2, kuma
+        widget:
+          type: proxmox
+          url: https://{{HOMEPAGE_VAR_LAN_PREFIX}}.21:8006
+          username: homepage@pve!dashboard
+          password: "{{HOMEPAGE_VAR_PVE_TOKEN}}"
+          node: geralt
+    - yennefer:
+        icon: proxmox.png
+        href: https://yennefer.kaermorhen.fyi
+        description: PVE node · pbs, pihole-2, proxy, tailscale-1, beszel, pulse
+        widget:
+          type: proxmox
+          url: https://{{HOMEPAGE_VAR_LAN_PREFIX}}.22:8006
+          username: homepage@pve!dashboard
+          password: "{{HOMEPAGE_VAR_PVE_TOKEN_YENNEFER}}"
+          node: yennefer
+    - PBS:
+        icon: proxmox.png
+        href: https://pbs.kaermorhen.fyi
+        description: nightly backups, LXC 200
+        widget:
+          type: proxmoxbackupserver
+          url: https://{{HOMEPAGE_VAR_LAN_PREFIX}}.200:8007
+          username: homepage@pbs!dashboard
+          password: "{{HOMEPAGE_VAR_PBS_TOKEN}}"
+    - Pulse:
+        icon: mdi-pulse
+        href: https://pulse.kaermorhen.fyi
+        description: per-guest Proxmox + PBS view, LXC 205
+        siteMonitor: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.205:7655
+    - Beszel:
+        icon: beszel.png
+        href: https://beszel.kaermorhen.fyi
+        description: "metrics + alerts, LXC 204 (no widget — needs a superuser login)"
+        siteMonitor: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.204:8090
+    - Uptime Kuma:
+        icon: uptime-kuma.png
+        href: https://kuma.kaermorhen.fyi
+        description: LXC 104
+        widget:
+          type: uptimekuma
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.104:3001
+          slug: lab
+    - Pi-hole 1:
+        icon: pi-hole.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.101/admin
+        description: LXC 101, primary
+        widget:
+          type: pihole
+          version: 6
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.101
+          key: "{{HOMEPAGE_VAR_PIHOLE_PASSWORD}}"
+    - Pi-hole 2:
+        icon: pi-hole.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.201/admin
+        description: LXC 201, synced replica
+        siteMonitor: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.201/admin
+
+- ciri:
+    - Media share:
+        icon: mdi-nas
+        description: NFS from geralt — a host-side check, not a bind mount (§5)
+        widget:
+          type: customapi
+          url: http://results/media-df.json
+          refreshInterval: 60000
+          mappings:
+            - field: state
+              label: state
+              format: text
+            - field: avail
+              label: free
+              format: bytes
+            - field: pct
+              label: used
+              format: percent
+    - qBit move:
+        icon: qbittorrent.png
+        description: move-on-completion, scratch → media share
+        widget:
+          type: customapi
+          url: http://results/qbit-move.json
+          refreshInterval: 30000
+          mappings:
+            - field: moving
+              label: moving
+              format: number
+            - field: current
+              label: current
+              format: text
+            - field: pct
+              label: done
+              format: percent
+    - Pending updates:
+        icon: mdi-package-variant
+        href: https://olivetin.kaermorhen.fyi
+        description: apt, all hosts + LXCs — refreshed 07:30 or on demand in OliveTin
+        widget:
+          type: customapi
+          url: http://results/updates.json
+          refreshInterval: 300000
+          mappings:
+            - field: pending_total
+              label: packages
+              format: number
+            - field: updated
+              label: checked
+              format: relativeDate
+    - OliveTin:
+        icon: olivetin.png
+        href: https://olivetin.kaermorhen.fyi
+        description: script runner
+        server: ciri
+        container: olivetin
+
+- Media:
+    - Jellyfin:
+        icon: jellyfin.png
+        href: https://jellyfin.kaermorhen.fyi
+        server: ciri
+        container: jellyfin
+        widget:
+          type: jellyfin
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8096
+          key: "{{HOMEPAGE_VAR_JELLYFIN_KEY}}"
+          enableBlocks: true
+    - qBittorrent:
+        icon: qbittorrent.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8080
+        description: behind gluetun (WebUI published on gluetun's port)
+        server: ciri
+        container: qbittorrent
+        widget:
+          type: qbittorrent
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8080
+          username: "{{HOMEPAGE_VAR_QBIT_USER}}"
+          password: "{{HOMEPAGE_VAR_QBIT_PASSWORD}}"
+    - Gluetun:
+        icon: gluetun.png
+        description: VPN egress + kill-switch
+        server: ciri
+        container: gluetun
+    - Radarr:
+        icon: radarr.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:7878
+        server: ciri
+        container: radarr
+        widget:
+          type: radarr
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:7878
+          key: "{{HOMEPAGE_VAR_RADARR_KEY}}"
+    - Sonarr:
+        icon: sonarr.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8989
+        server: ciri
+        container: sonarr
+        widget:
+          type: sonarr
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8989
+          key: "{{HOMEPAGE_VAR_SONARR_KEY}}"
+    - Prowlarr:
+        icon: prowlarr.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:9696
+        server: ciri
+        container: prowlarr
+        widget:
+          type: prowlarr
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:9696
+          key: "{{HOMEPAGE_VAR_PROWLARR_KEY}}"
+    - Bazarr:
+        icon: bazarr.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:6767
+        server: ciri
+        container: bazarr
+        widget:
+          type: bazarr
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:6767
+          key: "{{HOMEPAGE_VAR_BAZARR_KEY}}"
+    - Seerr:
+        icon: seerr.png
+        href: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:5055
+        server: ciri
+        container: seerr
+        widget:
+          type: seerr            # `jellyseerr`/`overseerr` are aliases of this now
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:5055
+          key: "{{HOMEPAGE_VAR_SEERR_KEY}}"
+
+- Apps:
+    - Immich:
+        icon: immich.png
+        href: https://immich.kaermorhen.fyi
+        server: ciri
+        container: immich
+        widget:
+          type: immich
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:2283
+          key: "{{HOMEPAGE_VAR_IMMICH_KEY}}"
+          version: 2
+    - Paperless:
+        icon: paperless-ngx.png
+        href: https://paperless.kaermorhen.fyi
+        server: ciri
+        container: paperless
+        widget:
+          type: paperlessngx
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8000
+          key: "{{HOMEPAGE_VAR_PAPERLESS_TOKEN}}"
+    - Open WebUI:
+        icon: open-webui.png
+        href: https://chat.kaermorhen.fyi
+        server: ciri
+        container: open-webui
+    - Ollama:
+        icon: ollama.png
+        href: https://ollama.kaermorhen.fyi
+        server: ciri
+        container: ollama
+    - SearXNG:
+        icon: searxng.png
+        description: internal to the ai stack, no LAN port
+        server: ciri
+        container: searxng
+    - memos:
+        icon: memos.png
+        href: https://memos.kaermorhen.fyi
+        server: ciri
+        container: memos
+    - Sure:
+        icon: mdi-finance
+        href: https://sure.kaermorhen.fyi
+        server: ciri
+        container: sure
+    - Obsidian sync:
+        icon: couchdb.png
+        href: https://obsidian.kaermorhen.fyi
+        server: ciri
+        container: obsidian-couchdb

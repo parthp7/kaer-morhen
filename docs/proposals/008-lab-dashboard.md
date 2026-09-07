@@ -1,12 +1,14 @@
 # Proposal 008 — Lab dashboard: Homepage + OliveTin on ciri, Pulse on yennefer
 
-- **Status**: **DRAFT, execution-ready — designed 2026-09-02, nothing deployed.**
-  The runbook is as-planned, not as-executed; "As-built deviations" is empty
-  until it runs. Second pass the same day verified every widget schema, the
-  OliveTin config keys, the qBit API contract and the pins against upstream
-  docs/registries, and ran read-only pre-flight checks on ciri and yennefer
-  (§11). What is still *unverified* is listed there too — read §11 before
-  Phase B.
+- **Status**: **BUILT — designed 2026-09-02, executed 2026-09-02/03 and
+  2026-09-07.** Phases A–F complete. Contract tests E1–E3 and E5–E9 passed;
+  **E4 (watching a real qBittorrent move) is still unobserved** and waits for a
+  large torrent to finish. Read "As-built deviations" before touching any of
+  it: thirteen things differed from this design, and six of them (8–13) are
+  ones the runbook got wrong, not merely incomplete — the nodes are not a
+  cluster, every PVE/PBS certificate needs a pinned fingerprint, Pulse's pause
+  survives fixing its cause, and `media-df.sh` could not see a dead NFS
+  server.
 - **Date**: 2026-09-02
 - **Scope**: one new compose stack `homepage` on **ciri** (Homepage 2.x,
   OliveTin, a Docker socket proxy, a static file server for script results);
@@ -190,7 +192,7 @@ option per stack later.
 
 | Group | Tile | Live data | Credential |
 |---|---|---|---|
-| **Lab** | geralt, yennefer | `proxmox` widget with `node:` set → VMs/LXCs running/total, node CPU, mem | `PVE_HOMEPAGE_TOKEN` (one token, cluster-wide user; each tile points at its own node so one node's death doesn't blank the other) |
+| **Lab** | geralt, yennefer | `proxmox` widget with `node:` set → VMs/LXCs running/total, node CPU, mem | `PVE_HOMEPAGE_TOKEN` and `PVE_HOMEPAGE_TOKEN_YENNEFER` — the nodes are standalone, so the same user and token must be created on each; each tile points at its own node so one node's death doesn't blank the other |
 | | PBS | `proxmoxbackupserver` → datastore usage, failed tasks | `PBS_HOMEPAGE_TOKEN` |
 | | Beszel | **link tile only.** Homepage's `beszel` widget requires a PocketBase *superuser* login (its docs, verified 2026-09-02), i.e. full hub admin rights in the dashboard's `.env`. Not worth it for two numbers; Beszel is one click away and Pulse covers per-guest. Opt in later with `BESZEL_ADMIN_*` + `version: 2` (hub is 0.18.7 ≥ 0.9) if wanted | — |
 | | Uptime Kuma | `uptimekuma` → up/down counts, incidents; needs a **status page** (`lab`) to exist in Kuma | none (status page is public within the LAN) |
@@ -277,8 +279,11 @@ nothing here needs the paid tiers.
   creates a privilege-separated user and a custom read-only role (it needs a
   few privileges beyond `PVEAuditor`, e.g. `VM.GuestAgent.Audit` for guest
   disk usage, which is why it doesn't reuse the Homepage token). **Read the
-  script before running it on the node.** Because geralt+yennefer are one
-  cluster, the PVE user is created once.
+  script before running it on the node.** geralt and yennefer are standalone
+  (no corosync cluster), so the script is generated and run **per node**, and
+  each node's self-signed certificate needs its SHA-256 fingerprint pinned in
+  Pulse; PBS's certificate has no IP in its SANs, so pinning is mandatory
+  there.
 - **Auto-update off** (Settings → System → Updates) — house policy; updates go
   in the weekly pass as `install.sh --version <next>`.
 - **Notifications off.** PVE already notifies on vzdump failures, `zed` on
@@ -354,11 +359,12 @@ docs. Every item here changed something in the runbook or appendices.
    dashboard tiles just never populate and nothing logs an error.
 3. **OliveTin password hashes are argon2id**, not bcrypt. The docs' recipe is
    in B3. A bcrypt string is silently "wrong password".
-4. **OliveTin runs as user `olivetin`** in the image (uid 1000 upstream). The
-   ssh dir is mounted at `/home/olivetin/.ssh` and must be `700`/`600`, owned
-   by uid 1000. Confirm with `docker compose exec olivetin id` in B4; if the
-   uid differs, `chown` the ssh dir to that uid (host-side) — do **not** loosen
-   modes, ssh refuses a world-readable key or config.
+4. **OliveTin runs as user `olivetin`, uid 1000** (verified from the image
+   config 2026-09-03: `useradd --system --create-home olivetin -u 1000`, then
+   `USER olivetin`). Two consequences: the ssh dir mounted at
+   `/home/olivetin/.ssh` must be `700`/`600` owned by uid 1000 (= ciri, so
+   nothing to chown), and **any `RUN` in the Dockerfile needs `USER root`
+   first and `USER olivetin` after** — the first build failed on exactly this.
 5. **qBittorrent's API needs a matching `Referer`** (CSRF guard) or it answers
    403/"Forbidden" even with correct credentials. The script sends it. Also:
    qBit bans a client after repeated failed logins — if the tile shows an
@@ -398,7 +404,6 @@ docs. Every item here changed something in the runbook or appendices.
 
 - OliveTin: that `icon:` accepts an HTML entity like `&#x1F4E6;` (docs show
   named icons and emoji; if it renders literally, use an emoji character).
-- OliveTin: the exact uid of user `olivetin` in `3000.19.0` (item 4).
 - static-web-server: whether it emits any `Cache-Control` on plain files
   (Homepage fetches server-side each refresh, so a header would only matter
   if a proxy sat between them — none does).
@@ -416,7 +421,9 @@ agent runs afterwards.
 
 ## Phase A — tokens and accounts (no impact on anything running)
 
-### A1. PVE token (once — users are cluster-wide). On **geralt**:
+### A1. PVE token. Run on **geralt** *and again on yennefer* — the nodes are
+standalone, so users and tokens are per node. Record geralt's secret as
+`PVE_HOMEPAGE_TOKEN` and yennefer's as `PVE_HOMEPAGE_TOKEN_YENNEFER`:
 
 ```bash
 pveum user add homepage@pve --comment "dashboard, read-only (proposal 008)"
@@ -556,7 +563,7 @@ docker compose logs -f --tail=50   # Homepage: "ready"; OliveTin: actions loaded
 *(verify)*
 
 ```bash
-curl -sI http://<LAN_PREFIX>.150:3010/ | head -1               # 307 → /login (gate is on)
+curl -sI http://<LAN_PREFIX>.150:3010/ | head -1               # 307 → /auth/signin (gate is on)
 curl -s -H 'Host: evil' http://<LAN_PREFIX>.150:3010/ | head -c 80   # Host not allowed
 docker compose exec olivetin id                                 # uid must be 1000 (= ciri) or the 600 key is unreadable — see §11
 docker compose exec olivetin ssh -o BatchMode=yes ciri media-df   # end-to-end over the mounted ~/.ssh
@@ -644,13 +651,25 @@ Then in the browser at `http://<LAN_PREFIX>.205:7655`:
 
 1. Set the admin password (record as `PULSE_ADMIN_PASSWORD`).
 2. **Settings → System → Updates → automatic updates off.**
-3. Settings → Nodes → add PVE: choose "setup script", **read it**, run it on
-   geralt once (cluster-wide user + custom role), paste the result.
-4. Same for PBS (`https://<LAN_PREFIX>.200:8007`).
-5. Notifications: leave disabled (§7).
+3. Settings → Nodes → add PVE **twice**, once per node (`geralt` →
+   `https://<LAN_PREFIX>.21:8006`, `yennefer` → `https://<LAN_PREFIX>.22:8006`);
+   the nodes are standalone, so each needs its own user, role and token.
+   Choose **"Manual token setup"**, not "Host telemetry agent" — the agent is a
+   second systemd service on each hypervisor duplicating what Beszel already
+   reports. **Read the generated script**, then run it on that node.
+4. Same for PBS (`pbs` → `https://<LAN_PREFIX>.200:8007`).
+5. Pin each instance's certificate fingerprint (Manage → TLS). Read the real
+   values from the endpoints, e.g.
+   `echo | openssl s_client -connect <LAN_PREFIX>.21:8006 2>/dev/null | openssl x509 -noout -fingerprint -sha256`.
+   Never use "disable TLS verification". If an instance failed before the pin,
+   it is now **paused** — resume it explicitly.
+6. Notifications: leave disabled (§7).
 
-*(verify)* the Nodes page lists geralt + yennefer with every guest, and
+*(verify)* the Nodes page lists geralt + yennefer + pbs with every guest, and
 Backups shows last night's job. `pct config 205` matches the create line.
+Confirm polling from the node side, not the tile:
+`grep <LAN_PREFIX>.205 /var/log/pveproxy/access.log | tail` on each node should
+show a steady stream of 200s as `pulse-monitor@pve!pulse-token`.
 
 ## Phase E — verification (the contract tests)
 
@@ -660,7 +679,7 @@ Backups shows last night's job. `pct config 205` matches the create line.
 | E2 | `http://<LAN_PREFIX>.150:3010/` bypassing Caddy | still asks for the password |
 | E3 | Stop the socket proxy: `docker stop homepage-socket-proxy` | status dots go grey, the rest of the page lives; start again |
 | E4 | Start a large torrent that completes; watch `qbit-move` | `current` shows name + rising %, `moving` returns to 0 after |
-| E5 | On geralt, `systemctl stop nfs-server` for 60 s (from proposal 005 D7) | Media share tile shows `mounted: false`; Homepage and OliveTin **stay up**; back to `true` after start |
+| E5 | On geralt, `systemctl stop nfs-server`, then **inside the window** run `docker exec olivetin /scripts/collect.sh media-df ciri` — the cron copy only fires every 5 min, so a 90 s outage can miss it entirely, and `ssh <host> media-df` alone only prints to the terminal: **`collect.sh` is what writes `results/media-df.json`**, which is the only thing the tile reads | `state: unreachable` while nfsd is down, `state: ok` after start, the tile following within its 60 s `refreshInterval`; Homepage and OliveTin **stay up**; the collector returns in ~3 s rather than hanging |
 | E6 | Press *Refresh package updates* in OliveTin | `updates.json` refreshes within ~1 min; counts match `apt list --upgradable` run by hand on one host |
 | E7 | `ssh … root@<LAN_PREFIX>.21 'cat /etc/shadow'` and `ssh … ciri@<LAN_PREFIX>.150 'updates; id'` with the ops key | `refused:` / sudo denial, exit ≠ 0, nothing executed |
 | E8 | Kuma: stop the `homepage` container for 2 min | phone ping, then resolved |
@@ -684,7 +703,86 @@ Backups shows last night's job. `pct config 205` matches the create line.
 
 ## As-built deviations
 
-*(empty — nothing deployed yet)*
+All phases executed and verified (A/B 2026-09-02/03, C–F 2026-09-07). E4 is
+the one contract test still unobserved. After the three fixes below were applied, all collectors produced real
+data: `updates.json` (58 pending across 3 hosts + 8 LXCs, ~45 s for the full
+sweep), `media-df.json` (`mounted: true`, 80 % used), `qbit-move.json` (idle);
+the IP:3010 path now redirects to the login like the FQDN path.
+
+1. **Dockerfile needed `USER root` … `USER olivetin`** — the base image ends
+   with `USER olivetin`, so the package install ran unprivileged and failed
+   ("requires superuser privileges"). Appendix D1 updated; uid confirmed 1000.
+2. **`.env` placeholder survived in `HOMEPAGE_ALLOWED_HOSTS`** — the literal
+   `<LAN_PREFIX>.150:3010` was left in, so every request by IP:port got 400
+   "Host validation failed" while the FQDN path worked. Caught in B4
+   verification because the masked output was 21 characters long — exactly the
+   placeholder. Lesson for the `.env.example`: the address-bearing line is the
+   one most easily missed; it is now called out at the top of the file.
+3. **`media-df.sh` reported the share missing while it was mounted** —
+   `findmnt` prints *two* lines at an automount point (`autofs` + `nfs4`), and
+   the script compared the whole output to `nfs4`. Fixed to look for an nfs4
+   line (Appendix E4).
+4. **PVE nodes have no `jq`** — `updates-report.sh` depended on it. Rewritten
+   jq-free rather than installing a package on the hypervisors for a tile
+   (Appendix E2). ciri keeps `jq` for the qBit script.
+5. **Homepage's login redirect is `/auth/signin`, not `/login`** — cosmetic;
+   the Kuma note (accept 3xx) stands.
+6. **OliveTin logs `Could not create themes directory: /config/custom-webui:
+   permission denied`** at start — the single-file `config.yaml` mount leaves
+   `/config` image-owned. Harmless (no custom theme); left as is.
+7. Files under `results/` come out `ciri:systemd-journal` — the container's
+   gid 999 maps to that host group. Cosmetic; they are world-readable by
+   design.
+8. **The nodes are NOT a cluster** — §7 and A1 assumed one ("users are
+   cluster-wide"), but `pvecm status` reports no corosync config on either
+   node, as `network.md` says (standalone until a third vote exists). Two
+   consequences: Pulse needs geralt, yennefer and PBS added as three separate
+   instances, and Homepage needs a *second* `homepage@pve!dashboard` token
+   created on yennefer, carried as `PVE_HOMEPAGE_TOKEN_YENNEFER` and
+   referenced by the yennefer tile alone.
+9. **Every PVE/PBS certificate is self-signed and needs a pinned
+   fingerprint** — each standalone node has its own CA, and the PBS cert
+   carries no IP in its SANs at all (`valid for 127.0.0.1, ::1, not
+   <LAN_PREFIX>.200`), so hostname verification fails even with a trusted CA.
+   Pin the SHA-256 fingerprint per instance in Pulse; never disable TLS
+   verification. Fingerprints change if a cert is regenerated — see
+   `maintenance.md`.
+10. **Pulse pauses an instance after repeated connection failures, and the
+    pause survives fixing the cause.** The UI kept showing geralt as "Active,
+    0s ago" while the log said `Skipping PVE client init: instance is paused`
+    and the node's own `pveproxy` access log showed zero requests. Verify
+    polling from the *node* side (`grep <PULSE_IP> /var/log/pveproxy/access.log`,
+    ~130–150 hits/min per node at a 10 s interval), not from the Pulse tile.
+11. **Pulse polls `GET /nodes/{node}/apt/update`, which needs `Sys.Modify`** —
+    a write privilege the read-only token must not have, so it 403s ~6× a
+    minute per node in `pveproxy`'s log. Not granted: pending updates already
+    come from `updates-report.sh`. Log noise accepted.
+12. **The Pulse setup script grants more than read-only** — as-built it
+    created `pulse-monitor@pve` with role `PulseMonitor`
+    (`Sys.Audit,VM.GuestAgent.Audit,VM.GuestAgent.FileRead`) *plus*
+    `PVEAuditor` on `/` *plus* `PVEDatastoreAdmin` on `/storage`; PBS got
+    `Audit` on `/` only. `PVEDatastoreAdmin` can allocate and delete storage
+    content and `VM.GuestAgent.FileRead` reads files inside any guest with the
+    agent. Left at the installer's defaults, flagged for review.
+13. **`media-df.sh` could not see a dead NFS server** (found by E5). Stopping
+    `nfs-server` on geralt leaves the client's nfs4 mount in the table, so the
+    findmnt check still said `mounted: true`; and because the mount is `hard`,
+    an unguarded `df` would have blocked forever rather than reporting. The
+    script now probes the server's 2049 port and caps `df` with `timeout`,
+    emitting `state` = `ok` / `unreachable` / `unmounted`; the Media share tile
+    maps `state` instead of `mounted`. Two latent bugs fixed with it: a
+    pipeline hid `timeout`'s exit status behind `tail`'s, and `pipefail` would
+    have aborted the script with no output at all if the path had no mount.
+    The original E5 was also unrunnable as written — the collector fires every
+    5 min, so a 90 s outage can miss it; the test now runs the collector by
+    hand inside the window.
+
+Verified in B4 (read-only, 2026-09-03): all four containers up, Homepage
+healthy on 3010, OliveTin uid 1000; FQDN Host → 307 to `/auth/signin`; wrong
+Host → 400; socket proxy GET 200 / POST 403; ssh from inside the OliveTin
+container to ciri works; forced-command whitelist: `media-df` and `qbit-move`
+return JSON, `updates; id`, an empty request and `id; ls /` all `refused`
+with exit 126, and `sudo -n` denies non-whitelisted argv; sudoers parses.
 
 ## Follow-ups (not in scope)
 
@@ -825,7 +923,9 @@ networks:
 
 # --- Homepage itself ---
 # Hosts the app may be reached by (comma-separated, no spaces). The IP:port is
-# for Kuma and for troubleshooting without Caddy.
+# for Kuma and for troubleshooting without Caddy. REPLACE <LAN_PREFIX> HERE TOO —
+# it is the one placeholder that is not a secret and was missed on first deploy
+# (symptom: 400 "Host validation failed" by IP, while the FQDN works).
 HOMEPAGE_ALLOWED_HOSTS=home.kaermorhen.fyi,<LAN_PREFIX>.150:3010
 # openssl rand -hex 32
 HOMEPAGE_AUTH_SECRET=<HOMEPAGE_AUTH_SECRET>
@@ -1067,8 +1167,19 @@ stats popover through the socket proxy. Names must match `docker ps` exactly.
 # OliveTin + the two tools its actions need. Base is Fedora (microdnf).
 # Bump the tag here on upgrade, then: docker compose build --pull && up -d
 FROM docker.io/jamesread/olivetin:3000.19.0
+# The base image ends with `USER olivetin` (uid 1000, created with a home dir),
+# so package installs must switch to root and hand back to the same user —
+# without the final USER line the container would run as root.
+USER root
 RUN microdnf install -y openssh-clients jq && microdnf clean all
+USER olivetin
 ```
+
+As-built note (2026-09-03): the first build failed with "The requested
+operation requires superuser privileges" — the base image's `USER olivetin`
+applies to our `RUN` too. The `USER root` / `USER olivetin` pair above is the
+fix; the image config (read from Docker Hub) confirms `useradd --system
+--create-home olivetin -u 1000`, so item 4 in §11 is settled: uid 1000.
 
 ### D2. `config.yaml`
 
@@ -1246,29 +1357,35 @@ exec "$script"
 # refreshing apt's lists (the same `apt update` the weekly pass runs); never
 # installs anything. Counts apt only — Kuma (npm), Pi-hole, Caddy plugins and
 # Docker images are not apt and stay manual (maintenance.md).
-# Requires: apt, jq; pct on PVE nodes.
+# Deliberately jq-free: the PVE nodes don't ship jq and this must not pull a
+# package onto a hypervisor for a dashboard tile. Requires: apt; pct on PVE.
 set -euo pipefail
 
-count_upgradable() {   # stdin-free; prints an integer, never fails
+count_upgradable() {   # prints an integer, never fails
+  local n
   apt-get update -qq >/dev/null 2>&1 || true
-  apt list --upgradable 2>/dev/null | grep -c '/' || true
+  n=$(apt list --upgradable 2>/dev/null | grep -c '/' || true)
+  n=${n//[^0-9]/}
+  printf '%s' "${n:-0}"
 }
 
 host=$(hostname -s)
 pending=$(count_upgradable)
+checked=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if command -v pct >/dev/null 2>&1; then
-  guests=$(
-    pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' | while read -r id; do
-      name=$(pct config "$id" | awk '/^hostname:/{print $2}')
-      n=$(pct exec "$id" -- sh -c 'apt-get update -qq >/dev/null 2>&1; apt list --upgradable 2>/dev/null | grep -c /' 2>/dev/null || true)
-      jq -nc --arg id "$id" --arg name "$name" --argjson n "${n:-0}" '{id:$id, name:$name, pending:$n}'
-    done | jq -s .
-  )
-  jq -nc --arg h "$host" --argjson p "$pending" --argjson g "$guests" \
-    '{host:$h, pending:$p, guests:$g, checked:(now|todate)}'
+  guests=""
+  while read -r id; do
+    [[ -n $id ]] || continue
+    name=$(pct config "$id" | awk '/^hostname:/{print $2}')
+    # </dev/null: pct exec must not swallow the id list on the loop's stdin
+    n=$(pct exec "$id" -- sh -c 'apt-get update -qq >/dev/null 2>&1; apt list --upgradable 2>/dev/null | grep -c /' </dev/null 2>/dev/null || true)
+    n=${n//[^0-9]/}
+    guests+="${guests:+,}{\"id\":\"$id\",\"name\":\"$name\",\"pending\":${n:-0}}"
+  done < <(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}')
+  printf '{"host":"%s","pending":%s,"guests":[%s],"checked":"%s"}\n' "$host" "$pending" "$guests" "$checked"
 else
-  jq -nc --arg h "$host" --argjson p "$pending" '{host:$h, pending:$p, checked:(now|todate)}'
+  printf '{"host":"%s","pending":%s,"checked":"%s"}\n' "$host" "$pending" "$checked"
 fi
 ```
 
@@ -1325,20 +1442,67 @@ jq -nc --argjson items "$items" '{
 
 ```bash
 #!/usr/bin/env bash
-# media-df.sh — is the NFS media share REALLY mounted, and how full is it?
-# `findmnt` must report nfs4: the path is an automount trigger, so an unmounted
-# share shows as `autofs` (or nothing) and df would happily describe the root
-# disk instead — the 2026-07-27 trap. Prints ONE JSON object. Read-only.
+# media-df.sh — is the NFS media share really usable, and how full is it?
+#
+# Three states, because "is it in the mount table" and "does it answer" are
+# different questions:
+#   unmounted   — no nfs4 filesystem at the path (automount never fired, or
+#                 the share was unmounted)
+#   unreachable — the nfs4 mount is present but the server's nfsd is not
+#                 answering (the 2026-09-07 E5 finding: stopping nfs-server on
+#                 geralt leaves the client mount in place, so a findmnt-only
+#                 check reports the share healthy while nothing can be read)
+#   ok          — mounted and answering; sizes are real
+#
+# The path is an automount trigger, so `findmnt` lists TWO filesystems there
+# when the share is up (the `autofs` trigger AND the `nfs4` mount on top) and
+# only `autofs` when it is down. Look for an nfs4 line; a naive "first line"
+# check always says autofs and reports the share missing — the 2026-09-03
+# as-built bug. If nothing nfs4 is there, df would happily describe the root
+# disk instead (the 2026-07-27 trap), so df is only run after the check.
+#
+# The mount is `hard`, so df against a dead server blocks indefinitely and
+# would hang this collector (and pile up OliveTin runs) instead of reporting.
+# Hence: probe the server's nfsd port first, and still cap df with a timeout.
+#
+# Prints ONE JSON object. Read-only. Env: MEDIA_DIR, PROBE_TIMEOUT, DF_TIMEOUT.
 set -euo pipefail
 MEDIA_DIR=${MEDIA_DIR:-/mnt/media}
-fstype=$(findmnt -n -o FSTYPE --target "$MEDIA_DIR" 2>/dev/null || true)
-if [[ $fstype == nfs4 ]]; then
-  read -r size used avail pct < <(df -B1 --output=size,used,avail,pcent "$MEDIA_DIR" | tail -1)
-  jq -nc --argjson s "$size" --argjson u "$used" --argjson a "$avail" --argjson p "${pct%\%}" \
-    '{mounted:true, size:$s, used:$u, avail:$a, pct:$p, updated:(now|todate)}'
-else
-  jq -nc --arg t "${fstype:-none}" '{mounted:false, fstype:$t, size:0, used:0, avail:0, pct:0, updated:(now|todate)}'
+PROBE_TIMEOUT=${PROBE_TIMEOUT:-3}
+DF_TIMEOUT=${DF_TIMEOUT:-8}
+NFSD_PORT=${NFSD_PORT:-2049}
+
+emit() { # state mounted fstype size used avail pct
+  jq -nc --arg st "$1" --argjson m "$2" --arg t "$3" \
+    --argjson s "$4" --argjson u "$5" --argjson a "$6" --argjson p "$7" \
+    '{mounted:$m, state:$st, fstype:$t, size:$s, used:$u, avail:$a, pct:$p,
+      updated:(now|todate)}'
+}
+
+# `|| types=` because pipefail + a missing path would otherwise abort the
+# script with no JSON at all.
+types=$(findmnt -n -o FSTYPE "$MEDIA_DIR" 2>/dev/null | tr '\n' ',' | sed 's/,$//') || types=
+if ! grep -qw nfs4 <<<"$types"; then
+  emit unmounted false "${types:-none}" 0 0 0 0
+  exit 0
 fi
+
+addr=$(findmnt -n -t nfs4 -o OPTIONS "$MEDIA_DIR" 2>/dev/null \
+  | tr ',' '\n' | sed -n 's/^addr=//p' | head -1) || addr=
+if [[ -n $addr ]] \
+  && ! timeout "$PROBE_TIMEOUT" bash -c ": </dev/tcp/$addr/$NFSD_PORT" 2>/dev/null; then
+  emit unreachable false nfs4 0 0 0 0
+  exit 0
+fi
+
+# No pipe here: a pipeline would report tail's status, not timeout's.
+if ! raw=$(timeout -k 2 "$DF_TIMEOUT" \
+    df -B1 --output=size,used,avail,pcent "$MEDIA_DIR" 2>/dev/null); then
+  emit unreachable false nfs4 0 0 0 0
+  exit 0
+fi
+read -r size used avail pct < <(tail -1 <<<"$raw")
+emit ok true nfs4 "$size" "$used" "$avail" "${pct%\%}"
 ```
 
 # Appendix F — Caddyfile additions (LXC 202, inside the wildcard block)

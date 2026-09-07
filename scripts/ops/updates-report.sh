@@ -4,27 +4,33 @@
 # refreshing apt's lists (the same `apt update` the weekly pass runs); never
 # installs anything. Counts apt only — Kuma (npm), Pi-hole, Caddy plugins and
 # Docker images are not apt and stay manual (maintenance.md).
-# Requires: apt, jq; pct on PVE nodes.
+# Deliberately jq-free: the PVE nodes don't ship jq and this must not pull a
+# package onto a hypervisor for a dashboard tile. Requires: apt; pct on PVE.
 set -euo pipefail
 
-count_upgradable() {   # stdin-free; prints an integer, never fails
+count_upgradable() {   # prints an integer, never fails
+  local n
   apt-get update -qq >/dev/null 2>&1 || true
-  apt list --upgradable 2>/dev/null | grep -c '/' || true
+  n=$(apt list --upgradable 2>/dev/null | grep -c '/' || true)
+  n=${n//[^0-9]/}
+  printf '%s' "${n:-0}"
 }
 
 host=$(hostname -s)
 pending=$(count_upgradable)
+checked=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 if command -v pct >/dev/null 2>&1; then
-  guests=$(
-    pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' | while read -r id; do
-      name=$(pct config "$id" | awk '/^hostname:/{print $2}')
-      n=$(pct exec "$id" -- sh -c 'apt-get update -qq >/dev/null 2>&1; apt list --upgradable 2>/dev/null | grep -c /' 2>/dev/null || true)
-      jq -nc --arg id "$id" --arg name "$name" --argjson n "${n:-0}" '{id:$id, name:$name, pending:$n}'
-    done | jq -s .
-  )
-  jq -nc --arg h "$host" --argjson p "$pending" --argjson g "$guests" \
-    '{host:$h, pending:$p, guests:$g, checked:(now|todate)}'
+  guests=""
+  while read -r id; do
+    [[ -n $id ]] || continue
+    name=$(pct config "$id" | awk '/^hostname:/{print $2}')
+    # </dev/null: pct exec must not swallow the id list on the loop's stdin
+    n=$(pct exec "$id" -- sh -c 'apt-get update -qq >/dev/null 2>&1; apt list --upgradable 2>/dev/null | grep -c /' </dev/null 2>/dev/null || true)
+    n=${n//[^0-9]/}
+    guests+="${guests:+,}{\"id\":\"$id\",\"name\":\"$name\",\"pending\":${n:-0}}"
+  done < <(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}')
+  printf '{"host":"%s","pending":%s,"guests":[%s],"checked":"%s"}\n' "$host" "$pending" "$guests" "$checked"
 else
-  jq -nc --arg h "$host" --argjson p "$pending" '{host:$h, pending:$p, checked:(now|todate)}'
+  printf '{"host":"%s","pending":%s,"checked":"%s"}\n' "$host" "$pending" "$checked"
 fi

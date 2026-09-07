@@ -1,0 +1,12 @@
+title: kaer morhen
+theme: dark
+color: slate
+headerStyle: boxed
+target: _self
+statusStyle: dot
+hideVersion: true
+layout:
+  Lab:   { style: row, columns: 4 }
+  ciri:  { style: row, columns: 4 }
+  Media: { style: row, columns: 4 }
+  Apps:  { style: row, columns: 4 }

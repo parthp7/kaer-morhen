@@ -68,6 +68,8 @@ scripts/maintenance/lab-deep-check.sh
 | **104 `uptime-kuma`** | Not apt: `systemctl stop uptime-kuma` → `runuser -u uptime-kuma -- bash -c 'cd /opt/uptime-kuma && git fetch --all && npm run setup'` → start |
 | **150 `ciri`** | Ubuntu apt + Docker's repo + NVIDIA's repo. After a toolkit bump, confirm the `docker.service.d/wait-for-cdi.conf` drop-in survived and `NVIDIA_CTK_CDI_OUTPUT_FILE_PATH` still points at `/etc/cdi/nvidia.yaml` |
 | Both nodes | Nothing — the subscription-nag patch re-applies itself via `/etc/apt/apt.conf.d/no-nag-script` |
+| **205 `pulse`** | Not apt: `curl -fsSL <install.sh> -o /tmp/pulse-install.sh`, read it, then `bash /tmp/pulse-install.sh --version <next tag>`. Auto-update is deliberately off. After a PVE or PBS certificate is regenerated, its **pinned fingerprint in Pulse goes stale** and that instance goes Unreachable, then **paused** — re-pin and resume it explicitly ([proposal 008](proposals/008-lab-dashboard.md)) |
+| **150 `ciri` — `homepage` stack** | The only stack with a **`build:`** (OliveTin plus `openssh-clients` and `jq`). Bump the `FROM` tag in `olivetin/Dockerfile`, then `docker compose build --pull` **before** `up -d`; a plain `pull` leaves the old local image in place |
 
 ## Monthly pass (physical)
 
@@ -359,6 +361,7 @@ cannot name a version it never recorded.
 | 201 `pihole-2` | Pi-hole | v6 | 0 pending (was 35) |
 | 202 `proxy` | Caddy | 2.11.4 | 0 pending; cloudflare plugin **present**. Caddy itself was *not* in the D6 upgrade set — the binary is still package-owned, so the plugin-drop risk stands |
 | 104 `uptime-kuma` | Uptime-Kuma | 2.4.0 | per as-built doc; not re-verified |
+| 205 `pulse` | Pulse | **v6.4.1** | built 2026-09-07, auto-update off; upgrade = re-run `install.sh --version <tag>` |
 | 150 `ciri` | Ubuntu | 26.04 LTS | kernel 7.0.0-30-generic, 8 pending |
 | 150 `ciri` | Docker Engine | **29.7.2** | docs said 29.6.1 — drift corrected |
 | 150 `ciri` | Docker Compose | **v5.5.0** | docs said v5.3.1 — drift corrected |
@@ -369,6 +372,10 @@ cannot name a version it never recorded.
 
 | Stack | Service | Current | Previous (rollback) | Tier |
 |---|---|---|---|---|
+| homepage | homepage | `ghcr.io/gethomepage/homepage:v2.2.0` | — | 1 |
+| homepage | olivetin | `kaermorhen/olivetin:3000.19.0` (local build from `jamesread/olivetin:3000.19.0`) | — | 1 |
+| homepage | socket-proxy | `lscr.io/linuxserver/socket-proxy:3.4.4` | — | 0 |
+| homepage | results | `joseluisq/static-web-server:2.44.0` | — | 0 |
 | ai | ollama | `ollama/ollama:0.32.15` | `ollama/ollama:0.32.5` | 1 |
 | ai | open-webui | `ghcr.io/open-webui/open-webui:v0.11.0` | — | 1 |
 | ai | searxng | `searxng/searxng:2026.8.22-9fea41204` | `searxng/searxng:2026.7.28-c01178d03` | 0 |

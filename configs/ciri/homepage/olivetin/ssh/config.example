@@ -1,0 +1,19 @@
+# → olivetin/ssh/config (untracked; real addresses). Mounted read-only at
+# /home/olivetin/.ssh inside the container, so ssh reads it as ~/.ssh/config:
+# dir 700, files 600, owned by uid 1000 — ssh refuses a config it considers
+# writable by others. Key + known_hosts live beside it (Phase B2), never committed.
+Host *
+  IdentityFile ~/.ssh/id_ed25519
+  UserKnownHostsFile ~/.ssh/known_hosts
+  StrictHostKeyChecking yes
+  IdentitiesOnly yes
+
+Host geralt
+  HostName <LAN_PREFIX>.21
+  User root
+Host yennefer
+  HostName <LAN_PREFIX>.22
+  User root
+Host ciri
+  HostName <LAN_PREFIX>.150
+  User ciri

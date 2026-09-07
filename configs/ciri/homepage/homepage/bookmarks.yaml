@@ -1,0 +1,6 @@
+# bookmarks.yaml — plain links, no status. Kept minimal; the tiles are in services.yaml.
+- Admin:
+    - geralt: [{ icon: proxmox.png, href: https://geralt.kaermorhen.fyi }]
+    - yennefer: [{ icon: proxmox.png, href: https://yennefer.kaermorhen.fyi }]
+    - PBS: [{ icon: proxmox.png, href: https://pbs.kaermorhen.fyi }]
+    - Tailscale admin: [{ icon: tailscale.png, href: https://login.tailscale.com/admin }]

@@ -1,0 +1,16 @@
+- resources:
+    label: ciri
+    cpu: true
+    memory: true
+    uptime: true
+- resources:
+    label: local disks
+    disk:
+      - /host/data
+      - /host/torrents
+- datetime:
+    text_size: xl
+    format: { dateStyle: short, timeStyle: short, hour12: false }
+- search:
+    provider: duckduckgo   # SearXNG is internal to the ai stack (no published port)
+    target: _blank
