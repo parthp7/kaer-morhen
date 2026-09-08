@@ -84,6 +84,9 @@ services:
       # Which HDFC instruments feed which Sure account (last 4 digits).
       HDFC_SAVINGS_LAST4: ${HDFC_SAVINGS_LAST4:?set in .env}
       HDFC_CC_LAST4: ${HDFC_CC_LAST4:?set in .env}
+      # Debit card last-4 (ATM/POS alerts name the card, not the account);
+      # routed to the savings account. Optional.
+      HDFC_DEBIT_CARD_LAST4: ${HDFC_DEBIT_CARD_LAST4:-}
       # Ollama fallback extractor (same VM). Non-thinking model, per
       # configs/ciri/ai README: a thinking model needs think:false per call.
       OLLAMA_URL: ${OLLAMA_URL:?set in .env}

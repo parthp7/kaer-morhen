@@ -5,14 +5,17 @@
 #   expect: <status> [key=value ...]
 #     status  ok | skip | unparsed | reject
 #     keys    kind amount date last4 channel ref template counterparty
+#             values with spaces must be quoted: counterparty="ACME PVT LTD"
 #
-# EVERY MESSAGE BELOW IS SYNTHETIC. They are written in the shapes that HDFC
-# alerts are commonly reported to take, not copied from a real inbox, and the
-# bank changes wording without notice. Phase A4 of proposal 010 replaces them
-# with redacted real messages (keep amounts, change digits and names) — and
-# unredacted samples go in fixtures/private/, which is git-ignored.
+# The first 19 blocks are SYNTHETIC — written in the shapes HDFC alerts are
+# commonly reported to take, not copied from an inbox. Everything after the
+# "REDACTED FROM REAL MESSAGES" banner below was captured from a real inbox in
+# Phase A4 (2026-09-07) and redacted: wording, spacing and punctuation are the
+# bank's, every digit run and proper name has been changed. Unredacted
+# originals live in fixtures/private/, which is git-ignored.
 #
-# Account numbers used here: savings ends 1234, credit card ends 9876.
+# Account numbers used here: savings ends 1234, credit card ends 9876,
+# debit card ends 4567 (ATM and POS alerts name the card, not the account).
 
 expect: ok kind=debit amount=500 date=2026-09-04 last4=1234 channel=upi ref=123456789012 template=upi-sent counterparty=SWIGGY
 Sent Rs.500.00
@@ -79,3 +82,91 @@ Ref 923456789012
 
 expect: unparsed
 HDFC Bank alert: a purchase of Rs.640 was made today using your account. Contact us if you have questions.
+
+# =============================================================================
+# REDACTED FROM REAL MESSAGES — Phase A4, 2026-09-07.
+# These are the shapes the synthetic set got wrong. Each one failed before the
+# fix noted against it; see the proposal's As-built deviations for the why.
+# =============================================================================
+
+# Executed UPI autopay debit. Was skipped as "mandate" noise: HDFC uses the
+# same word for announcements and for completions.
+expect: ok kind=debit amount=49 date=2026-09-01 last4=1234 channel=upi ref=903945538020 template=upi-mandate-sent counterparty="ACME MEDIA SERVICES"
+UPI Mandate:
+Sent Rs.49.00
+from HDFC Bank A/c 1234
+To ACME MEDIA SERVICES
+01/09/26
+Ref 903945538020
+Not You? Call 18002586161/SMS BLOCK UPI to 7308080808
+
+# Executed card autopay. Was skipped twice over: "autopay" noise, and the
+# money-movement gate knows no verb here — the message says "Txn Amt".
+# The Mandate ID must NEVER become the external_id: it is the same string
+# every month. The id is the shared autopay scheme (card:date:amount), which
+# is what pairs it with the "without OTP/PIN" twin below.
+expect: ok kind=debit amount=349.5 date=2026-09-05 last4=9876 channel=card template=autopay-card-success counterparty="WWW EXAMPLE TEL IN" externalId=autopay:9876:2026-09-05:349.50
+AutoPay (E-mandate) Success!
+For WWW EXAMPLE TEL IN
+Txn Amt:INR349.50
+Dt:05/09/2026
+Via:HDFC Bank CC 9876
+Mandate ID: Zk9QmXr4T2
+Not You? To Block+Reissue Call 18002586161/SMS BLOCK CC 9876 to 7308080808
+
+# The SAME charge as the block above, announced a second time in the card's
+# own wording. Recorded, not dropped: it carries the same external_id as the
+# AutoPay message, so Sure keeps one row whichever arrives first, and a lone
+# "without OTP/PIN" charge (no AutoPay twin) is still captured.
+expect: ok kind=debit amount=349.5 date=2026-09-05 last4=9876 channel=card template=card-no-otp counterparty="EXAMPLE TEL" externalId=autopay:9876:2026-09-05:349.50
+Rs.349.5 without OTP/PIN HDFC Bank Card x9876 At EXAMPLE TEL On 2026-09-05:12:09:17.Not U? Block&Reissue:Call 18002586161/SMS BLOCK CC 9876 to 7308080808
+
+# Credit-card bill paid by standing instruction — the SAVINGS leg. Recorded
+# (decision 2026-09-07) so the savings balance does not drift; Sure pairs it
+# with the card-side inflow below. The account is written bare, without "a/c",
+# and an "Info:" clause sits between the date and the balance.
+expect: ok kind=debit amount=12480 date=2026-08-12 last4=1234 channel=other template=cc-bill-autopay-debit counterparty="Credit card bill payment"
+UPDATE: INR 12,480.00 debited from HDFC Bank XX1234 on 12-AUG-26. Info: CC 000112233XXXXXX9876 Autopay SI-TAD. Avl bal:INR 2,05,310.44
+
+# The CARD leg of that same bill payment. Was thrown away as another bank's
+# message: "HDFCBANK" has no word boundary after "HDFC".
+expect: ok kind=credit amount=12480 date=2026-08-12 last4=9876 channel=card template=card-payment-received counterparty="Credit card payment"
+DEAR HDFCBANK CARDMEMBER, PAYMENT OF Rs. 12480.00 RECEIVED TOWARDS YOUR CREDIT CARD ENDING WITH 9876 ON 12-8-2026.YOUR AVAILABLE LIMIT IS RS. 128450.00
+
+# ATM cash. Names the DEBIT CARD, not the account, so it needs both a template
+# and the HDFC_DEBIT_CARD_LAST4 routing entry.
+expect: ok kind=debit amount=3200 date=2026-04-18 last4=4567 channel=atm template=atm-withdrawal-card counterparty="+MG Road Branch"
+Withdrawn Rs.3200 From HDFC Bank Card x4567 At +MG Road Branch On 2026-04-18:06:52:46 Bal Rs.214870.15 Not You? Call 18002586161/SMS BLOCK DC  4567 to 7308080808f
+
+# UPI credit behind a "Credit Alert!" heading.
+expect: ok kind=credit amount=1 date=2026-09-07 last4=1234 channel=upi ref=429162579651 template=account-credited
+Credit Alert!
+Rs.1.00 credited to HDFC Bank A/c XX1234 on 07-09-26 from VPA sender@okhdfcbank (UPI 429162579651)
+
+# Inward transfer: the narration carries another account's masked number,
+# which must not be mistaken for the credited account.
+expect: ok kind=credit amount=145600 date=2026-08-26 last4=1234 channel=other template=account-credited
+Update! INR 1,45,600.00 deposited in HDFC Bank A/c XX1234 on 26-AUG-26 for FT-A2AINT01 - 4410238877 -  - XXXXXXXXXX7702 - EXAMPLE ADVISORY SERVICES18.Avl bal INR 2,60,118.50. Cheque deposits in A/C are subject to clearing
+
+# An ANNOUNCEMENT of a future mandate deduction — still noise after the fix.
+expect: skip
+E-Mandate!
+Rs.49.00 will be deducted on 01/09/26, 00:00:00
+For ACME MEDIA SERVICES mandate
+UMN 11aa22bb33cc44dd55ee66ff77aa88bb@okhdfcbank
+Maintain Balance
+-HDFC Bank
+
+# An ANNOUNCEMENT of a future card autopay — noise, and it carries the same
+# mandate id as the success message, which is why that id is not a reference.
+expect: skip
+Alert:
+INR.349.50 will be debited on 05/09/2026 from HDFC Bank Card 9876 for WWW EXAMPLE TEL IN
+ID:Zk9QmXr4T2
+Act:https://1.hdfc.bank.in/HDFCBK/s/a/jBAbYLKM
+
+expect: skip
+Login Alert!
+We noticed that there was a login to your NetBanking.
+If it wasn't you, please call us immediately at 18002586161.
+Stay secure with HDFC Bank!

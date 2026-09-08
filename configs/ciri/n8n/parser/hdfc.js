@@ -67,7 +67,8 @@ function normalise(text) {
   return String(text || '')
     .replace(/\r/g, '')
     .replace(/\s+/g, ' ')
-    .replace(/\s*(?:Not\s*You\??|If not done by you|If not you)\b.*$/i, '')
+    // "Not You?", "Not U?" (the card-network wording), "If not done by you".
+    .replace(/\s*(?:Not\s*You\??|Not\s*U\??|If not done by you|If not you)\b.*$/i, '')
     .replace(/\s*(?:Avl|Avail(?:able)?)\.?\s*(?:bal|balance)\b.*$/i, (t) => ` ${t.trim()}`)
     .trim();
 }
@@ -75,8 +76,9 @@ function normalise(text) {
 // Words that mark a non-transaction. Checked before any template.
 const NOISE = [
   /\bOTP\b/i, /one[- ]time password/i, /verification code/i,
-  /\bwill be debited\b/i, /\bis due\b/i, /\bdue on\b/i, /\breminder\b/i,
-  /\bmandate\b/i, /\bautopay\b/i, /\be-?NACH\b/i, /\bSI\b.*\bregistered\b/i,
+  // NB "Rs.X without OTP/PIN …" is a real card charge, not an OTP message;
+  // parseSms masks that phrase before running this list (see NO_OTP_CHARGE).
+  /\bwill be debited\b/i, /\bwill be deducted\b/i, /\bis due\b/i, /\bdue on\b/i, /\breminder\b/i,
   /\bdeclined\b/i, /\bfailed\b/i, /\bunsuccessful\b/i, /could not be processed/i,
   /\brequested\b.*\b(?:money|payment|Rs)/i, /\bcollect request\b/i,
   /\bapply\b/i, /\boffer\b/i, /\bcashback of up to\b/i, /\bT&C\b/i,
@@ -84,6 +86,18 @@ const NOISE = [
   /\bbal(?:ance)? (?:as on|is|in)\b/i, /\bblocked\b/i, /\bhotlisted\b/i,
   /\blogin\b/i, /\bpassword\b/i, /\bPIN\b/i,
 ];
+
+// Mandate/autopay vocabulary is ambiguous: HDFC uses it both to announce a
+// future deduction ("E-Mandate! Rs.75 will be deducted on 01/09/26") and to
+// report one that has already happened ("UPI Mandate: Sent Rs.49.00 …",
+// "AutoPay (E-mandate) Success!"). The announcements are noise; the
+// completions are real money leaving a real account and were being dropped
+// silently until 2026-09-07. So this family only counts as noise when the
+// message does not also say the debit executed.
+const MANDATE_WORDS = [
+  /\bmandate\b/i, /\bautopay\b/i, /\be-?NACH\b/i, /\bSI\b.*\bregistered\b/i,
+];
+const EXECUTED = /(?:\bSuccess\b|^\s*(?:UPI\s+Mandate:\s*)?Sent\s+(?:Rs|INR)|\bdebited\s+from\b|\bhas been\s+(?:debited|deducted)\b)/i;
 
 const CHANNEL_HINTS = [
   [/\bUPI\b|\bVPA\b|@[a-z]{2,}\b/i, 'upi'],
@@ -117,8 +131,10 @@ function refOf(text) {
 // Last four digits of the account or card named in the SMS.
 function last4Of(text) {
   const pats = [
-    /\b(?:A\/?C|Acct|Account|a\/c)\.?\s*(?:no\.?\s*)?(?:ending\s*(?:with\s*)?)?[Xx*]*\s?(\d{4})\b/,
+    /\b(?:A\/?C|Acct|Account)\.?\s*(?:no\.?\s*)?(?:ending\s*(?:with\s*)?)?[Xx*]*\s?(\d{4})\b/i,
     /\bCard\s*(?:no\.?\s*)?(?:ending\s*(?:with\s*)?)?[Xx*]*\s?(\d{4})\b/i,
+    // HDFC's own shorthand in autopay alerts: "Via:HDFC Bank CC 9876".
+    /\b(?:CC|DC)\s*[Xx*]*\s?(\d{4})\b/i,
     /\bending\s*(?:with\s*)?[Xx*]*(\d{4})\b/i,
     /[Xx*]{2,}(\d{4})\b/,
   ];
@@ -149,13 +165,35 @@ const TEMPLATES = [
     map: (g) => ({ kind: 'debit', counterparty: g.to, instrument: 'account', channel: 'upi' }),
   },
   {
+    // "UPI Mandate: Sent Rs.49.00 from HDFC Bank A/c 1234 To APPLE MEDIA
+    // SERVICES 01/09/26 Ref 903945538020" — an executed autopay debit. Unlike
+    // upi-sent it is not anchored on "Sent", the account has no X prefix and
+    // the date carries no "On". It does carry a per-charge Ref, so the
+    // external_id is ref-based and each month's charge is distinct.
+    id: 'upi-mandate-sent',
+    re: /^UPI\s+Mandate:\s*Sent\s+(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+from\s+HDFC\s+Bank\s+(?<acct>A\/c\s*[Xx*]*\d{4})\s+To\s+(?<to>.+?)\s+(?<date>\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b/i,
+    map: (g) => ({ kind: 'debit', counterparty: g.to, instrument: 'account', channel: 'upi' }),
+  },
+  {
     id: 'upi-debited-vpa',
     re: /(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+(?:has been\s+)?debited\s+from\s+(?:HDFC\s+Bank\s+)?(?<acct>a\/c\s*[Xx*]*\d{4}).*?\bto\s+(?:VPA\s+)?(?<to>\S+@\S+|[^()]+?)(?:\s+on\s+(?<date>\S+))?\s*(?:\(UPI|\bUPI\b)/i,
     map: (g) => ({ kind: 'debit', counterparty: g.to, instrument: 'account' }),
   },
   {
+    // The credit-card bill paid by standing instruction: the savings leg.
+    // Kept as its own template purely for the name — "HDFC debit" on a
+    // five-figure row is useless in a ledger, and this is one half of a
+    // transfer Sure has to pair with the card-side inflow.
+    id: 'cc-bill-autopay-debit',
+    re: /(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+debited\s+from\s+(?:HDFC\s+Bank\s+)?(?<acct>(?:a\/c\s*)?[Xx*]{2,}\d{4})\s+on\s+(?<date>\S+).*?\bInfo\s*:\s*CC\b.*?\bAutopay\b/i,
+    map: () => ({ kind: 'debit', counterparty: 'Credit card bill payment', instrument: 'account', channel: 'other' }),
+  },
+  {
     id: 'account-debited',
-    re: /(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+(?:has been\s+)?debited\s+from\s+(?:HDFC\s+Bank\s+)?(?<acct>a\/c\s*(?:no\.?\s*)?[Xx*]*\d{4})\s+on\s+(?<date>\S+)(?:\s+(?:to|at|for|towards)\s+(?<to>.+?))?(?:\s+Avl|\s*$)/i,
+    // The account may be written "a/c XX1234" or bare as "HDFC Bank XX1234",
+    // and the tail is no longer anchored on "Avl"/end-of-string: the SI-TAD
+    // alerts put an "Info: …" clause between the date and the balance.
+    re: /(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+(?:has been\s+)?debited\s+from\s+(?:HDFC\s+Bank\s+)?(?<acct>a\/c\s*(?:no\.?\s*)?[Xx*]*\d{4}|[Xx*]{2,}\d{4})\s+on\s+(?<date>\S+)(?:\s+(?:to|at|for|towards)\s+(?<to>.+?)(?=\s+Avl\b|$))?/i,
     map: (g) => ({ kind: 'debit', counterparty: g.to || null, instrument: 'account' }),
   },
   {
@@ -174,14 +212,46 @@ const TEMPLATES = [
     map: (g) => ({ kind: 'debit', counterparty: g.at, instrument: 'card', cardType: (g.ctype || '').toLowerCase() || null }),
   },
   {
+    // "Rs.349.5 without OTP/PIN HDFC Bank Card x9876 At EXAMPLE TEL On
+    // 2026-09-05:12:09:17." — see NO_OTP_CHARGE. Shares its external_id
+    // scheme with autopay-card-success.
+    id: 'card-no-otp',
+    re: /^(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+without\s+OTP\s*\/\s*PIN\s+HDFC\s+Bank\s+(?:(?<ctype>Credit|Debit)\s+)?Card\s*(?<card>[Xx*]*\d{4})\s+At\s+(?<at>.+?)\s+On\s+(?<date>\S+)/i,
+    map: (g) => ({ kind: 'debit', counterparty: g.at, instrument: 'card', channel: 'card', idScheme: 'autopay' }),
+  },
+  {
     id: 'card-payment-received',
-    re: /Payment\s+of\s+(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+(?:has been\s+)?(?:received|credited)\s+(?:towards|to|on)\s+(?:your\s+)?HDFC\s+Bank\s+Credit\s+Card\s*(?<card>(?:ending\s*)?[Xx*]*\d{4})(?:\s+on\s+(?<date>\S+))?/i,
+    // "HDFC Bank" is optional here: the CARDMEMBER wording says only "YOUR
+    // CREDIT CARD ENDING WITH 9876". Safe because parseSms has already
+    // established the message is HDFC's.
+    re: /Payment\s+of\s+(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+(?:has been\s+)?(?:received|credited)\s+(?:towards|to|on)\s+(?:your\s+)?(?:HDFC\s+Bank\s+)?Credit\s+Card\s*(?<card>(?:ending\s*(?:with\s*)?)?[Xx*]*\d{4})(?:\s+on\s+(?<date>\S+))?/i,
     map: () => ({ kind: 'credit', counterparty: 'Credit card payment', instrument: 'card', cardType: 'credit' }),
   },
   {
     id: 'refund-reversal',
     re: /(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+(?:has been\s+)?(?:refunded|reversed|credited back)\s+(?:to|on)\s+(?:your\s+)?(?:HDFC\s+Bank\s+)?(?<inst>(?:Credit\s+|Debit\s+)?Card|a\/c)\s*(?<acct>(?:ending\s*)?[Xx*]*\d{4})(?:\s+on\s+(?<date>\S+))?(?:\s+(?:for|from|by)\s+(?<from>.+?))?(?:\s+Avl|\s*$)/i,
     map: (g) => ({ kind: 'credit', counterparty: g.from || 'Refund', instrument: /card/i.test(g.inst) ? 'card' : 'account' }),
+  },
+  {
+    // "AutoPay (E-mandate) Success! For WWW EXAMPLE TEL IN Txn Amt:INR349.50
+    // Dt:05/09/2026 Via:HDFC Bank CC 9876 Mandate ID: Zk9QmXr4T2".
+    // NOTE: the Mandate ID is stable for the life of the mandate — the same
+    // string every month — so it must never become the reference. refOf()
+    // only recognises Ref/UPI/RRN/NEFT/IMPS keywords, none of which appear
+    // here, so the external_id falls through to sha: over the normalised
+    // text, which includes Dt and therefore differs per charge. Do not add a
+    // "Mandate ID" pattern to refOf without re-reading this.
+    id: 'autopay-card-success',
+    re: /AutoPay\s*\(E-?mandate\)\s*Success!?\s*For\s+(?<to>.+?)\s+Txn\s*Amt\s*:?\s*(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s*Dt\s*:?\s*(?<date>\S+?)\s+Via\s*:?\s*HDFC\s+Bank\s+(?:CC|Credit\s+Card|DC|Debit\s+Card|A\/c)\s*(?<card>[Xx*]*\d{4})/i,
+    map: (g) => ({ kind: 'debit', counterparty: g.to, instrument: 'card', channel: 'card', idScheme: 'autopay' }),
+  },
+  {
+    // ATM cash: the message names the DEBIT CARD, not the account, so its
+    // last-4 is neither the savings nor the credit-card number. Routing it
+    // needs HDFC_DEBIT_CARD_LAST4 (see toSure).
+    id: 'atm-withdrawal-card',
+    re: /^Withdrawn\s+(?<amt>(?:Rs\.?|INR)\s*[\d,]+(?:\.\d{1,2})?)\s+From\s+HDFC\s+Bank\s+(?:(?<ctype>Credit|Debit)\s+)?Card\s*(?<card>[Xx*]*\d{4})\s+At\s+(?<at>.+?)\s+On\s+(?<date>\S+)/i,
+    map: (g) => ({ kind: 'debit', counterparty: g.at, instrument: 'card', channel: 'atm' }),
   },
   {
     id: 'atm-withdrawal',
@@ -193,7 +263,18 @@ const TEMPLATES = [
 // A message that names money moving but matched no template. Cheap gate so
 // the LLM fallback only sees plausible transactions.
 const LOOKS_LIKE_TXN = /(?:Rs\.?|INR)\s*[\d,]+/i;
-const MOVEMENT = /\b(?:sent|debited|spent|paid|withdrawn|credited|deposited|received|refund(?:ed)?|reversed|purchase)\b/i;
+const MOVEMENT = /\b(?:sent|debited|deducted|spent|paid|withdrawn|credited|deposited|received|refund(?:ed)?|reversed|purchase)\b|\bTxn\s*Amt\b|\bwithout\s+OTP\b/i;
+
+// A merchant-initiated (tokenised / standing-instruction) card charge. HDFC
+// usually announces the same charge a second time as "AutoPay (E-mandate)
+// Success!", and the two share no reference. Rather than drop one shape by
+// rule — a silent loss the day HDFC sends this wording for a charge with no
+// AutoPay twin — both templates derive the SAME deterministic external_id
+// (card last-4 + date + amount), so Sure collapses the pair and a lone
+// message is still recorded. Two distinct autopay charges on one card, same
+// day, same amount would also collapse; mandates are per merchant, so that
+// is far rarer than the loss it prevents.
+const NO_OTP_CHARGE = /without\s+OTP\s*\/\s*PIN/i;
 
 // ------------------------------------------------------------------ main --
 
@@ -205,9 +286,19 @@ function parseSms(text, opts) {
   const out = { raw, norm };
 
   if (!norm) return Object.assign(out, { status: 'skip', reason: 'empty' });
-  if (!/\bHDFC\b/i.test(norm)) return Object.assign(out, { status: 'skip', reason: 'not-hdfc' });
+  // "\bHDFC\b" missed "DEAR HDFCBANK CARDMEMBER" — no word boundary between
+  // HDFC and BANK — and threw away real card-payment alerts as another
+  // bank's mail. Leading boundary only.
+  if (!/\bHDFC/i.test(norm)) return Object.assign(out, { status: 'skip', reason: 'not-hdfc' });
+  // The OTP/PIN noise rules must not fire on "without OTP/PIN" charges.
+  const forNoise = norm.replace(NO_OTP_CHARGE, 'w/o auth');
   for (const re of NOISE) {
-    if (re.test(norm)) return Object.assign(out, { status: 'skip', reason: `noise:${re.source.slice(0, 24)}` });
+    if (re.test(forNoise)) return Object.assign(out, { status: 'skip', reason: `noise:${re.source.slice(0, 24)}` });
+  }
+  if (!EXECUTED.test(norm)) {
+    for (const re of MANDATE_WORDS) {
+      if (re.test(norm)) return Object.assign(out, { status: 'skip', reason: `noise:${re.source.slice(0, 24)}` });
+    }
   }
   if (!LOOKS_LIKE_TXN.test(norm) || !MOVEMENT.test(norm)) {
     return Object.assign(out, { status: 'skip', reason: 'no-money-movement' });
@@ -234,15 +325,21 @@ function parseSms(text, opts) {
     channel: mapped.channel || channelOf(norm),
     counterparty: clean(mapped.counterparty) || null,
     ref: refOf(norm),
+    // toSure() puts this in the Sure row's notes so a wrong parse can be
+    // audited from the row itself (§4, §6). It was missing until 2026-09-08,
+    // which made `sms:` empty on every regex-parsed row while the LLM path —
+    // which sets raw itself — carried it. The fixtures never asserted notes,
+    // so the suite stayed green through it.
+    raw,
   };
 
   const missing = ['kind', 'amount', 'date', 'last4'].filter((k) => !txn[k]);
   if (missing.length) {
     return Object.assign(out, { status: 'reject', reason: `missing:${missing.join(',')}`, txn });
   }
-  txn.externalId = txn.ref
-    ? `ref:${txn.ref}`
-    : `sha:${(o.hash ? o.hash(norm) : fallbackHash(norm)).slice(0, 40)}`;
+  if (txn.ref) txn.externalId = `ref:${txn.ref}`;
+  else if (mapped.idScheme === 'autopay') txn.externalId = `autopay:${txn.last4}:${txn.date}:${txn.amount.toFixed(2)}`;
+  else txn.externalId = `sha:${(o.hash ? o.hash(norm) : fallbackHash(norm)).slice(0, 40)}`;
   return Object.assign(out, { status: 'ok', txn });
 }
 
@@ -258,7 +355,8 @@ function fallbackHash(s) {
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
 
-// env: { HDFC_SAVINGS_LAST4, HDFC_CC_LAST4, SURE_ACCOUNT_ID_SAVINGS,
+// env: { HDFC_SAVINGS_LAST4, HDFC_CC_LAST4, HDFC_DEBIT_CARD_LAST4,
+//        SURE_ACCOUNT_ID_SAVINGS,
 //        SURE_ACCOUNT_ID_CC, SURE_TAG_ID_AUTO_SMS }
 // Returns { ok:true, body } or { ok:false, reason }.
 function toSure(txn, env) {
@@ -267,6 +365,10 @@ function toSure(txn, env) {
   let isCard = false;
   if (txn.last4 === e.HDFC_CC_LAST4) { accountId = e.SURE_ACCOUNT_ID_CC; isCard = true; }
   else if (txn.last4 === e.HDFC_SAVINGS_LAST4) { accountId = e.SURE_ACCOUNT_ID_SAVINGS; }
+  // ATM and POS alerts name the debit card, whose last-4 differs from the
+  // account's. It is the savings account's instrument, so it routes there and
+  // is deliberately NOT a card for sign purposes: a debit is an expense.
+  else if (e.HDFC_DEBIT_CARD_LAST4 && txn.last4 === e.HDFC_DEBIT_CARD_LAST4) { accountId = e.SURE_ACCOUNT_ID_SAVINGS; }
   if (!accountId) return { ok: false, reason: `unknown-instrument:${txn.last4}` };
 
   // Sure: expense/outflow store positive (money leaving), income/inflow

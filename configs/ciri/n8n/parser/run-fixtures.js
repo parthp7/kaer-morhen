@@ -8,9 +8,13 @@
 //   # no node on the laptop? any docker host works:
 //   docker run --rm -v "$PWD/parser:/p:ro" node:22-alpine node /p/run-fixtures.js
 //
-// The env used for account routing is fixed here (savings 1234, card 9876)
-// to match the synthetic fixtures. Private fixtures using real last-4s can
-// override via HDFC_SAVINGS_LAST4 / HDFC_CC_LAST4 in the environment.
+// The env used for account routing is fixed here (savings 1234, credit card
+// 9876, debit card 4567) to match the synthetic fixtures. Private fixtures
+// using real last-4s override via HDFC_SAVINGS_LAST4 / HDFC_CC_LAST4 /
+// HDFC_DEBIT_CARD_LAST4 in the environment — and because those overrides make
+// the synthetic fixtures reject, RUN THE TWO FILES SEPARATELY:
+//   node parser/run-fixtures.js parser/fixtures/hdfc-sms.txt          # defaults
+//   HDFC_..._LAST4=… node parser/run-fixtures.js parser/fixtures/private/real.txt
 
 'use strict';
 
@@ -22,6 +26,7 @@ const { parseSms, toSure } = require('./hdfc.js');
 const ENV = {
   HDFC_SAVINGS_LAST4: process.env.HDFC_SAVINGS_LAST4 || '1234',
   HDFC_CC_LAST4: process.env.HDFC_CC_LAST4 || '9876',
+  HDFC_DEBIT_CARD_LAST4: process.env.HDFC_DEBIT_CARD_LAST4 || '4567',
   SURE_ACCOUNT_ID_SAVINGS: 'acct-savings',
   SURE_ACCOUNT_ID_CC: 'acct-cc',
   SURE_TAG_ID_AUTO_SMS: 'tag-auto-sms',
@@ -39,9 +44,13 @@ function loadBlocks(file) {
       const m = line.match(/^expect:\s*(\S+)\s*(.*)$/);
       if (!m) throw new Error(`${file}: block must start with "expect:" — got: ${line}`);
       const want = { status: m[1] };
-      for (const kv of m[2].split(/\s+/).filter(Boolean)) {
-        const [k, ...rest] = kv.split('=');
-        want[k] = rest.join('=');
+      // key=value, or key="value with spaces" — counterparties are often
+      // several words ("APPLE MEDIA SERVICES"), and splitting on whitespace
+      // silently truncated the expectation to its first word.
+      const kvRe = /([A-Za-z_]\w*)=(?:"([^"]*)"|(\S*))/g;
+      let kv;
+      while ((kv = kvRe.exec(m[2])) !== null) {
+        want[kv[1]] = kv[2] !== undefined ? kv[2] : kv[3];
       }
       cur = { file, want, lines: [] };
       continue;
@@ -73,6 +82,15 @@ function run(block) {
     });
   }
   const diffs = [];
+  // Invariant, not a per-fixture expectation: every row that reaches Sure must
+  // carry the original SMS in its notes, or the audit trail the design
+  // promises is empty.
+  if (status === 'ok' && sure) {
+    const want = String(raw).replace(/\s+/g, ' ').trim().slice(0, 40);
+    if (want && !String(sure.notes || '').replace(/\s+/g, ' ').includes(want)) {
+      diffs.push('notes: raw SMS missing from the Sure notes');
+    }
+  }
   for (const [k, v] of Object.entries(block.want)) {
     const g = got[k] == null ? '' : String(got[k]);
     if (g !== String(v)) diffs.push(`${k}: want ${JSON.stringify(v)} got ${JSON.stringify(g)}`);

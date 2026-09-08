@@ -12,8 +12,9 @@ transaction in [Sure](../sure/README.md) within minutes, with no manual step
 per transaction. Design, rationale and rejected alternatives:
 [proposal 010](../../../docs/proposals/010-bank-alerts-to-sure.md).
 
-**Status: designed and tested on the Mac, NOT yet deployed** (2026-09-04).
-The runbook is proposal 010's Phases A–E; nothing here has run on ciri.
+**Status: built and verified** (2026-09-08). Deployed on ciri, published in
+n8n, monitored in Kuma, and carrying real transactions into Sure. The runbook
+and what each verification returned: [proposal 010](../../../docs/proposals/010-bank-alerts-to-sure.md).
 
 ## Files
 
@@ -56,7 +57,10 @@ Key behaviours, each argued in the proposal:
   reference (`ref:<UPI/RRN/NEFT ref>`) when the SMS carries one, else
   `sha:<sha256 of the normalised text>`.
 - **Never guess an account.** The SMS's last-4 must equal
-  `HDFC_SAVINGS_LAST4` or `HDFC_CC_LAST4`; anything else is rejected to ntfy.
+  `HDFC_SAVINGS_LAST4`, `HDFC_CC_LAST4` or `HDFC_DEBIT_CARD_LAST4`; anything
+  else is rejected to ntfy. The debit card is its own last-4 — ATM and POS
+  alerts name the card rather than the account — and routes to the savings
+  account, as an expense, not as a card.
 - **Sign comes from `nature`.** Savings debit → `expense`, savings credit →
   `income`; card spend → `expense`, card payment/refund → `inflow` (reduces
   the liability; it is not income). Amounts are always sent positive.
@@ -141,9 +145,35 @@ exported — see Files).
 - **HDFC stopped SMS for small UPI amounts** (below ₹100 sent / ₹500
   received, since 2024). Those transactions are invisible to this pipeline
   until the email-alert follow-up lands (HDFC emails every UPI transaction).
-- **The fixtures are synthetic** until Phase A4 replaces them with redacted
-  real messages. A template that passes the synthetic set can still miss the
-  bank's actual wording; that is what the `unparsed` → ntfy path is for.
+- **Run the two fixture files separately.** `run-fixtures.js` with no
+  arguments runs the tracked synthetic set *and* `fixtures/private/`, but the
+  two need different routing env: the synthetic blocks use `1234`/`9876`/`4567`
+  and the private ones the real last-4s, so one invocation can only ever be
+  green for one of them. Pass the file explicitly.
+- **HDFC says "mandate" and "autopay" about both futures and facts.**
+  "E-Mandate! Rs.49 will be deducted…" is an announcement; "UPI Mandate: Sent
+  Rs.49.00…" and "AutoPay (E-mandate) Success!" are completed debits. The
+  noise gate only treats that vocabulary as noise when the message does not
+  also say the debit executed (`EXECUTED` in `hdfc.js`). Before A4 all three
+  were dropped silently.
+- **A mandate id is not a reference.** "Mandate ID: …" is the same string
+  every month, so using it as `external_id` would collapse a whole year of a
+  subscription into one transaction. `refOf()` deliberately does not match it;
+  those rows fall through to the `sha:` id, whose text includes the date.
+- **One autopay card charge arrives twice** — once as "Rs.X without OTP/PIN …"
+  and once as "AutoPay (E-mandate) Success!", with no shared reference. Both
+  are recorded under the **same deterministic `external_id`**
+  (`autopay:<last4>:<date>:<amount>`), so Sure keeps one row whichever lands
+  first, and a "without OTP/PIN" charge with no AutoPay twin is still
+  captured instead of silently dropped. Two distinct autopay charges on one
+  card on the same day for the same amount would collapse into one; mandates
+  are per merchant, so that is the rarer failure.
+- **The fixtures were synthetic** until Phase A4 (2026-09-07) added a redacted
+  set captured from a real inbox. Six of the ten original templates still have
+  no real-world example — `upi-received`, `account-debited`, `atm-withdrawal`
+  (the account-worded variant), `refund-reversal` and the NEFT/IMPS shapes —
+  so a template that passes can still miss the bank's actual wording; that is
+  what the `unparsed` → ntfy path is for.
 - **Thinking models need `think:false` per request.** The fallback points at
   `qwen2.5:7b-instruct`, which does not think; switching `OLLAMA_MODEL` to a
   `qwen3:*` model without adding `think: false` to the request body in

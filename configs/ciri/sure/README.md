@@ -219,16 +219,22 @@ runs as the Beszel agent here.
 ## API integrations
 
 - **HDFC SMS ingest** (n8n, [proposal 010](../../../docs/proposals/010-bank-alerts-to-sure.md),
-  [stack](../n8n/README.md)) — **planned 2026-09-04, not yet wired.** Writes
-  through `POST /api/v1/transactions` with an API key created in Settings →
-  API Keys (`read_write`; recorded as `SURE_API_KEY_N8N` in
-  `secrets.local.yaml`). Every write carries `external_id` + `source:
-  "hdfc-sms"`: 0.7.3's controller returns the existing entry (200) for a
-  repeated pair instead of creating a duplicate, verified against the
-  `v0.7.3` tag on 2026-09-04. Re-check that behaviour after any upgrade —
-  it is what makes retries and re-delivered mails safe. The ingest tags its
-  rows `auto:sms` (create the tag once in Settings → Tags and put its id in
-  the n8n `.env`), so hand-entered and automated rows stay distinguishable.
+  [stack](../n8n/README.md)) — **live since 2026-09-08.** Writes through
+  `POST /api/v1/transactions` with an API key created in Settings → API Keys
+  (`read_write`; recorded as `SURE_API_KEY_N8N` in `secrets.local.yaml`).
+  Every write carries `external_id` + `source: "hdfc-sms"`: 0.7.3's
+  controller returns the existing entry (200) for a repeated pair instead of
+  creating a duplicate — read from the `v0.7.3` tag on 2026-09-04 and
+  **proven on this instance on 2026-09-08** (two identical POSTs → `201`
+  then `200`, one row). Re-check after any upgrade: it is what makes retries
+  and re-delivered mails safe. The ingest tags its rows `auto:sms`, so
+  hand-entered and automated rows stay distinguishable.
+- **Undocumented endpoints worth knowing** (found while wiring the above):
+  `GET /api/v1/tags` lists every tag with its id — the tag editor is a modal
+  and never puts the id in the URL, so this is the only practical way to get
+  it. `GET /api/v1/transactions` rows carry `tags`, `external_id`, `source`
+  and `notes`, which makes the API, not the UI, the right place to verify an
+  automated write.
 
 ## Follow-ups
 

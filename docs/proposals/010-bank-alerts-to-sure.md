@@ -1,10 +1,12 @@
 # Proposal 010 — Bank alerts to Sure: HDFC SMS → relay mailbox → n8n → Sure
 
-- **Status**: **DESIGNED, parser tested, NOT deployed** (2026-09-04). Every
-  file exists in the repo and the parser passes its fixture suite on the
-  Mac; nothing has run on ciri, the phone, or Gmail. Phase A (the phone
-  spike) decides whether the design survives contact with iOS, and it comes
-  before anything else. "As-built deviations" is empty until then.
+- **Status**: **BUILT and verified** (2026-09-08). Phases A–E executed on
+  the live lab; every check in the execution checklist passed, and what each
+  one actually returned is in "As-built deviations" below. The pipeline has
+  been running unattended since 2026-09-08 and has captured real
+  transactions. Measured end to end: **SMS to Sure row in under 1 min 30 s**
+  with the phone locked (D7). Five defects were found by running it that the
+  fixture suite could not catch — see the deviations.
 - **Date**: 2026-09-04
 - **Scope**: one new compose stack `n8n` on **ciri**; one workflow inside
   it; one iPhone Shortcuts automation; one dedicated Gmail account; one
@@ -186,7 +188,7 @@ Keys to add to `secrets.local.yaml`:
 | `N8N_OWNER_EMAIL` / `N8N_OWNER_PASSWORD` | the editor's owner account, created on first login |
 | `SURE_API_KEY_N8N` | Sure → Settings → API Keys, `read_write` (entered as the n8n Header Auth credential) |
 | `SURE_ACCOUNT_ID_SAVINGS` / `SURE_ACCOUNT_ID_CC` / `SURE_TAG_ID_AUTO_SMS` | from `GET /api/v1/accounts` and the tag's edit URL; in `.env` |
-| `HDFC_SAVINGS_LAST4` / `HDFC_CC_LAST4` | in `.env`; the routing table |
+| `HDFC_SAVINGS_LAST4` / `HDFC_CC_LAST4` / `HDFC_DEBIT_CARD_LAST4` | in `.env`; the routing table. The debit card is a third last-4 that routes to the **savings** account: ATM and POS alerts name the card, not the account (found in A4) |
 | `KUMA_PUSH_URL_N8N_HDFC` | the push monitor's URL; in `.env` |
 
 ## 6. The message model — what the parser promises
@@ -541,7 +543,601 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST \
 
 ## As-built deviations
 
-*(empty — nothing has been deployed yet)*
+Recorded as each checklist step's *Verify* actually returned. Dates are the
+day the step ran, not the day it was designed.
+
+- **A1 (2026-09-06) — pass, no deviation.** Relay Gmail created with 2-Step
+  Verification and an app password named `n8n`. `grep -c RELAY_MAILBOX
+  secrets.local.yaml` returned `2`; both keys carry non-empty values (the
+  app password is the expected 16 characters, spaces stripped).
+  `secrets.local.yaml` is mode `600` and matched by `.gitignore:1`
+  (`secrets.local.*`), so no value is tracked. The optional "delete
+  `subject:HDFC-SMS older_than:30d`" Gmail filter was deliberately **not**
+  created: the inbox stays the raw audit log while Phase D is being
+  verified.
+- **A2 (2026-09-07) — pass, one deliberate choice.** The Message automation
+  was built as specified (sender empty, *Message Contains* `HDFC`, Run
+  Immediately, Notify off; one Send Email action, subject `HDFC-SMS`, body =
+  Shortcut Input, Show Compose Sheet off) and is listed under Shortcuts →
+  Automation. **The *From* account is iCloud** — §10 item 2's first
+  documented fallback was taken up front rather than held in reserve, so a
+  later A3a failure cannot be blamed on the sending account. A first test
+  transaction produced a mail in the relay inbox.
+- **A3a (2026-09-07) — PASS. The go/no-go clears.** §10 item 2's one
+  knowingly-unverified assumption is now verified on the real device: with
+  Wi-Fi and mobile data on, Low Power Mode on, the phone locked and never
+  touched, the HDFC SMS produced a mail in the relay inbox within about a
+  minute. The Tailscale-webhook fallback (§9, §10 item 2) is **not**
+  needed and Phase B proceeds as designed.
+  *First attempt was discarded as inconclusive, not failed*: it changed
+  connectivity and lock state together (data + Wi-Fi off, locked, then
+  unlocked and data on), so a mail that left only after the unlock was
+  equally consistent with "Mail queued it for the network" and with "iOS
+  refused Send Email on the lock screen". The re-run changed nothing but
+  the lock, which is what made it decisive. Worth remembering for any
+  future phone spike: test one variable at a time, because both worlds
+  produce an identical inbox.
+- **A3c (2026-09-07) — pass, out of order.** Covered by that first attempt:
+  with Wi-Fi and mobile data off, the automation ran and Mail held the
+  message; it was delivered once the phone was back online. Low Power Mode
+  was on throughout and changed nothing. Not re-run after A3a, since A3a
+  proved the lock is not the gate and the queueing behaviour was never in
+  doubt.
+- **A3b (2026-09-07) — pass, with a latency caveat worth keeping.** After a
+  reboot and the one required post-boot unlock, the phone was locked and a
+  payment made; the mail arrived, but the automation did not run for about
+  **3–4 minutes** after the SMS landed (the phone was picked up, unlocked
+  and used during the wait, so this is "iOS deferred it while busy", not
+  "iOS never ran it"). Not a failure: §1 accepted "minutes, not real-time",
+  and the Kuma push monitor's heartbeat is 48 h, so a deferral of this size
+  raises no alarm and loses no message. It does mean **D7's measured
+  latency should not be read as a bound** — a freshly rebooted or busy
+  phone can add minutes ahead of anything the lab does.
+- **Mail shape confirmed (2026-09-07).** On the mails already in the relay
+  inbox the subject is exactly `HDFC-SMS` and the body is the full SMS
+  text — so the Shortcut Input variable is bound correctly and the IMAP
+  filter `["UNSEEN", ["SUBJECT", "HDFC-SMS"]]` will match. This removes the
+  two silent-failure modes (blank body, drifted subject) that would
+  otherwise have surfaced as an unexplained D3.
+- **A4 (2026-09-07) — pass, after five parser fixes and one design decision.**
+  18 real messages were collected (not the ~30 asked for; the missing shapes
+  are noted below). **Every one of the 19 synthetic fixtures passed and, on
+  the first run, every real transaction message failed.** §10 item 15 said a
+  green synthetic suite means "the code does what the fixtures say"; this is
+  what that looks like in practice.
+
+  *Checklist contradiction found.* The amended A4 row requires one runner
+  invocation with the real last-4s injected, and also requires the tracked
+  fixtures to keep using `1234`/`9876`. Both cannot hold: with real values in
+  the environment the 11 synthetic `ok` blocks reject as
+  `unknown-instrument`, which is what produced a misleading `19/32 — 13
+  FAILED` before the files were separated. The two files must be run
+  separately, which is now documented in `run-fixtures.js` and the stack
+  README. **The same contradiction applies verbatim to D1**, whose command
+  takes no file argument: run as written today it reports `27/37 — 10
+  FAILED` on a parser that is actually green.
+
+  *What the real messages broke, and the fix in each case:*
+
+  | Real shape | Was | Fix |
+  |---|---|---|
+  | `UPI Mandate: Sent Rs…`, `AutoPay (E-mandate) Success!` | `skip` (noise) | HDFC uses "mandate"/"autopay" for both announcements and completions. That vocabulary is now noise only when the message does not also say the debit executed (`EXECUTED` in `hdfc.js`) |
+  | `AutoPay … Txn Amt:INR…` | `skip` (no-money-movement) | the money-movement gate knew no verb for it — the message says "Txn Amt", never "debited". Added, plus a new `autopay-card-success` template |
+  | `DEAR HDFCBANK CARDMEMBER, PAYMENT OF…` | `skip` (not-hdfc) | `\bHDFC\b` has no word boundary inside "HDFCBANK", so a real card-payment alert was discarded as another bank's. Leading boundary only now; `card-payment-received` also learned the all-caps wording, which omits "HDFC Bank" before "CREDIT CARD" |
+  | `Withdrawn Rs… From HDFC Bank Card x…` | `unparsed`, then `reject` | ATM alerts name the **debit card**, whose last-4 is neither configured instrument. New `atm-withdrawal-card` template and a third routing entry, `HDFC_DEBIT_CARD_LAST4` → the savings account |
+  | `UPDATE: INR… debited from HDFC Bank XX…` | `skip` (noise) | the credit-card bill's savings leg. New `cc-bill-autopay-debit` template, named so the row is legible; `account-debited` also learned the bare "HDFC Bank XX1234" form and an "Info:" clause between date and balance |
+  | `UPI Mandate: … A/c 1234` | `reject` (missing:last4) | `last4Of`'s account pattern was case-sensitive and matched neither "A/C" nor "a/c" for the mixed-case "A/c". Also added HDFC's "CC 9876" / "DC 4567" shorthand |
+
+  *Design decision (2026-09-07).* HDFC reports a credit-card bill paid by
+  standing instruction as two messages: the savings debit and the card
+  payment. Both are now recorded, as §10 item 11 intended, and Sure pairs
+  them. The user's first labelling kept only the card leg; recording one side
+  of a transfer would have drifted the savings balance upward by the bill
+  amount every month, so the design's position was kept.
+
+  *Risk accepted.* One autopay card charge also arrives twice on the **same**
+  card — as `Rs.X without OTP/PIN …` and as `AutoPay (E-mandate) Success!`.
+  They share no reference, so `external_id` cannot pair them and one shape
+  has to be dropped by rule. The `without OTP/PIN` shape is dropped, on the
+  user's confirmation that ordinary contactless taps arrive as normal
+  `Spent Rs.X On HDFC Bank Card …` messages. If HDFC ever reuses that wording
+  for a standalone spend, it becomes a silent loss — the one place in this
+  design where a message is discarded without a human seeing it.
+
+  *Coverage still thin.* Six templates have no real-world example:
+  `upi-received`, `account-debited`, `atm-withdrawal` (account-worded),
+  `refund-reversal`, and the NEFT/IMPS credit shapes. The user has no refund
+  in recent history; the rest are to be added iteratively as they occur, with
+  the `unparsed` → ntfy path as the net. Treated as accepted, not closed.
+
+  *Leak caught in review.* The first version of these fixes quoted the user's
+  real messages verbatim in `hdfc.js` comments — real account last-4s, a real
+  UPI reference and a real mandate id — which `build-workflow.js` then
+  embedded into the tracked workflow JSON. All of it was redacted before
+  anything was staged; a repo-wide `git grep` for each real value now returns
+  nothing. The redacted tracked fixtures change every digit run, amount,
+  balance and merchant name, keeping only the bank's wording and punctuation.
+
+  *Final state:* `30/30` tracked fixtures and `18/18` private ones pass;
+  `build-workflow.js` regenerates 11 nodes. Diff touches `parser/hdfc.js`,
+  `parser/run-fixtures.js` (quoted `expect:` values, so multi-word
+  counterparties can be asserted), `parser/fixtures/hdfc-sms.txt`,
+  `workflows/build-workflow.js`, `workflows/hdfc-sms-to-sure.json` and
+  `.env.example` — two files more than the checklist's "only
+  parser/fixtures/workflow", both because of the new routing variable.
+  `compose.yaml` gained the matching `HDFC_DEBIT_CARD_LAST4: ${HDFC_DEBIT_CARD_LAST4:-}`
+  passthrough during the review — a gap in the first pass, which plumbed the
+  variable everywhere except the one file that hands it to the container.
+- **B1 (2026-09-07) — pass.** `/data/stacks/n8n` and `n8n-data` are
+  `ciri:ciri`, which *is* `1000:1000` (ciri is uid 1000), so the image's
+  `node` user owns its SQLite db and credential store; `.env` is `600`,
+  `compose.yaml` hashes byte-identical to the repo mirror (E1's check for
+  this file already satisfied); no live placeholders outside comments;
+  no container started.
+
+  *Deviation from the runbook, and it is the better behaviour.* B1 says to
+  leave `SURE_ACCOUNT_ID_SAVINGS` / `SURE_ACCOUNT_ID_CC` as literal
+  `<PLACEHOLDER>` text until B2. They were left **empty** instead. `${VAR:?}`
+  fails on empty as well as unset, so the guard still fires — verified:
+  `docker compose config` exits 1 naming exactly those two variables. Had the
+  literal placeholder text been kept, `:?` would have been *satisfied* and the
+  string `<SURE_ACCOUNT_ID_CC>` would have been injected into the container as
+  a real account id. **The runbook's wording should say empty, not
+  placeholder.**
+
+  *Checklist Verify is weaker than it looks.* `grep -c "<" .env` → `2` was
+  reported, but neither hit was a Sure account id: one was a `<LAN_PREFIX>`
+  mention inside a header **comment** and the other a half-edited
+  `KUMA_PUSH_URL`. The count matched the prediction for the wrong reasons.
+  `grep -v "^#" .env | grep -c "<"` is the check that means something.
+
+  *`KUMA_PUSH_URL` took three attempts*, all for the same reason: the `sed`
+  was being run on the Mac, where `/data/stacks/n8n/.env` does not exist, so
+  it changed nothing on ciri and reported nothing. An intermediate edit had
+  removed only the `<KUMA_PUSH_TOKEN_N8N_HDFC>` token and left a truncated
+  `…/api/push` URL — worse than either extreme, because `${KUMA_PUSH_URL:-}`
+  accepts it silently and every heartbeat would have POSTed to a valid-looking
+  endpoint that is not a monitor. Now empty, as C3 expects.
+- **B2 (2026-09-07) — pass, and the runbook's tag instruction is wrong.**
+  API key `n8n-hdfc-ingest` (read/write) created and recorded as
+  `SURE_API_KEY_N8N`; family currency confirmed **INR** (§10 item 9). The two
+  account ids in ciri's `.env` were checked against `GET /api/v1/accounts` and
+  resolve to the `depository` account "HDFC" and the `credit_card` account
+  "HDFC-Credit-card"; the tag id resolves to `auto:sms`. `docker compose
+  config` now exits **0** — every `${VAR:?}` guard satisfied by supplying
+  values, not by weakening the guard.
+
+  *Runbook correction.* B2 step 2 says to create the `auto:sms` tag and "copy
+  the UUID from its edit URL". On Sure 0.7.3 the tag editor is a **modal** —
+  the URL never changes, so there is no id to copy. The route that works is an
+  endpoint the proposal never mentions: **`GET /api/v1/tags`**, which returns
+  `[{id, name, color, created_at, …}]` for every tag and accepts the same
+  `X-Api-Key`. Useful beyond this step: `GET /api/v1/transactions` rows carry
+  a `tags` array, `external_id` and `source`, so D3–D5 can assert the tag and
+  the idempotency fields straight from the API rather than from the UI.
+
+  *Process note.* Several B1/B2 commands were run on the Mac rather than on
+  ciri — `/data/stacks/n8n/.env` does not exist there, so `sed -i` failed
+  quietly and three rounds of "done" reported changes that had not happened.
+  Every value in this phase is therefore verified by reading it back from
+  ciri, never from the fact that a command was reported as run.
+- **B3 (2026-09-07) — pass.** `n8nio/n8n:2.37.10` up and **healthy**,
+  `0.0.0.0:5678->5678`, `/healthz` → `{"status":"ok"}` from inside the VM.
+  `n8n-data/` initialised as uid/gid `1000` (`database.sqlite` plus its WAL,
+  `config` mode 600). Log: `Recorded version change: (none) -> 2.37.10` and
+  `Editor is now accessible via: https://n8n.kaermorhen.fyi` — the name C1/C2
+  are about to make real. `qwen2.5:7b-instruct` (4.7 GB) present on Ollama, so
+  B3's model check passed without a pull. The only two lines matching "error"
+  are the migration `AddErrorColumnsToTestRuns`, not failures.
+
+  *Deprecation to act on later, captured now.* Startup warns that
+  **`N8N_RUNNERS_TASK_TIMEOUT` will drop from 300 s to 60 s** in a future
+  version. §7 budgets the Ollama fallback at 10–40 s, but that is on a GPU
+  shared with Jellyfin and Open WebUI where a fallback call may first evict a
+  resident model. **D6 measures the real figure**; if it lands near a minute,
+  pin `N8N_RUNNERS_TASK_TIMEOUT=300` in `compose.yaml` before the next n8n
+  upgrade halves it silently and turns the fallback path into intermittent
+  ntfy alerts. Same startup log also warns about
+  `N8N_UNVERIFIED_PACKAGES_ENABLED` and two compression limits — none of them
+  touch this workflow.
+- **C1 (2026-09-07) — pass, verified narrowly and deliberately.** Caddy
+  reloaded at 23:54:12 (`Reloaded caddy.service`, config adapted and POSTed to
+  the admin API). The live `@n8n` block on LXC 202 is **byte-identical** to
+  the repo mirror, tabs included, and points at `<LAN_PREFIX>.150:5678`; the
+  file grew 239 → 250 lines, exactly the block plus its separator. A serve
+  test with `curl --resolve`, bypassing DNS entirely since C2 had not run,
+  returned **HTTP/2 200** under the existing `CN=*.kaermorhen.fyi` Let's
+  Encrypt certificate (valid to 2026-11-10) — no new cert was issued, and
+  D9's "valid certificate" half is effectively already proven.
+
+  *C1's Verify as written cannot pass, for two reasons unrelated to n8n.*
+  The checklist diffs the whole live Caddyfile against the repo mirror and
+  expects empty. It never can:
+  1. the live `tls` line carries the real ACME email while the mirror masks it
+     as `<ACME_EMAIL>` per `CLAUDE.md`, and the verify's `sed` only masks the
+     LAN prefix;
+  2. **proposal 008's dashboard block has drifted**: live has it at line 110
+     under a terse `# ---- Dashboard ----` header, the repo working tree at
+     line 216 under `# ---- Dashboard (proposal 008) ---` with three lines of
+     rationale. Same three routes and targets, different placement and
+     comments — the mirror was hand-written and never reconciled with what was
+     deployed.
+
+  On the user's decision (2026-09-07), C1 was closed by verifying **the n8n
+  block alone**, and the drift is left for proposal 008 to reconcile rather
+  than being silently rewritten from inside 010. `systemctl show caddy -p
+  ActiveEnterTimestamp` is *not* evidence of a reload — it reports the
+  service's original start time and is unmoved by `systemctl reload`; the
+  journal entry and a serve test are.
+- **C2 (2026-09-08) — pass.** Both Pi-holes went **40 → 41** entries with
+  nothing dropped, `n8n.kaermorhen.fyi` present on each; `dig` against
+  `<LAN_PREFIX>.101` and `<LAN_PREFIX>.201` both answer `<LAN_PREFIX>.202`;
+  `curl -sI https://n8n.kaermorhen.fyi` through real DNS returns **HTTP/2
+  200**. nebula-sync propagated pihole-1 → pihole-2 on the first run.
+
+  *How the array was built.* `dns.hosts` is replace-not-append, so a malformed
+  write would drop all 40 internal names at once. Rather than retyping
+  addresses, the new value was derived from the live one on the box: read the
+  array, strip the brackets, re-quote each entry, append
+  `"<proxy ip> n8n.kaermorhen.fyi"`, then a dry run asserting the count is 41
+  and the tail is the new entry — with the previous value saved to a file
+  first so a bad write is one command from undone. Worth reusing: the read
+  format prints entries bare but the write expects them quoted.
+
+  *Note for anyone repeating the verify:* **pihole-1 is LXC 101 on geralt,
+  pihole-2 is LXC 201 on yennefer.** Running `pct exec 201` against geralt
+  returns an empty config rather than an error, which reads exactly like "the
+  sync failed" when in fact it is the wrong host.
+- **B4 (2026-09-08) — pass, after three imports and one parser bug.**
+  Workflow `HDFC SMS -> Sure` **active**, 11 nodes, both credentials bound to real
+  ids, and an **ESTABLISHED socket to port 993** from the container — the
+  proof that the Gmail app password actually authenticates, which no
+  pre-activation check could give. Task runner visible on 5679, as 2.x
+  expects.
+
+  *Runbook correction: there is no "Activate" button in n8n 2.x.* The UI
+  offers **Execute workflow** and **Publish**; publishing is what makes a
+  trigger live, and "Execute workflow" would only run one manual fetch. The
+  checklist and runbook both still say Activate. `active=1` in
+  `workflow_entity` is the authority, not the button label.
+
+  *The pipeline proved itself before it was meant to.* The first publish
+  consumed a real unread alert and produced a correct Sure row: ₹55.00 on the
+  savings account, `classification: expense`, `external_id:
+  ref:<UPI_REF>` (the bank's own UPI reference, not a hash), tagged
+  `auto:sms`. Most of D3 was demonstrated by accident.
+
+  *Bug found by reading that row: the audit trail was empty.* `parseSms` built
+  its `txn` **without `raw`**, while `toSure` composes notes from `txn.raw` —
+  so every regex-parsed row carried `sms:` with nothing after it, losing the
+  original text that §4 and §6 both promise for auditing a wrong parse. The
+  LLM fallback sets `raw` itself, so only the *common* path was affected. No
+  fixture asserted `notes`, so the suite stayed green through it. Fixed in
+  `parser/hdfc.js`, and `run-fixtures.js` now enforces an **invariant** rather
+  than a per-fixture key: any `ok` row whose notes do not contain the original
+  SMS fails. Verified to bite — reverting the one-line fix turns `30/30` into
+  `11/30`.
+
+  *Import is fragile in a specific way.* Deleting the workflow and recreating
+  it by **pasting** the JSON silently dropped `Create in Sure` — the one node
+  carrying an unresolvable credential stub (`"id": "<SET IN UI>"`). The result
+  imported cleanly as 10 nodes with no error. **Import from File** keeps all
+  11. Publishing that 10-node version would have produced a pipeline that
+  parsed every SMS, took the error branch, and wrote **nothing** to Sure while
+  looking entirely healthy. Caught only because the node count is checked
+  before publish; that check earns its place.
+
+  *Autopay twins, revisited by the review.* The `without OTP/PIN` message is
+  no longer dropped by rule. Both it and `AutoPay (E-mandate) Success!` now
+  emit the same deterministic `external_id`
+  (`autopay:<last4>:<date>:<amount>`), so Sure's idempotency keeps one row
+  whichever arrives first, **and a lone charge with no twin is still
+  captured** — removing the silent-drop risk recorded under A4. Verified: both
+  templates emit `autopay:9876:2026-09-05:349.50`. The private fixture's stale
+  `expect: skip` for that shape was updated to `ok`.
+- **C3 (2026-09-08) — pass.** Kuma answers `302` on `<LAN_PREFIX>.104:3001`.
+  `KUMA_PUSH_URL` is 67 characters, carries **no** `?status=` query and ends
+  `/api/push/<token>`, as `uptime-kuma.md` requires. Checked both in `.env`
+  **and via `printenv` inside the running container** — the file alone proves
+  nothing, because `docker compose up -d` only re-reads the environment if it
+  actually recreates the container, and `docker compose restart` would have
+  left the previous empty value in place. It recreated (`Up 30 seconds`), the
+  workflow stayed `active=1`, and the Gmail IDLE socket re-established on its
+  own. Push monitor stays grey until the first successful Sure write (D3).
+- **D1 (2026-09-08) — pass.** `30/30` tracked and `18/18` private fixtures.
+  Rebuilding the workflow from the current parser produced a **byte-identical**
+  JSON, so the committed file is not stale, and the live `Parse HDFC SMS` node
+  hashes `de9c2a6243af801d` — the same as the repo's. The parser running in
+  production is exactly the code the fixtures test.
+
+  *D1's command inherits A4's contradiction.* As written it takes no file
+  argument, so it runs the tracked and private fixtures together under one set
+  of last-4s and reports `27/37 — 10 FAILED` against a green parser. Run as
+  two invocations, as `run-fixtures.js` now documents.
+- **D2 (2026-09-08) — pass. Idempotency proven on the live instance.** Two
+  identical POSTs with `external_id: probe:1` and `source: hdfc-sms` returned
+  **201 then 200**, and a search found exactly **one** row. §10 item 1 was
+  read from the `v0.7.3` source; it is now observed behaviour on this
+  deployment, which is what D4 and every re-delivered mail depend on. Probe
+  row deleted; `hdfc-sms` baseline before D3 is one real row (₹55.00,
+  carrying the bank's own UPI reference).
+- **D3 (2026-09-08) — pass.** A `HDFC-SMS` mail sent from the phone's Mail app
+  with the UPI-sent fixture produced execution id=2 (`success`, 0.46 s) and
+  exactly one new Sure row: ₹500.00, **savings** account, `classification:
+  expense`, `external_id: ref:123456789012` (the reference, not a hash), tag
+  `auto:sms`, and **notes carrying the complete raw SMS**. That last field is
+  the B4 fix proven in production: the same ledger now holds the ₹55 row from
+  before the fix, whose notes still end at `sms:` with nothing after it — the
+  two sit side by side as evidence.
+- **D4 (2026-09-08) — pass.** The identical mail re-sent produced execution
+  id=3 (`success`) and **no second row** — still one SWIGGY, two `hdfc-sms`
+  rows in total. Idempotency now proven twice: directly against the API at D2,
+  and through the whole pipeline here.
+
+  *Kuma push, resolved sideways.* The push monitor had not gone green after
+  D3/D4. Rather than create another transaction to force a heartbeat, the
+  same mail was sent a **third** time: Sure returned 200 and created nothing,
+  but the workflow still pushed its heartbeat, and the monitor went green
+  (execution id=4). **A heartbeat is emitted on any successful write,
+  including an idempotent 200** — which makes re-sending a known mail the
+  cheapest way to exercise the push path without touching the ledger. Worth
+  remembering for future monitor testing.
+
+  *Unresolved detail:* the container reported `Up 21 minutes` across the
+  push-URL edit, so `docker compose up -d` recreated nothing — meaning the URL
+  pasted was identical to the one already present, and the monitor was
+  correctly configured at C3 but had simply never received a heartbeat. Old
+  and new URLs are both 67 characters, so length cannot distinguish them; the
+  monitor's last-heartbeat timestamp is the only outside evidence. **Closed
+  2026-09-08**: Kuma's last heartbeat reads 01:33:11 IST, which is execution
+  id=4 (`20:03:11` UTC) — so the token in the container is the live monitor's
+  and C3's configuration was correct all along.
+- **D5 (2026-09-08) — pass.** The `x5555` message produced execution id=5
+  (`success`, 0.73 s), an ntfy "needs review (reject: unknown-instrument:5555)"
+  on the phone, and **no Sure row** — still 2 `hdfc-sms` rows, nothing named
+  TEA STALL, no account touched but the two configured. The §5 guard fires:
+  an unknown instrument is rejected to a human, never routed to a default.
+
+  *Read the executions list correctly:* a reject shows **`success`**, not
+  `error`. It is a designed outcome, not a failure — a red execution means the
+  pipeline broke, while a rejected message is green and reaches the human by
+  ntfy.
+- **D6 (2026-09-08) — fallback proven, and it found a live silent-loss bug.**
+  Execution id=6, `success`, **27.23 s** end to end, `qwen2.5:7b-instruct`
+  resident at 100% GPU. The unparsed message reached Ollama, the validator
+  confirmed the amount and last-4 both appear literally in the text, and a row
+  was created — never silence, as designed.
+
+  **`N8N_RUNNERS_TASK_TIMEOUT` is a non-issue**, contrary to the concern
+  raised at B3: it governs Code-node execution, and both Code nodes here run
+  in milliseconds. The Ollama call is an HTTP node with its own **180 s**
+  timeout, so the 27 s measurement has ample headroom. No pinning needed.
+
+  *The bug.* The validator's reference rule was *"must appear in the text"*
+  and nothing more, so when the model returned **`Rs.640`** — the amount — as
+  the reference, it was accepted and the row's `external_id` became
+  `ref:Rs.640`. Since `external_id` is the duplicate guard, a later ₹640
+  purchase on the same account taking the same fallback path would collide and
+  be **silently swallowed as a repeat**. Same class of trap as the Mandate ID
+  in §10, but on the path that had no shape check. The regex path was never
+  exposed: `refOf()` only accepts UPI/RRN/NEFT/IMPS shapes.
+
+  Fixed in `build-workflow.js`: a reference must now match
+  `/^[A-Za-z]?\d{9,18}$/` — the same shape `refOf()` accepts — **and** appear
+  in the text; anything else falls through to the `sha:` id, which is derived
+  from the whole message and is unique per transaction.
+
+  *Two things worth carrying forward.* First, the first attempt at that fix
+  was wrong in a way that would have been invisible: `LLM_VALIDATE_CODE` is a
+  **JS template literal**, so a lone `\d` is eaten as an escape and the
+  generated regex became `/^[A-Za-z]?d{9,18}$/` — matching the letter `d` and
+  rejecting every real reference. The surrounding code already writes `\\d`
+  for this reason. Always read the *generated* node, not the builder source.
+  Second, **the fixture suite cannot cover this code at all**: it exercises
+  `parseSms`/`toSure`, while the LLM validator lives in `build-workflow.js`
+  and is untested by anything. The rule was therefore checked behaviourally
+  against `Rs.640`, `640`, `12345678`, `abc` and two genuine reference shapes.
+  A validator test harness is a worthwhile follow-up.
+- **D7 (2026-09-08) — pass. End-to-end latency: under 1 min 30 s.** A real UPI
+  payment with the phone locked: SMS at **01:54 IST**, execution id=7 at
+  **01:55:21 IST**, one correct row (₹1.00, savings, expense, the bank's own
+  reference as `external_id`). The whole chain — Shortcut → iCloud Mail →
+  Gmail → IMAP IDLE → parse → Sure — ran with no interaction.
+
+  **Read this as one sample, not a bound.** A3b measured iOS deferring the
+  automation 3–4 minutes after a reboot, and that delay is phone-side, before
+  the lab is involved. The lab's own contribution here is the sub-second
+  execution time; everything else is iOS scheduling and mail delivery.
+
+  *Housekeeping:* the fictitious ₹640 `purchase` row was deleted, closing the
+  `ref:Rs.640` collision hazard. Execution history restarted at id=7 because
+  deleting a workflow deletes its executions — expected, and worth knowing
+  before reading an empty list as a fault. The ₹500 SWIGGY row from D3/D4 is
+  still present and should be removed once Phase D is finished (since deleted).
+- **D8 (2026-09-08) — pass. Gmail-as-queue proven.** n8n was stopped
+  `15:32:01Z` → `15:38:41Z` (**6 min 40 s**). A `HDFC-SMS` mail sent during
+  the outage sat unread in Gmail and was collected **21 seconds after
+  restart** (execution id=13, 21:09:02 IST), producing the expected row
+  (₹150.00 "Queue test", `ref:123456789123`). IMAP re-established on its own.
+
+  *Substitution, deliberate:* the checklist says to make a real payment during
+  the outage. What D8 actually tests is that **Gmail holds unread mail and the
+  IMAP trigger collects it on reconnect** — the phone half was already proven
+  at D7 — so a self-sent mail exercises the same path without spending money.
+  This rules out the quiet failure where the trigger only ever sees mail that
+  arrives while it is connected, which would look perfectly healthy while
+  missing every transaction during any outage.
+
+  *What ~19 hours of unattended real traffic showed, unprompted.* By the end
+  of 2026-09-08 the pipeline had captured five genuine transactions
+  (a utility bill ₹612, two cafeteria meals, a subscription charge ₹149, a ₹1
+  UPI) with **7 rows carrying 7 distinct `external_id`s** — the duplicate
+  guard has collapsed nothing. Two design decisions are now confirmed on real
+  money rather than fixtures:
+  - the review's **autopay id scheme is live**: the real subscription charge
+    carries `autopay:<card>:2026-09-08:149.00`, not the mandate id;
+  - the **B4 notes fix holds** — every row carries its raw SMS except the
+    ₹55.00 row of 2026-09-07, which predates the fix and stands as the control.
+- **D9 (2026-09-08) — pass.** The bare port `http://<LAN_PREFIX>.150:5678`
+  serves the SPA but shows the **secure-cookie notice** and cannot log in;
+  `https://n8n.kaermorhen.fyi` logs in on the **phone** with a valid padlock
+  (`CN=*.kaermorhen.fyi`, Let's Encrypt, to 2026-11-10). `/healthz` remains
+  open without auth on the bare port, which is what the Kuma HTTP monitor
+  needs. §5's claim — that the port on `.150` cannot be used to log in, so
+  Caddy needs no auth layer of its own — is confirmed on the running system.
+
+  *Limit of the read-only check:* an agent cannot prove this. Wrong
+  credentials return `401` over both HTTP and HTTPS, and n8n renders the
+  secure-cookie warning **client-side**, so it never appears in the served
+  HTML. Only a real browser with a valid password distinguishes "refused
+  because insecure" from "refused because wrong password". The phone was used
+  deliberately: it has never had the certificate manually trusted, so it
+  exercises the real chain.
+- **D10 (2026-09-08) — pass.** `docker stop` → `docker start` with the
+  container down `15:47:45.86Z` → `15:48:54.79Z` (**68.9 s**) produced both
+  ntfy notifications, **down** and **recovered**, from the `n8n` HTTP monitor.
+  On restart: `health=healthy`, `/healthz` ok, workflow **active=1 on its
+  own**, IMAP re-established. That last property is what lets the pipeline
+  survive a host reboot with no human action.
+
+  *Margin worth knowing:* the outage was 69 s against a 60 s polling interval,
+  so the alert fired with barely one cycle to spare. A sub-minute blip will
+  pass unnoticed — which is the correct trade (it is what stops every restart
+  from paging) rather than a defect, but it means Kuma is not a witness to
+  brief interruptions.
+- **E1 (2026-09-08) — pass.** `compose.yaml` on ciri is byte-identical to the
+  repo (`6a4f77b5c9bdf846`); no copy-back was needed, which is the point — the
+  file has been untouched on the VM since B1.
+- **E2 (2026-09-08) — done.** `planned` → `built` in this file's Status, the
+  stack README, and the `n8n` rows in `docker-vm.md`, `maintenance.md`,
+  `uptime-kuma.md`, plus the API note in `configs/ciri/sure/README.md` (which
+  also gained the two undocumented Sure endpoints found at B2).
+- **A late fix the review caught, worth its own entry.** The D6 repair —
+  requiring the model's reference to match `/^[A-Za-z]?\d{9,18}$/` *and*
+  appear in the text — was **not sufficient**, and the review replaced it.
+  HDFC's boilerplate ends every alert with `Call 18002586161`: an 11-digit run
+  that passes any shape-plus-presence test and is **identical in every
+  message**. Had the model ever returned it, every fallback transaction would
+  have shared one `external_id` and collapsed into the first — a worse failure
+  than `ref:Rs.640`, because it is systematic rather than occasional.
+
+  The shipped rule does not trust the model for the id at all: `const ref =
+  refOf(sms)`, reusing the parser's own keyword-anchored extractor, sliced out
+  of `parser/hdfc.js` by the builder so the two paths cannot drift. `refOf()`
+  requires a `Ref`/`UPI`/`RRN`/`NEFT`/`IMPS` keyword before the digits, so the
+  helpline number is *structurally* unable to become an idempotency key.
+  Verified behaviourally against the bundled copy: boilerplate → `null`
+  (falls through to the `sha:` id), genuine references still extracted. The
+  model's own answer is kept in the stored `llm` blob for audit only.
+
+  *The general lesson:* both D6 failures came from the same place — a rule
+  that asks "does this string appear in the message?" without asking "is this
+  the kind of thing a reference is". The regex path never had the bug because
+  `refOf()` was written to anchor on meaning, not shape.
+- **Workflow name fixed at the source (2026-09-08).** The generator emitted
+  `HDFC SMS -> Sure (proposal 010)` while the workflow in n8n was kept as
+  `HDFC SMS -> Sure`, so every re-import needed a manual rename — and the
+  rename never survived the next one. The builder now emits the live name;
+  the proposal reference belongs in the repo, not in a workflow title.
+
+- **A4 review (Fable, 2026-09-07) — three corrections on top of the A4 record.**
+  1. **`HDFC_DEBIT_CARD_LAST4` never reached n8n.** It was added to
+     `.env.example`, the parser and the workflow glue, but not to
+     `compose.yaml`'s `environment:` block — so `$env.HDFC_DEBIT_CARD_LAST4`
+     would have been undefined in the container and every ATM/debit-card
+     alert rejected as `unknown-instrument`. Added as `${HDFC_DEBIT_CARD_LAST4:-}`.
+  2. **The "without OTP/PIN" drop-by-rule is withdrawn.** The A4 record
+     itself called it "the one place in this design where a message is
+     discarded without a human seeing it". Both shapes of an autopay card
+     charge are now recorded under a shared deterministic `external_id`
+     (`autopay:<last4>:<date>:<amount>`), so Sure collapses the pair and a
+     lone "without OTP/PIN" charge is captured. New template `card-no-otp`;
+     the OTP/PIN noise rules are masked for that phrase; `normalise` also
+     strips the card network's "Not U?" tail. Tracked suite 30/30 after the
+     change. **The private fixture for that message still expects `skip`
+     and must be flipped to `ok` before D1** (its `externalId` becomes
+     `autopay:<cc last4>:2026-09-05:<amount>`).
+  3. **The A4/D1 checklist rows now say "two separate runs"** — tracked
+     fixtures with the synthetic last-4s, private ones with the real values —
+     matching what `run-fixtures.js` already documents.
+  The rest of the A4 work stands as recorded: the `EXECUTED` gate for mandate
+  vocabulary, the `HDFCBANK` boundary fix, the bare-account and `Info:`
+  forms, and the decision to record both legs of the card-bill transfer are
+  all correct and were re-verified by rebuilding the workflow from the
+  parser (no drift) and running the tracked suite independently.
+
+- **B4 review (Fable, 2026-09-08) — cleared for activation.** Verified
+  read-only from the Mac: container `2.37.10` healthy, `/healthz` ok, live
+  `compose.yaml` byte-identical to the repo (so the A4-review fix for
+  `HDFC_DEBIT_CARD_LAST4` is live — all sixteen pipeline variables are
+  present in the container, the debit-card one included; only
+  `KUMA_PUSH_URL` is empty, as C3 expects); both Pi-holes answer `.202` for
+  the name and Caddy serves it with HTTP/2 200; the bare port answers 200
+  (the secure-cookie page). Inside n8n: the imported workflow's two Code
+  nodes hash **identical** to the repo JSON (so the post-review parser with
+  `card-no-otp` and the debit-card routing is what will run), both
+  credentials exist (`imap`, `httpHeaderAuth`), and the workflow is
+  **inactive**, which is the state this checkpoint wanted. Four notes:
+  1. **Activation is now its own step, B5**, in the checklist, so "B4 done"
+     can never mean "already live".
+  2. **The `N8N_RUNNERS_TASK_TIMEOUT` deprecation does not touch the Ollama
+     call.** The task-runner timeout bounds Code nodes only; the Ollama
+     request is an HTTP Request node with its own 180 s `timeout`. The two
+     Code nodes here finish in milliseconds. Nothing to pin; the B3 note is
+     superseded on that point (the observation itself was correct).
+  3. **"Failed to start Python task runner … Python 3 is missing"** in the
+     startup log is harmless: the workflow uses JavaScript Code nodes only,
+     and the JS runner registered. Cosmetic.
+  4. **The private fixture for the "without OTP/PIN" message still expects
+     `skip`** — it must be flipped to `ok` before D1 (see the A4 review).
+  Runbook corrections Opus surfaced in B1, B2 and C1 (empty-not-placeholder,
+  `GET /api/v1/tags`, and a block-level rather than file-level Caddy verify)
+  are now folded into the checklist.
+
+- **D6/D7 review (Fable, 2026-09-08) — one fix applied, re-import required.**
+  Verified read-only: the active workflow's two Code nodes hash identical to
+  the repo, so production runs the tested parser; the three `hdfc-sms` rows in
+  Sure are all savings expenses with `auto:sms` and `ref:` ids, and the two
+  post-fix rows carry the full raw SMS in their notes while the ₹55 row from
+  before the fix ends at `sms:` with nothing after it — the B4 `raw` fix is
+  visible in the ledger exactly as D3 claims. D6's escaping fix is correct in
+  the *generated* node (`\d`, not `d`), and it does reject both `Rs.640` and
+  `640`.
+
+  **The shape rule was necessary but not sufficient, and the residual hole is
+  worse than the bug it fixed.** HDFC ends nearly every alert with
+  `Call 18002586161` — an 11-digit run that satisfies
+  `/^[A-Za-z]?\d{9,18}$/` *and* appears in the text, so it passes both
+  halves of the D6 rule. It is also **identical in every message**. Had the
+  model ever returned it, every fallback-path transaction would have been
+  written with `external_id: ref:18002586161` and collapsed into the first
+  one — a silent, permanent loss of every subsequent LLM-parsed transaction,
+  where the `Rs.640` bug could only collide with another ₹640 purchase.
+
+  *Fix.* The model is no longer trusted for the id at all. `refOf()` is now
+  bundled into the validator from `parser/hdfc.js` (via a small `fnSrc()`
+  helper, so both functions it needs come from the file the fixtures test),
+  and the reference is `refOf(sms)` — keyword-anchored on Ref/UPI/RRN/NEFT/
+  IMPS, which `Call 18002586161` cannot satisfy. The model's own answer is
+  kept in the stored `llm` blob for audit. Probed on the generated node:
+  boilerplate-only message → `null` (falls through to the unique `sha:` id),
+  genuine `Ref 123456789012` → the reference. Tracked fixtures still 30/30.
+
+  *Also learned:* `LLM_VALIDATE_CODE` is a JS template literal, so a backtick
+  in a **comment** terminates it and breaks the build — the same class of trap
+  as D6's `\d`. The builder now asserts the literal is backtick-free.
+
+  **Action for the executing agent: the validator hash changed**
+  `f6a7186f58ff7bda` → `02a99d1c805a4fcf`. Re-import
+  `workflows/hdfc-sms-to-sure.json` in the n8n UI and re-run a D6-style
+  message before D8. The `Parse HDFC SMS` node is unchanged.
+
+  *Two housekeeping items, unresolved:* the ₹500 SWIGGY row from D3/D4 is
+  still in the ledger and should go once Phase D closes; and the live
+  workflow is named **"SMS to Sure"** with a new id, while the generated JSON
+  is named "HDFC SMS -> Sure (proposal 010)" — a future import will therefore
+  create a *second* workflow rather than updating this one. Delete the old
+  one on re-import, or rename to match the JSON.
 
 ## Follow-ups (not in scope)
 
@@ -553,6 +1149,13 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST \
 - **Reconciliation.** A watched folder on ciri for the HDFC CSV the app can
   export → Sure's Imports API, or a matcher on `ref:` / amount+date against
   `GET /api/v1/transactions`, to catch anything the phone missed.
+- **A test harness for the LLM validator.** Two bugs have now been found in
+  it by hand (D6's `ref:Rs.640`, and the review's `ref:<helpline>`), and the
+  fixture suite cannot reach it: it lives in `build-workflow.js`, not
+  `parser/hdfc.js`. The shape that works: load the generated node's `jsCode`,
+  stub `$json`/`$env`/`$('Parse HDFC SMS')`, and assert on a table of model
+  replies — a good one, the amount-as-reference, the helpline-as-reference, a
+  wrong last-4, `is_transaction:false`, and malformed JSON.
 - **Investments.** CAMS/KFintech consolidated statements (casparser) into
   Sure holdings. Different data, different pipeline.
 - **Homepage tile** for n8n in proposal 008's Apps group.

@@ -31,6 +31,7 @@ const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex'
 const ENV = {
   HDFC_SAVINGS_LAST4: $env.HDFC_SAVINGS_LAST4,
   HDFC_CC_LAST4: $env.HDFC_CC_LAST4,
+  HDFC_DEBIT_CARD_LAST4: $env.HDFC_DEBIT_CARD_LAST4,
   SURE_ACCOUNT_ID_SAVINGS: $env.SURE_ACCOUNT_ID_SAVINGS,
   SURE_ACCOUNT_ID_CC: $env.SURE_ACCOUNT_ID_CC,
   SURE_TAG_ID_AUTO_SMS: $env.SURE_TAG_ID_AUTO_SMS || '',
@@ -92,6 +93,7 @@ const sha256 = (s) => crypto.createHash('sha256').update(s, 'utf8').digest('hex'
 const ENV = {
   HDFC_SAVINGS_LAST4: $env.HDFC_SAVINGS_LAST4,
   HDFC_CC_LAST4: $env.HDFC_CC_LAST4,
+  HDFC_DEBIT_CARD_LAST4: $env.HDFC_DEBIT_CARD_LAST4,
   SURE_ACCOUNT_ID_SAVINGS: $env.SURE_ACCOUNT_ID_SAVINGS,
   SURE_ACCOUNT_ID_CC: $env.SURE_ACCOUNT_ID_CC,
   SURE_TAG_ID_AUTO_SMS: $env.SURE_TAG_ID_AUTO_SMS || '',
@@ -118,7 +120,21 @@ const last4 = String(llm.account_last4 || '');
 if (!/^\\d{4}$/.test(last4) || !sms.includes(last4)) return fail('last4-not-in-text');
 const date = /^\\d{4}-\\d{2}-\\d{2}$/.test(llm.date || '') ? llm.date : src.receivedAt;
 if (!date) return fail('no-date');
-const ref = llm.reference && sms.includes(String(llm.reference)) ? String(llm.reference) : null;
+// The model is NOT trusted for the id. external_id is the duplicate guard,
+// so a wrong reference does not produce a wrong row — it silently swallows a
+// real transaction as a repeat. Two live near-misses proved the class:
+//   - 2026-09-08, caught at D6: the model returned "Rs.640" (the amount).
+//     A shape test would stop that one.
+//   - a shape test is still not enough: HDFC's own boilerplate ends every
+//     alert with "Call 18002586161", an 11-digit run that passes any
+//     shape-plus-presence rule and is IDENTICAL in every message — every
+//     fallback transaction would collapse into the first one.
+// So the reference comes from refOf() (bundled from parser/hdfc.js), which
+// anchors on a Ref/UPI/RRN/NEFT/IMPS keyword before the digits. "Call
+// 18002586161" has no such keyword and cannot match. The model's own answer
+// is kept in the stored llm blob for audit only. No reference found means
+// the sha: id, derived from the whole message and unique per transaction.
+const ref = refOf(sms);
 const norm = sms.replace(/\\s+/g, ' ').trim();
 const txn = {
   template: 'llm', kind: llm.kind, amount, currency: 'INR', date, last4,
@@ -134,8 +150,19 @@ return { json: { ...src, status: 'ok', reason: 'llm', txn, sure: s.body, llm } }
 `;
 
 // toSure is needed in the validator too; take it from the parser source.
-const toSureSrc = parserSrc.slice(parserSrc.indexOf('function toSure('), parserSrc.indexOf('const api = {'));
-const LLM_VALIDATE_FULL = `'use strict';\n${toSureSrc}\n${LLM_VALIDATE_CODE}`;
+// The validator needs two functions from the parser verbatim: toSure (the
+// account routing and sign rules) and refOf (the keyword-anchored reference
+// extractor — see the comment above the `ref` assignment). Slicing them from
+// the same file the fixtures test is what keeps the two paths honest.
+function fnSrc(name, endsBefore) {
+  const start = parserSrc.indexOf(`function ${name}(`);
+  const end = parserSrc.indexOf(endsBefore, start);
+  if (start < 0 || end < 0) throw new Error(`cannot slice ${name}() out of parser/hdfc.js`);
+  return parserSrc.slice(start, end);
+}
+const refOfSrc = fnSrc('refOf', 'function last4Of(');
+const toSureSrc = fnSrc('toSure', 'const api = {');
+const LLM_VALIDATE_FULL = `'use strict';\n${refOfSrc}\n${toSureSrc}\n${LLM_VALIDATE_CODE}`;
 
 // ---- Ollama request body ---------------------------------------------------
 
@@ -369,7 +396,11 @@ wire(KUMA_IF, KUMA, { fromIndex: 0 });
 // ---- Workflow --------------------------------------------------------------
 
 const workflow = {
-  name: 'HDFC SMS -> Sure (proposal 010)',
+  // Must match the name in n8n exactly. A re-import creates a workflow named
+  // whatever this says, so a mismatch means renaming by hand after every
+  // regenerate — and a rename does not survive the next import either. The
+  // proposal reference lives in the repo, not in the workflow's name.
+  name: 'HDFC SMS -> Sure',
   nodes,
   connections,
   settings: {
