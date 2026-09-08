@@ -499,13 +499,29 @@ renamed, which is cosmetic.
   a fresh port is applied automatically once gluetun forwards one again. If it stays stuck at 0
   for long, reconnect onto a working PF server:
   ```bash
-  ⚙️ ssh lab-ciri 'docker restart gluetun && sleep 8 && docker restart qbittorrent'
+  ⚙️ ssh lab-ciri 'docker restart gluetun && sleep 8 && docker restart qbittorrent qbit-port-sync'
   ```
-  (Restart qBittorrent after gluetun — it must re-attach to the fresh netns; the sidecar
-  recovers on its own.)
-- **"Always restart qBittorrent after the port-sync sidecar" is too broad** — clarified
-  2026-07-29. The manual restart is needed **only when gluetun alone is restarted**, because
-  that destroys and recreates the network namespace underneath a still-running qBittorrent.
+  (Restart **both** qBittorrent and the sidecar after gluetun. They join gluetun's netns by
+  container *ID*, and `docker restart` keeps that ID while building a **fresh sandbox** — so
+  every container still running from before is left holding the destroyed namespace.)
+- **A gluetun-only restart strands *every* container in its netns** — corrected 2026-09-09.
+  The 2026-07-29 note here used to say only qBittorrent needed the manual restart and that
+  "the sidecar recovers on its own". That is wrong, and it cost an evening: recovering from
+  the 2026-09-08 port-forwarding failure (case 6 in
+  [`servarr-vpn-health.sh`](../../../scripts/monitoring/servarr-vpn-health.sh)) with
+  `docker restart gluetun && … docker restart qbittorrent` brought port forwarding back
+  (`41550`) while `qbit-port-sync` — untouched, `Up 6 days` — kept polling the dead
+  namespace and never pushed the new port. Its symptom, from inside the sidecar:
+  ```bash
+  docker exec qbit-port-sync wget -qO- http://127.0.0.1:8000/v1/portforward
+  # wget: can't connect to remote host (127.0.0.1): Connection refused
+  ```
+  qBittorrent was left listening on the stale `53196` — inbound peers still could not reach
+  it, the very thing the restart was meant to fix. The divergence was surfaced by
+  `servarr-vpn-health.sh`'s soft check 8 (forwarded port != qBit listen_port), which is the
+  only check that looks at both numbers.
+  The rule: **restart gluetun ⇒ restart qBittorrent *and* qbit-port-sync.** The health
+  script's own failure message said this correctly all along.
   A **full stack, VM or host restart needs no manual step** and was verified self-healing on
   2026-07-27: `network_mode: service:gluetun` + `depends_on` make Docker start gluetun first
   so qBittorrent joins the *fresh* netns, and the sidecar's `last=""` resets so it re-pushes

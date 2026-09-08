@@ -23,15 +23,36 @@
 #     5. qBittorrent's API is unreachable             → dead client behind a live tunnel
 #     6. gluetun's port-forwarding service has EXITED → PF is gone until a restart
 #
-#   Why 6 is hard and not soft: gluetun's PF retry loop covers the "get external
-#   IPv4 address" RPC but NOT the "add UDP port mapping" RPC that follows it. A
-#   refusal on the second one during PF *startup* (i.e. straight after a VPN
-#   reconnect) is not retried — it propagates to the [vpn] supervisor, which does
-#   nothing because the tunnel itself is healthy. Port forwarding is then over for
-#   the life of the container. Observed 2026-07-30 (v3.41.1, ~22h) and again
-#   2026-08-25 (v3.41.3, 8.7h): both times the container stayed "healthy", every
-#   other monitor stayed green, and only a restart recovered it. Waiting cannot
-#   help, so waiting out $MAX_STRIKES would only delay the page by ~30 minutes.
+#   Why 6 is hard and not soft: gluetun's PF startup sequence is a chain of NAT-PMP
+#   RPCs — get external IPv4 address, add the UDP mapping, then add the TCP one —
+#   and its retry loop does not cover the whole chain. A refusal on the LAST link,
+#   during PF *startup* (i.e. straight after a VPN reconnect), is not retried: it
+#   propagates to the [vpn] supervisor, which does nothing because the tunnel
+#   itself is healthy. Port forwarding is then over for the life of the container.
+#
+#   Which link escapes was measured, not guessed, from the 2026-09-08 failure —
+#   note the log tag, which is the whole tell:
+#     21:52:56 ERROR [port forwarding] … adding UDP port mapping: … connection
+#                                       refused - retrying in 5s      ← retried
+#     21:57:36 ERROR [vpn] … adding TCP port mapping: … connection refused
+#                                                                     ← fatal, silent
+#   An earlier version of this comment blamed the UDP mapping. It is one RPC
+#   further along than that, and the distinction is not academic: [port forwarding]
+#   means gluetun is still working the problem, [vpn] means it has handed a dead
+#   service back to a supervisor that will not act on it. Nothing in the container
+#   changes state — no unhealthy flag, no exit, no further log line ever.
+#
+#   Observed 2026-07-30 (v3.41.1, ~22h uptime), 2026-08-25 (v3.41.3, 8.7h) and
+#   2026-09-08 (v3.41.3, 6 days — so uptime confers no immunity): every time the
+#   container stayed "healthy", every other monitor stayed green, and only a
+#   restart recovered it. Waiting cannot help, so waiting out $MAX_STRIKES would
+#   only delay the page by ~30 minutes.
+#
+#   Recovering from this restarts gluetun, which rebuilds its network namespace and
+#   strands EVERY container sharing it — qbittorrent and qbit-port-sync both. Hence
+#   the message below naming all three; a stranded sidecar leaves qBit on a stale
+#   port and lands you in soft check 8 instead. See "A gluetun-only restart strands
+#   every container in its netns" in configs/ciri/servarr/README.md (2026-09-09).
 #
 #   NOT a hard check: which organisation owns the exit IP. The first version of this
 #   script hard-failed unless the exit's `organization` contained "proton", which
@@ -61,7 +82,11 @@
 #                                     worse — which is what case 6 above is for.
 #     8. forwarded port != qBit's listen_port — qbit-port-sync polls every 30s, so a
 #                                     brief mismatch right after a rotation is normal.
-#                                     A persistent one means the sidecar is broken.
+#                                     A persistent one means the sidecar is broken —
+#                                     most often stranded in the netns a gluetun-only
+#                                     restart tore down (2026-09-08), where its poll
+#                                     of 127.0.0.1:8000 is refused forever. Restart
+#                                     qbit-port-sync.
 #     9. qBit's external address != the tunnel's — gluetun's own healthcheck can
 #                                     restart the VPN under a running client (5
 #                                     times in the 36h to 2026-08-25). When it does,
