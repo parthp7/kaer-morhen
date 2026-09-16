@@ -27,6 +27,12 @@ and what each verification returned: [proposal 010](../../../docs/proposals/010-
 - `parser/run-fixtures.js` — runs the parser over `parser/fixtures/*.txt`
   and fails on any mismatch. `parser/fixtures/private/` is git-ignored for
   unredacted real messages.
+- `parser/run-validator-tests.js` — 20 cases against the **"Validate LLM
+  output" node as generated**, covering what the fixture suite structurally
+  cannot: the LLM path. It runs the node out of
+  `workflows/hdfc-sms-to-sure.json` with `$json` / `$` / `$env` mocked, so an
+  escaping bug in the builder's template literal fails here too. Regenerate
+  before running it.
 - `workflows/build-workflow.js` — generates `workflows/hdfc-sms-to-sure.json`
   from the parser plus the n8n glue. Re-run after every parser change, then
   re-import in the n8n UI.
@@ -35,6 +41,31 @@ and what each verification returned: [proposal 010](../../../docs/proposals/010-
   attached in the UI.
 - `shortcut/README.md` — the iPhone automation, step by step, and the
   spike checks that decide whether this design works at all.
+
+## Testing
+
+Three commands, and the first two must be run **separately** — the tracked
+fixtures use `1234`/`9876`/`4567` while the private ones need the real
+last-4s, so no single invocation can be green for both:
+
+```bash
+cd configs/ciri/n8n
+docker run --rm -v "$PWD:/w" -w /w node:22-alpine node parser/run-fixtures.js parser/fixtures/hdfc-sms.txt
+docker run --rm -e HDFC_SAVINGS_LAST4=… -e HDFC_CC_LAST4=… -e HDFC_DEBIT_CARD_LAST4=… \
+  -v "$PWD:/w" -w /w node:22-alpine node parser/run-fixtures.js parser/fixtures/private/real.txt
+docker run --rm -v "$PWD:/w" -w /w node:22-alpine node workflows/build-workflow.js
+docker run --rm -v "$PWD:/w" -w /w node:22-alpine node parser/run-validator-tests.js
+```
+
+**What each covers, and the gap between them.** `run-fixtures.js` exercises
+`parseSms` and `toSure` — the regex path. `run-validator-tests.js` exercises
+the LLM path, which has different failure modes: it is the only place where
+an outside model's output becomes an `external_id`, and `external_id` is the
+duplicate guard, so a wrong reference does not create a wrong row — it
+silently swallows a real transaction as a repeat. Two such bugs reached
+production on 2026-09-08 and both are now regression cases. Neither suite
+covers the n8n glue itself (routing between nodes, credentials, the IMAP
+trigger); that is what proposal 010's Phase D does by hand.
 
 ## How the pipeline works
 

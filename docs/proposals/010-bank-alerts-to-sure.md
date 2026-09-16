@@ -1039,6 +1039,29 @@ day the step ran, not the day it was designed.
   `HDFC SMS -> Sure`, so every re-import needed a manual rename — and the
   rename never survived the next one. The builder now emits the live name;
   the proposal reference belongs in the repo, not in a workflow title.
+- **Follow-up delivered the same day: the LLM validator now has tests.**
+  `parser/run-validator-tests.js` runs **20 cases** against the *generated*
+  "Validate LLM output" node — pulled out of `hdfc-sms-to-sure.json` and
+  executed with `$json`, `$` and `$env` mocked — rather than against the
+  builder source, so a template-literal escaping bug (the eaten `\d`) fails
+  the suite too. It asserts the id rules, that nothing the model invents can
+  reach Sure (amount, last-4 and reference must survive their checks),
+  account routing and sign on the fallback path, the tag, the date fallback,
+  and that the raw SMS reaches the notes.
+
+  **The cases were verified to bite**, by re-injecting each historical rule
+  into a scratch copy of the workflow:
+
+  | Rule under test | Cases that fail |
+  |---|---|
+  | original — "the reference appears in the text" | amount-as-reference, helpline-as-reference, model-lying |
+  | the interim shape test `/^[A-Za-z]?\d{9,18}$/` | helpline-as-reference, model-lying |
+  | shipped — `refOf(sms)` | none (20/20) |
+
+  The middle row is the point: the suite catches the hole in the *fix*, which
+  previously only a human reviewer spotted. What still has no automated
+  coverage is the n8n glue — node routing, credentials, the IMAP trigger —
+  which is what Phase D exercises by hand.
 
 - **A4 review (Fable, 2026-09-07) — three corrections on top of the A4 record.**
   1. **`HDFC_DEBIT_CARD_LAST4` never reached n8n.** It was added to
@@ -1162,6 +1185,9 @@ day the step ran, not the day it was designed.
 - **Categorisation.** Sure's rules engine on `name`, or its AI
   auto-categorisation via the local Ollama, once a few weeks of real
   merchant strings have accumulated.
+- ~~**A test harness for the LLM validator.**~~ **Done 2026-09-08** —
+  `parser/run-validator-tests.js`, 20 cases against the generated node. See
+  the deviations entry below.
 
 ---
 
