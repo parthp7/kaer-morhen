@@ -67,6 +67,90 @@ production on 2026-09-08 and both are now regression cases. Neither suite
 covers the n8n glue itself (routing between nodes, credentials, the IMAP
 trigger); that is what proposal 010's Phase D does by hand.
 
+## Deploying a change without losing the execution history
+
+With no env set, `build-workflow.js` writes the tracked JSON — placeholder
+credentials, no workflow id. Importing *that* in the UI creates a **new**
+workflow, so the old one's runs have to be thrown away with it:
+`execution_entity` foreign-keys to `workflowId`.
+
+Supplying the ids makes the output an in-place update instead. Both routes
+below upsert on `id`, so the workflow keeps its id and its executions; they
+differ only in whether you have to switch it back on by hand. The five values
+live in `secrets.local.yaml`; the credential ids are stable and only change if
+a credential is recreated.
+
+Build the deploy JSON first, either way:
+
+```bash
+cd configs/ciri/n8n
+OUT=$(mktemp -d)
+sed -nE 's/^(N8N_WORKFLOW_ID|N8N_CRED_[A-Z]+_(IMAP|SURE)):[[:space:]]*(.*[^[:space:]])[[:space:]]*$/\1=\3/p' \
+  /path/to/secrets.local.yaml > "$OUT/deploy.env"
+
+docker run --rm --env-file "$OUT/deploy.env" \
+  -v "$PWD:/w" -v "$OUT:/out" -w /w \
+  node:22-alpine node workflows/build-workflow.js --out /out/hdfc-deploy.json
+```
+
+**Route A — CLI, then Publish in the UI.** No API key needed. The import
+leaves the workflow deactivated (see the first gotcha), so this is two steps:
+
+```bash
+scp "$OUT/hdfc-deploy.json" lab-ciri:/data/stacks/n8n/n8n-data/
+ssh lab-ciri 'docker exec n8n n8n import:workflow --input=/home/node/.n8n/hdfc-deploy.json'
+ssh lab-ciri 'rm /data/stacks/n8n/n8n-data/hdfc-deploy.json'
+# then: open the workflow in n8n and Publish
+ssh lab-ciri 'cd /data/stacks/n8n && docker compose restart n8n'   # not optional, see below
+```
+
+Alert mail that arrives while it is off is not lost — it stays `UNSEEN` and
+drains on the next activation, the same way it did through the four-day Gmail
+outage of 2026-09-11.
+
+**Route B — public API, no manual step.** Needs `N8N_PUBLIC_API_KEY` in
+`secrets.local.yaml` (Settings → n8n API). `publishIfActive` defaults to true,
+so an update to a published workflow is re-published automatically:
+
+```bash
+# id/active are readOnly and the schema is additionalProperties:false, so the
+# body is the four writable fields — sending the generated file as-is is a 400.
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); json.dump({k:d[k] for k in ('name','nodes','connections','settings')}, open(sys.argv[2],'w'))" \
+  "$OUT/hdfc-deploy.json" "$OUT/put.json"
+
+curl -sS -X PUT "https://n8n.kaermorhen.fyi/api/v1/workflows/$N8N_WORKFLOW_ID" \
+  -H "X-N8N-API-KEY: $N8N_PUBLIC_API_KEY" \
+  -H 'Content-Type: application/json' --data @"$OUT/put.json"
+```
+
+Four things that bite:
+
+- **The CLI always deactivates what it imports.** `import.service.js` sets
+  `active = false` and `activeVersionId = null` before the upsert, every time.
+  The only flag that activates them again, `--activeState=fromJson`, throws
+  outside queue or multi-main mode, which this single-main deployment is not —
+  so on ciri the CLI import is *always* followed by a manual Publish. The
+  execution history survives regardless; only the on/off state is lost.
+- **Route A needs the restart, and the reason is not obvious.** `docker exec`
+  runs the import in its *own* process, so the deactivate it performs updates
+  the database but cannot tear down the trigger living in the running server.
+  Publishing then adds a second one: observed 2026-09-17 as **two** established
+  connections to port 993, one holding the pre-import parser, with no way to
+  tell which would win a message. The container log is the tell — a genuine
+  re-activation prints `Activated workflow "…" (ID: …)`, and after the import
+  and Publish there was none. Restarting resolves it to exactly one trigger
+  loaded from the database.
+- **The file must sit under `/data/stacks/n8n/n8n-data`** for Route A — that
+  is the only host path mounted into the container (at `/home/node/.n8n`).
+- **Never push the tracked JSON to a live workflow.** Its `<SET IN UI>`
+  credential stubs replace the real bindings; the call succeeds and every run
+  afterwards fails. A deploy build carries the real credential ids.
+- **A deploy build refuses to write the tracked file** (`--out` is required),
+  so instance ids cannot reach git by accident.
+- **Verify by id, not by name.** The point of this path is that
+  `workflow_entity.id` and the execution history are unchanged; a new id in
+  the response means something fell back to creating a workflow.
+
 ## How the pipeline works
 
 ```

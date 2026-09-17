@@ -4,15 +4,18 @@
 // The parser lives in ONE place (parser/hdfc.js, tested by run-fixtures.js).
 // This script pastes it into the "Parse HDFC SMS" Code node together with the
 // n8n glue below, so the workflow file never drifts from the tested code.
-// Re-run after any parser change, then re-import the JSON in n8n (Workflows
-// -> Import from File; overwrite the existing one).
+// Re-run after any parser change. With no env set the output is the tracked
+// file — placeholder credentials, no workflow id — so importing it in the UI
+// creates a NEW workflow. Set the "Deploy target" vars below plus --out to
+// build an in-place update instead, which keeps the execution history.
 //
 //   node workflows/build-workflow.js
 //   docker run --rm -v "$PWD:/w" -w /w node:22-alpine node workflows/build-workflow.js
 //
-// No credentials, ids, hosts or account numbers are embedded: everything
-// environment-specific is read from $env at run time (see .env.example),
-// and the two credentials (IMAP, Sure header auth) are attached in the UI.
+// No secrets are embedded either way: account numbers, hosts and Sure ids are
+// read from $env at run time (see .env.example). The ids a deploy build does
+// embed are instance-local handles, not credential material, and they still
+// never reach a tracked file.
 
 'use strict';
 
@@ -21,6 +24,28 @@ const path = require('path');
 
 const here = __dirname;
 const parserSrc = fs.readFileSync(path.join(here, '..', 'parser', 'hdfc.js'), 'utf8');
+
+// ---- Deploy target ---------------------------------------------------------
+// n8n's importer upserts on `id` (dist/services/import.service.js: upsert(
+// WorkflowEntity, …, ['id'])), so a JSON that carries the id of an existing
+// workflow UPDATES it rather than creating a new one — the workflow keeps its
+// id, and executions, which foreign-key to it, survive. Without an id the
+// importer mints one (generateNanoId) and the old workflow's history is
+// stranded on a row you then have to delete.
+//
+// The credential ids must travel with it. Importing the '<SET IN UI>' stubs
+// over a live workflow unbinds both credentials, which does not fail the
+// import — it fails every run afterwards.
+const DEPLOY = {
+  workflowId: process.env.N8N_WORKFLOW_ID || null,
+  imapCredId: process.env.N8N_CRED_ID_IMAP || '<SET IN UI>',
+  imapCredName: process.env.N8N_CRED_NAME_IMAP || 'relay mailbox (Gmail IMAP)',
+  sureCredId: process.env.N8N_CRED_ID_SURE || '<SET IN UI>',
+  sureCredName: process.env.N8N_CRED_NAME_SURE || 'Sure API key (X-Api-Key)',
+};
+const isDeployBuild = Boolean(
+  DEPLOY.workflowId || process.env.N8N_CRED_ID_IMAP || process.env.N8N_CRED_ID_SURE,
+);
 
 // ---- Code node bodies ------------------------------------------------------
 
@@ -239,7 +264,7 @@ const TRIGGER = add({
       forceReconnect: 60,
     },
   },
-  credentials: { imap: { id: '<SET IN UI>', name: 'relay mailbox (Gmail IMAP)' } },
+  credentials: { imap: { id: DEPLOY.imapCredId, name: DEPLOY.imapCredName } },
 });
 
 const PARSE = add({
@@ -284,7 +309,7 @@ const SURE = add({
     jsonBody: '={{ JSON.stringify($json.sure) }}',
     options: { response: { response: { fullResponse: true, responseFormat: 'json' } }, timeout: 20000 },
   },
-  credentials: { httpHeaderAuth: { id: '<SET IN UI>', name: 'Sure API key (X-Api-Key)' } },
+  credentials: { httpHeaderAuth: { id: DEPLOY.sureCredId, name: DEPLOY.sureCredName } },
   onError: 'continueErrorOutput',
 });
 wire(ROUTE, SURE, { fromIndex: 0 });
@@ -396,10 +421,13 @@ wire(KUMA_IF, KUMA, { fromIndex: 0 });
 // ---- Workflow --------------------------------------------------------------
 
 const workflow = {
-  // Must match the name in n8n exactly. A re-import creates a workflow named
-  // whatever this says, so a mismatch means renaming by hand after every
-  // regenerate — and a rename does not survive the next import either. The
-  // proposal reference lives in the repo, not in the workflow's name.
+  // Present only on a deploy build; its absence is what makes an import create
+  // a new workflow instead of updating this one.
+  ...(DEPLOY.workflowId ? { id: DEPLOY.workflowId } : {}),
+  // Must match the name in n8n exactly. Without an id a re-import creates a
+  // workflow named whatever this says, so a mismatch means renaming by hand
+  // after every regenerate; with one, a mismatch silently renames the live
+  // workflow. The proposal reference lives in the repo, not in the name.
   name: 'HDFC SMS -> Sure',
   nodes,
   connections,
@@ -413,7 +441,29 @@ const workflow = {
   },
   meta: { generatedBy: 'configs/ciri/n8n/workflows/build-workflow.js', instanceId: '<n8n instance>' },
 };
+// `n8n import:workflow` deactivates everything it imports unless it is told to
+// read this field, so a deploy build must be imported with --activeState=fromJson.
+if (DEPLOY.workflowId) workflow.active = true;
 
-const outFile = path.join(here, 'hdfc-sms-to-sure.json');
+const TRACKED_OUT = path.join(here, 'hdfc-sms-to-sure.json');
+const outFlag = process.argv.indexOf('--out');
+if (outFlag !== -1 && !process.argv[outFlag + 1]) {
+  console.error('--out needs a path');
+  process.exit(1);
+}
+const outFile = outFlag !== -1 ? path.resolve(process.argv[outFlag + 1]) : TRACKED_OUT;
+
+if (isDeployBuild && outFile === TRACKED_OUT) {
+  console.error(
+    'refusing to write instance ids into the tracked workflow file.\n' +
+    'Use --out <git-ignored path> for a deploy build, or unset ' +
+    'N8N_WORKFLOW_ID / N8N_CRED_ID_* to rebuild the tracked one.',
+  );
+  process.exit(1);
+}
+
 fs.writeFileSync(outFile, JSON.stringify(workflow, null, 2) + '\n');
-console.log(`wrote ${path.relative(process.cwd(), outFile)} (${nodes.length} nodes)`);
+console.log(
+  `wrote ${path.relative(process.cwd(), outFile)} (${nodes.length} nodes)` +
+  (isDeployBuild ? ` — in-place update of ${DEPLOY.workflowId}` : ''),
+);

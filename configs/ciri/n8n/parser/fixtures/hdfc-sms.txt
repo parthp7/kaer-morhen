@@ -157,6 +157,18 @@ UMN 11aa22bb33cc44dd55ee66ff77aa88bb@okhdfcbank
 Maintain Balance
 -HDFC Bank
 
+# An ACH/NACH mandate debit, both halves as HDFC actually sends them: the
+# pre-notification first, the confirmation when the money moves. They share no
+# identifier — a UMRN is per mandate, the ACH reference is per debit — so
+# until 2026-09-16 each wrote its own row for one payment. The alert is
+# dropped; the confirmation is the half that reaches Sure.
+expect: skip reason=ach-prenotification
+PAYMENT ALERT!
+INR 27500.00 deducted from HDFC Bank A/C No 1234 towards ACME SERVICES LTD UMRN: HDFC2019070000000471
+
+expect: ok kind=debit amount=27500 date=2026-09-15 last4=1234 channel=other template=account-debited
+UPDATE: INR 27,500.00 debited from HDFC Bank XX1234 on 15-SEP-26. Info: ACH D- ACME SERVICES LTD-398220415. Avl bal:INR 84,110.75
+
 # An ANNOUNCEMENT of a future card autopay — noise, and it carries the same
 # mandate id as the success message, which is why that id is not a reference.
 expect: skip

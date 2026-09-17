@@ -99,6 +99,19 @@ const MANDATE_WORDS = [
 ];
 const EXECUTED = /(?:\bSuccess\b|^\s*(?:UPI\s+Mandate:\s*)?Sent\s+(?:Rs|INR)|\bdebited\s+from\b|\bhas been\s+(?:debited|deducted)\b)/i;
 
+// HDFC announces one ACH/NACH mandate debit TWICE: this "PAYMENT ALERT! …
+// UMRN: <id>" pre-notification, and — when the money actually moves — an
+// "UPDATE: … debited … Info: ACH D-…" confirmation that account-debited
+// parses. The two carry different identifiers (a UMRN is stable for the life
+// of the mandate, the ACH reference is per debit), so neither refOf() nor the
+// text hash collapses them: on 2026-09-15 they wrote two rows for one real
+// debit. The pre-notification is the half dropped, because it carries no date
+// of its own — which is also why it cannot use the NO_OTP_CHARGE trick of
+// giving both shapes one deterministic external_id, as that key needs a date
+// the two messages agree on. Accepted trade-off (2026-09-16): an alert never
+// followed by its confirmation is recorded nowhere and raises no ntfy.
+const ACH_PRENOTIFICATION = /^PAYMENT\s+ALERT\b.*\bUMRN\b/i;
+
 const CHANNEL_HINTS = [
   [/\bUPI\b|\bVPA\b|@[a-z]{2,}\b/i, 'upi'],
   [/\bNEFT\b/i, 'neft'], [/\bIMPS\b/i, 'imps'], [/\bRTGS\b/i, 'rtgs'],
@@ -290,6 +303,9 @@ function parseSms(text, opts) {
   // HDFC and BANK — and threw away real card-payment alerts as another
   // bank's mail. Leading boundary only.
   if (!/\bHDFC/i.test(norm)) return Object.assign(out, { status: 'skip', reason: 'not-hdfc' });
+  if (ACH_PRENOTIFICATION.test(norm)) {
+    return Object.assign(out, { status: 'skip', reason: 'ach-prenotification' });
+  }
   // The OTP/PIN noise rules must not fire on "without OTP/PIN" charges.
   const forNoise = norm.replace(NO_OTP_CHARGE, 'w/o auth');
   for (const re of NOISE) {
