@@ -1,9 +1,17 @@
 # Proposal 011 — Manga + ebooks: Suwayomi + Komga + Kavita on ciri
 
-- **Status**: **DESIGNED — not yet built.** Written 2026-09-20. Nothing has
-  been deployed, no disk has been added, no container exists. Five items in
-  §10 are flagged as *unverified on the box* and are deliberately checked
-  during the build rather than assumed here.
+- **Status**: **IN PROGRESS — Phases A and B complete, 2026-09-21.**
+  Phase A: scsi4 zvol added, ext4 `LABEL=manga`, mounted `/mnt/manga`,
+  confirmed excluded from the nightly PBS job; hotplug worked, so **ciri was
+  never restarted**. Phase B: gluetun, Suwayomi and Komga all up; **E1–E5 and
+  part of E10 pass** (Secure Core exit verified, no IPv6 leak, 83 CBZ on the
+  zvol, one Komga series with chapter numbers parsed, both web UIs demanding
+  their own login). **All five §10 unknowns are now resolved**, and six new
+  gotchas the design did not predict are recorded as items 11–16 — three of
+  them (the extension-store sentinel trap, auto-download not backfilling, and
+  Cloudflare page-fetch failures) each cost a diagnosis during the build.
+  Remaining: Phase C (books), D (proxy/DNS/Kuma), and tests E7, E9, E11–E14.
+  **E14, the missing-mount guard, is the one not to skip.**
 - **Date**: 2026-09-20
 - **Scope**: one new zvol on ciri (**scsi4**, 100 G, `silver`, `backup=0`);
   two new compose stacks — **`manga`** (gluetun + Suwayomi + Komga) and
@@ -246,6 +254,42 @@ different country from the torrent tunnel if a source prefers it.
 **The WireGuard key must be a new one** (§10 item 1). Reusing servarr's
 private key means two live sessions on one peer, and both will flap.
 
+### Secure Core (added 2026-09-20, after the user generated the config)
+
+The manga tunnel uses Proton **Secure Core** — a double hop, entering in
+Switzerland, Iceland or Sweden before exiting in the chosen country.
+`SECURE_CORE_ONLY: on` is what enforces it.
+
+**This stack is the only one in the lab that *can* use it.** Checked against
+gluetun's own server list on ciri: 782 Proton servers offer port forwarding
+and **zero** of them are secure-core. `servarr` requires port forwarding for
+qBittorrent, so Secure Core is permanently unavailable to it. The manga stack
+is outbound-only and therefore free to take the double hop — an argument for
+the separate tunnel that only appeared after the decision was made.
+
+Three facts about the configuration, all verified against the live server
+list rather than the documentation:
+
+- **`SERVER_COUNTRIES` names the EXIT.** gluetun's `country` field is the exit
+  country; the entry hop is Proton's choice and appears only inside the server
+  name, e.g. `CH-TH#2` = enter Switzerland, exit Thailand. Switzerland itself
+  has **zero** secure-core exits, which is the tell: it is an entry country
+  only, and asking for it would match nothing.
+- **`SECURE_CORE_ONLY` is load-bearing.** Without it, `SERVER_COUNTRIES` also
+  matches the ordinary single-hop servers in the same country — Thailand has
+  4 of each — and gluetun may silently pick one. The failure is invisible and
+  in the wrong direction: you would believe you had a double hop.
+- **Pool size varies enormously and is worth choosing on.** WireGuard
+  secure-core servers per exit: United States 77, Netherlands 19, Japan 4,
+  Hong Kong 3, Singapore 2, **Thailand 2**. A two-server pool means both being
+  unavailable leaves no tunnel and, correctly, no Suwayomi. Latency compounds
+  it: from India, a Thailand exit still routes via Europe first, and manga
+  pages are many small requests — precisely the workload that punishes
+  round-trip time.
+
+`MANGA_VPN_COUNTRIES` and `MANGA_SECURE_CORE` are both `.env` values, so the
+exit and the whole double-hop decision are one word each to revise.
+
 ## 6. Access, secrets, clients
 
 **Every server carries its own login**, and Caddy is a plain proxy in front of
@@ -354,6 +398,11 @@ publishes them — Suwayomi's `stable` tag was confirmed digest-identical to
    `PROTON_WG_PRIVATE_KEY` from servarr's `.env` — one key with two live
    sessions makes both flap. Generate a second WireGuard configuration in the
    Proton dashboard. Confirm a device slot is free (the plan allows ten).
+1b. **Secure Core: `SERVER_COUNTRIES` is the exit, and `SECURE_CORE_ONLY`
+   must be on** or single-hop servers in the same country also match and may
+   be chosen silently. Entry countries (CH/IS/SE) are not filterable. Check
+   the pool size for the exit you pick — Thailand has 2 WireGuard secure-core
+   servers, Netherlands 19. See §5.
 2. **`DOWNLOAD_AS_CBZ` defaults to `false` in the Docker image**, even though
    the upstream `server.conf` default is `true`. The two genuinely differ. If
    it is not set explicitly, Suwayomi writes loose folders of images and Komga
@@ -396,6 +445,51 @@ publishes them — Suwayomi's `stable` tag was confirmed digest-identical to
 10. **`/data/books` must exist and be owned 13000:13000 before Phase C**, or
     Kavita's library scan finds nothing and the failure looks like a Kavita
     bug rather than a missing directory.
+
+### Found during the build (2026-09-20/21) — not predicted by this design
+
+11. **Suwayomi ships with NO extension repository, and the URL every guide
+    gives is the wrong one.** v2.3 uses Mihon's Extension Store
+    (`server.extensionStores`), not the older `extensionRepos`. Pasting
+    `https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.min.json`
+    "works" — no error — and yields exactly **two** entries, `Outdated App`
+    and `Update to Mihon 0.20.1+`. Those are sentinels Keiyoushi serves to
+    clients on the old extension API. The real catalogue is the protobuf
+    index, `https://github.com/keiyoushi/extensions/raw/repo/index.pb`
+    (765 bytes vs 108 KB gzipped — an easy tell). Set declaratively via
+    `EXTENSION_STORES`, which **does** override `server.conf` on every start
+    (the Open WebUI ConfigVar trap does *not* apply). Verified: 1,396
+    extensions.
+12. **`AUTO_DOWNLOAD_CHAPTERS` does not backfill.** It fires when a *library
+    update* discovers a chapter that did not exist before. Adding a series
+    with 973 existing chapters downloads none of them — you get chapter 974
+    onward and nothing behind it. The back catalogue is a manual selection in
+    the UI. This surprised the build and is worth knowing before concluding
+    the setting is broken.
+13. **Cloudflare-fronted sources fail at page-fetch while the tunnel is
+    perfectly healthy.** MangaFox returned `HTTP 200` with
+    `Server: cloudflare` and a `cf-2fa-verify` marker, but the chapter page
+    list came back empty →
+    `Downloader$EmptyChapterException: Chapter does not have any pages to
+    download`. MangaDex's API through the same tunnel returned clean JSON,
+    which is the control that proves the VPN is not at fault. Same failure
+    class as the Open WebUI search wall. Suwayomi's bundled headless Chromium
+    is meant to clear these and does not always. **Diagnosis rule: test a
+    known-good API source (MangaDex) before suspecting the tunnel.** A Proton
+    exit IP plausibly worsens Cloudflare scoring, but that was not proven.
+14. **Suwayomi logs a steady stream of alarming, harmless Chromium errors** —
+    `dbus/bus.cc`, `VK_ERROR_INCOMPATIBLE_DRIVER`, `google_apis/gcm …
+    PHONE_REGISTRATION_ERROR`. That is the bundled headless browser
+    complaining about a system bus, GPU driver and Google push registration
+    that do not exist in a container. None of it affects manga fetching. Do
+    not chase it.
+15. **Suwayomi partitions downloads by source**, so the same series taken from
+    two sources becomes **two** series in Komga with split read progress.
+    Settle on a source per series before downloading in bulk, and delete the
+    old source's folder after migrating.
+16. **Komga parses chapter numbers correctly from Suwayomi's filenames.**
+    `Official_Chapter 89.cbz` → `number=89`. This was the specific risk behind
+    choosing Komga's stricter parser over Kavita's flexible one, and it held.
 
 ---
 
@@ -452,12 +546,43 @@ Expected: ext4, ~98 G available, both directories owned `13000:13000`.
 
 ### B1. Directories and files
 
+The stack is deployed **from the repo checkout**, following the `ai` stack's
+precedent — `compose.yaml` and `.env.example` are committed at
+`configs/ciri/manga/` (identical to Appendices A and B) and pushed out with
+`rsync`, rather than pasted onto the VM by hand. The mirror rule in
+`CLAUDE.md` still holds afterwards: Phase F `scp`s the live file *back* and
+confirms it is byte-identical, so the repo remains the mirror of what runs.
+
+**[USER]** on ciri — the app directories must exist and be owned by `jaskier`
+before the first `up`, or the two JVMs cannot write their own databases:
+
 ```bash
 mkdir -p /data/stacks/manga/{suwayomi,komga}
 sudo chown -R 13000:13000 /data/stacks/manga/suwayomi /data/stacks/manga/komga
-cd /data/stacks/manga
-# compose.yaml from Appendix A, .env from Appendix B
-chmod 600 .env
+```
+
+**[USER]** from the repo checkout:
+
+```bash
+rsync -av configs/ciri/manga/ lab-ciri:/data/stacks/manga/
+ssh lab-ciri 'cd /data/stacks/manga && cp .env.example .env && chmod 600 .env'
+```
+
+Then fill the four values in `/data/stacks/manga/.env` — nothing else needs
+substituting, as `compose.yaml` carries no host-specific values:
+
+| Key | Source |
+|---|---|
+| `MANGA_WG_PRIVATE_KEY` | `PrivateKey =` in the **new** Proton WireGuard config |
+| `MANGA_WG_ADDRESSES` | `Address =` in the same file (typically `10.2.0.2/32`) |
+| `MANGA_VPN_COUNTRIES` | any Proton country; need not match servarr's (§5) |
+| `SUWAYOMI_USER` / `SUWAYOMI_PASSWORD` | chosen here; this is Suwayomi's own gate (§6) |
+
+**[VERIFY]** — the `${VAR:?}` test, which fails loudly on a blank rather than
+at runtime:
+
+```bash
+ssh lab-ciri 'cd /data/stacks/manga && docker compose config >/dev/null && echo renders OK'
 ```
 
 ### B2. Tunnel first, alone
@@ -508,14 +633,25 @@ announcement before testing.
 
 ## Phase C — the books stack
 
+Same deploy-from-repo route as Phase B; committed at `configs/ciri/books/`.
+`/data/books` itself was created in Phase A4.
+
 ```bash
+# [USER] on ciri
 mkdir -p /data/stacks/books/kavita
 sudo chown -R 13000:13000 /data/stacks/books/kavita
-cd /data/stacks/books
-# compose.yaml from Appendix C, .env from Appendix D
-chmod 600 .env
-docker compose up -d
-docker compose logs --tail 50 kavita
+
+# [USER] from the repo checkout
+rsync -av configs/ciri/books/ lab-ciri:/data/stacks/books/
+ssh lab-ciri 'cd /data/stacks/books && cp .env.example .env && chmod 600 .env'
+```
+
+**Nothing needs substituting here** — the `.env` carries only `PUID`/`PGID`,
+already correct at 13000, and Kavita's admin account is created in the web UI.
+
+```bash
+ssh lab-ciri 'cd /data/stacks/books && docker compose up -d'
+ssh lab-ciri 'cd /data/stacks/books && docker compose logs --tail 50 kavita'
 ```
 
 **[VERIFY]**: `curl -s http://<LAN_PREFIX>.150:5000/api/health`.
@@ -554,7 +690,7 @@ Homepage widgets; Suwayomi does not, so it gets a `siteMonitor` link tile.
 |---|---|---|
 | E1 | `docker exec manga-gluetun wget -qO- ifconfig.me` vs `curl ifconfig.me` on ciri | different IPs; the container's is the Proton exit |
 | E2 | `docker stop manga-gluetun`, then `docker exec suwayomi wget -qO- ifconfig.me` | fails outright — no connectivity at all, not merely slow |
-| E3 | `docker exec suwayomi wget -qO- ifconfig.me` (tunnel up) | matches E1's Proton IP, never the home IP |
+| E3 | **Revised 2026-09-20** — the Suwayomi image has no `wget`, so compare network-namespace inodes instead: `sudo readlink /proc/$(docker inspect -f '{{.State.Pid}}' suwayomi)/ns/net` vs the same for `manga-gluetun` | **identical inode**. Stronger than an IP match: Suwayomi has no interfaces, routes or DNS of its own, so the kill-switch is structural, not configured |
 | E4 | Add one series in Suwayomi, let it download | `.cbz` files under `/mnt/manga/library`, owned `13000:13000` |
 | E5 | Komga scan | series appears under its own title; **the `mangas/<source>/` level has not become the series** (§10 item 3) |
 | E6 | Open a chapter in Komga's web reader | RTL auto-detected for manga; a webtoon scrolls vertically; a western comic is LTR |
@@ -573,9 +709,17 @@ filesystem.
 
 ## Phase F — as-built mirroring (only after E passes)
 
-- `scp` both live `compose.yaml` files into `configs/ciri/manga/` and
-  `configs/ciri/books/` **verbatim**, each with `.env.example` (placeholders
-  only) and a README — the `CLAUDE.md` mirror rule.
+- Both stacks were deployed *from* the repo (Phases B1, C), so the mirror
+  already exists. Phase F **confirms it rather than creates it**: `scp` each
+  live `compose.yaml` back and diff it against the committed copy. Any
+  difference is a hand-edit made on the VM during the build and must be
+  committed, not discarded — the repo is the mirror of what runs, not of what
+  was intended.
+
+  ```bash
+  ssh lab-ciri 'cat /data/stacks/manga/compose.yaml' | diff - configs/ciri/manga/compose.yaml && echo "manga: identical"
+  ssh lab-ciri 'cat /data/stacks/books/compose.yaml' | diff - configs/ciri/books/compose.yaml && echo "books: identical"
+  ```
 - `configs/yennefer/proxy/Caddyfile` — the three new matcher blocks.
 - [storage.md](../storage.md): scsi4 row in the ciri zvol table; note
   `/data/books` in the backup discussion.
@@ -604,7 +748,11 @@ filesystem.
 
 ---
 
-# Appendix A — `compose.yaml` (→ `ciri:/data/stacks/manga/`)
+# Appendix A — `compose.yaml`
+
+Committed at `configs/ciri/manga/compose.yaml` and deployed from there (Phase
+B1). Reproduced here so the proposal is readable standalone; the committed
+file is the source of truth.
 
 ```yaml
 # Stack: manga — acquisition (Suwayomi) + library/reader (Komga).
@@ -671,8 +819,27 @@ services:
       VPN_TYPE: wireguard
       WIREGUARD_PRIVATE_KEY: ${MANGA_WG_PRIVATE_KEY:?set in .env}
       WIREGUARD_ADDRESSES: ${MANGA_WG_ADDRESSES:-10.2.0.2/32}
+      # SECURE CORE (double hop). SERVER_COUNTRIES names the EXIT country:
+      # gluetun's `country` field is the exit, and the entry (CH/IS/SE) is
+      # Proton's choice, encoded only in the server name (e.g. "CH-TH#2") and
+      # NOT filterable. Switzerland has zero secure-core exits, which is the
+      # tell — it is an entry country only.
+      #
+      # SECURE_CORE_ONLY is load-bearing, not decorative. Without it,
+      # SERVER_COUNTRIES also matches the ordinary single-hop servers in the
+      # same country (Thailand has 4 of each) and gluetun may silently pick
+      # one — you would believe you had double hop and not have it.
+      #
+      # Mind the pool size when choosing an exit: Thailand has only 2
+      # WireGuard secure-core servers, so both being down means no tunnel and
+      # (correctly) no Suwayomi. Netherlands has 19, United States 77.
       SERVER_COUNTRIES: ${MANGA_VPN_COUNTRIES:-Netherlands}
+      SECURE_CORE_ONLY: ${MANGA_SECURE_CORE:-on}
       # VPN_PORT_FORWARDING deliberately UNSET — see the header.
+      # NB: Proton does not offer port forwarding on secure-core servers
+      # anyway, so this stack's outbound-only design and Secure Core are a
+      # natural fit — where servarr's PORT_FORWARD_ONLY would directly
+      # conflict with it.
     networks:
       - manga_net
 
@@ -696,6 +863,23 @@ services:
       # Note the name — AUTO_DOWNLOAD_CHAPTERS, not AUTO_DOWNLOAD_NEW_CHAPTERS.
       AUTO_DOWNLOAD_CHAPTERS: "true"
       AUTO_DOWNLOAD_NEW_CHAPTERS_LIMIT: "0"
+      # Extension catalogue. Suwayomi ships with NONE by default, deliberately
+      # — upstream carries no source list, so this is the one thing that must
+      # be supplied before the server can browse anything at all. Declared
+      # here rather than clicked into the UI so it is git-tracked and survives
+      # a container recreate; it maps to server.extensionStores in server.conf.
+      #
+      # THE URL MUST BE THE PROTOBUF INDEX. Suwayomi 2.3 moved to Mihon's
+      # Extension Store system (server.extensionStores) from the older
+      # extensionRepos, and the .../repo/index.min.json URL that almost every
+      # guide still gives is a TRAP: it serves two sentinel entries to clients
+      # on the old extension API — "Outdated App" and "Update to Mihon
+      # 0.20.1+" — so the UI looks like it worked and lists two fake
+      # extensions while you have no sources. Verified 2026-09-20:
+      # index.min.json = 765 bytes / 2 sentinels, index.pb = 108 KB gzipped
+      # protobuf / the real catalogue. This URL is the one Keiyoushi's own
+      # README gives, and matches the index_v2 field in its repo.json.
+      EXTENSION_STORES: '["https://github.com/keiyoushi/extensions/raw/repo/index.pb"]'
       # Its own gate. A tailnet-resolvable name must not be an open door, and
       # basic auth at Caddy could never cover the bare port on .150 — the same
       # reasoning as Homepage (008 §4) and Stirling (009 §5).
@@ -766,7 +950,9 @@ SUWAYOMI_USER=<SUWAYOMI_USER>
 SUWAYOMI_PASSWORD=<SUWAYOMI_PASSWORD>
 ```
 
-# Appendix C — `compose.yaml` (→ `ciri:/data/stacks/books/`)
+# Appendix C — `compose.yaml`
+
+Committed at `configs/ciri/books/compose.yaml` and deployed from there (Phase C).
 
 ```yaml
 # Stack: books — EPUB library and reader (Kavita).
