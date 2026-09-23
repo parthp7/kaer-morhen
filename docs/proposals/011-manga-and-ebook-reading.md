@@ -10,8 +10,20 @@
   gotchas the design did not predict are recorded as items 11–16 — three of
   them (the extension-store sentinel trap, auto-download not backfilling, and
   Cloudflare page-fetch failures) each cost a diagnosis during the build.
-  Remaining: Phase C (books), D (proxy/DNS/Kuma), and tests E7, E9, E11–E14.
-  **E14, the missing-mount guard, is the one not to skip.**
+  **Phases C and D are also complete (2026-09-22)**: Kavita up with a
+  read-only library bind and reading progress persisting server-side (E8);
+  three Caddy routes live on the wildcard certificate — `manga.` and `books.`
+  answering 200, `sources.` answering 401 through the proxy as designed; three
+  Pi-hole records synced to both resolvers (44 = 44); Homepage's Reading group
+  rendering. A dedicated FlareSolverr was added to the manga stack **inside
+  the tunnel** (§5), because servarr's sits outside every tunnel and reusing
+  it would have fetched challenged pages from the home IP. Suwayomi's hostname
+  is **`sources.kaermorhen.fyi`**, not `suwayomi.` — the lab's function-naming
+  convention for opaque product names (Seerr → `requests`, Open WebUI →
+  `chat`).
+  Remaining: tests **E7, E9 (tailnet half), E11, E13 and E14**, plus Phase F.
+  **E14, the missing-mount guard, is the one not to skip** — see "Deferred by
+  decision" for why it cannot be checked any other way.
 - **Date**: 2026-09-20
 - **Scope**: one new zvol on ciri (**scsi4**, 100 G, `silver`, `backup=0`);
   two new compose stacks — **`manga`** (gluetun + Suwayomi + Komga) and
@@ -148,7 +160,7 @@ entries, no manga in the book app.
 
   Caddy (LXC 202) ──► manga.kaermorhen.fyi    → <LAN_PREFIX>.150:25600
                       books.kaermorhen.fyi    → <LAN_PREFIX>.150:5000
-                      suwayomi.kaermorhen.fyi → <LAN_PREFIX>.150:4567
+                      sources.kaermorhen.fyi → <LAN_PREFIX>.150:4567
 ```
 
 **Suwayomi and Komga never talk over the network.** Suwayomi writes CBZ files;
@@ -672,7 +684,7 @@ caddy adapt --config /etc/caddy/Caddyfile && set -a && . /etc/caddy/cloudflare.e
 
 ```bash
 pct exec 101 -- pihole-FTL --config dns.hosts       # current array
-pct exec 101 -- pihole-FTL --config dns.hosts '[ …all existing…, "<LAN_PREFIX>.202 manga.kaermorhen.fyi", "<LAN_PREFIX>.202 books.kaermorhen.fyi", "<LAN_PREFIX>.202 suwayomi.kaermorhen.fyi" ]'
+pct exec 101 -- pihole-FTL --config dns.hosts '[ …all existing…, "<LAN_PREFIX>.202 manga.kaermorhen.fyi", "<LAN_PREFIX>.202 books.kaermorhen.fyi", "<LAN_PREFIX>.202 sources.kaermorhen.fyi" ]'
 # on ciri: force the sync to pihole-2
 docker compose -f /data/stacks/nebula-sync/compose.yaml run --rm sync-now
 ```
@@ -730,6 +742,21 @@ filesystem.
   Suwayomi 401 note.
 - [maintenance.md](../maintenance.md): four version-registry rows.
 - This file: Status → **Built**, plus an "As-built deviations" section.
+
+## Deferred by decision (not forgotten)
+
+- **Homepage holds a Komga *admin* login** (2026-09-22). The widgets were
+  wired under time pressure with admin credentials. Kavita was since moved to
+  a revocable API key, but Komga's widget has no key option upstream and still
+  carries a full admin account in `configs/ciri/homepage/.env`. That file is
+  the one proposal 008 §4 singled out as concentrating every read credential
+  in the lab, and a widget only ever reads. **Fix**: create a non-admin Komga
+  user and swap `KOMGA_USER`/`KOMGA_PASSWORD` to it. Same shape as proposal
+  008's deferred item on Pulse's over-wide PVE token.
+- **E14, the missing-mount guard, is unrun** (see Phase E). It is the only
+  test that can detect a stray `library/` directory on the root disk beneath
+  the mountpoint — which, if present, silently defeats the guard. It cannot be
+  checked read-only while the zvol is mounted.
 
 ## Follow-ups (not in scope)
 
@@ -886,6 +913,23 @@ services:
       AUTH_MODE: basic_auth
       AUTH_USERNAME: ${SUWAYOMI_USER:?set in .env}
       AUTH_PASSWORD: ${SUWAYOMI_PASSWORD:?set in .env}
+      # Cloudflare challenge solver. FLARESOLVERR_URL is deliberately NOT set:
+      # its default is http://localhost:8191, and because manga-flaresolverr
+      # shares this very network namespace, localhost IS FlareSolverr. No
+      # port is published and no address needs configuring.
+      #
+      # DO NOT point this at the servarr stack's FlareSolverr. It is not a
+      # relay — it fetches the challenged page itself, with its own browser —
+      # and that instance sits on servarr_net, OUTSIDE any tunnel. Using it
+      # would fetch every Cloudflare-protected manga page from the HOME IP,
+      # defeating this stack's entire reason for existing, and would also
+      # require opening a LAN hole in the kill-switch for Suwayomi to reach it.
+      FLARESOLVERR_ENABLED: "true"
+      # Fallback rather than primary: Suwayomi has its own bundled headless
+      # Chromium and clears most sources with it. FlareSolverr is tried only
+      # when that fails, which keeps a second browser off the CPU for the
+      # common case.
+      FLARESOLVERR_RESPONSE_AS_FALLBACK: "true"
       BIND_PORT: "4567"
       WEB_UI_ENABLED: "true"
       WEB_UI_FLAVOR: WebUI
@@ -902,6 +946,27 @@ services:
       - <<: *manga_library
         target: /home/suwayomi/.local/share/Tachidesk/downloads
     # NB: no `ports:` and no `networks:` here — both come from manga-gluetun.
+
+  # ---- Cloudflare solver (no own network — lives in gluetun's netns) ------
+  # Same image and pin as the servarr stack's solver, but a SEPARATE instance
+  # and deliberately so: this one egresses through Proton, where servarr's
+  # sits on servarr_net and fetches from the home IP. FlareSolverr performs
+  # the fetch itself, so which side of the tunnel it lives on decides which
+  # address the manga source sees.
+  #
+  # container_name must differ from servarr's `flaresolverr` — names are
+  # unique per host. No ports: Suwayomi reaches it on localhost:8191 inside
+  # the shared namespace, so 8191 stays free on ciri for servarr's instance.
+  manga-flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.0
+    container_name: manga-flaresolverr
+    restart: unless-stopped
+    network_mode: "service:manga-gluetun"
+    depends_on:
+      - manga-gluetun
+    environment:
+      TZ: Asia/Kolkata
+      LOG_LEVEL: info
 
   # ---- Library + reader (NOT behind the VPN, deliberately) ----------------
   komga:
@@ -1039,8 +1104,8 @@ Added inside the existing site block, after the proposal 010 `@n8n` section.
 		reverse_proxy <LAN_PREFIX>.150:5000
 	}
 
-	@suwayomi host suwayomi.kaermorhen.fyi
-	handle @suwayomi {
+	@sources host sources.kaermorhen.fyi
+	handle @sources {
 		# Published from manga-gluetun's netns, not from the suwayomi
 		# container — so this port stops answering when the tunnel is down.
 		# That is the intended behaviour and doubles as the kill-switch alarm

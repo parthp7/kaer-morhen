@@ -1,12 +1,18 @@
 # manga — acquisition + library/reader (ciri stack)
 
-Three services on **ciri** (VM 150), live at `ciri:/data/stacks/manga/`:
+Four services on **ciri** (VM 150), live at `ciri:/data/stacks/manga/`:
 
 | Service | Image | Port | Name |
 |---|---|---|---|
 | gluetun | `qmcgaw/gluetun:v3.41.3` | publishes **4567** | — |
-| Suwayomi | `ghcr.io/suwayomi/suwayomi-server:v2.3.2243` | (via gluetun) | `suwayomi.kaermorhen.fyi` |
+| Suwayomi | `ghcr.io/suwayomi/suwayomi-server:v2.3.2243` | (via gluetun) | `sources.kaermorhen.fyi` |
+| FlareSolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | (via gluetun, unpublished) | — |
 | Komga | `gotson/komga:1.27.0` | **25600** | `manga.kaermorhen.fyi` |
+
+`sources` rather than `suwayomi` for the hostname: the product name says
+nothing about what it does, so it follows the lab's function-naming precedent
+(Seerr → `requests`, Open WebUI → `chat`, Stirling → `pdf`). It is where you
+browse sources and add series; `manga` is where you read them.
 
 Mostly manga, a few western comics. Books live in the separate
 [`books`](../books/README.md) stack. Design, rationale and the alternatives
@@ -61,6 +67,45 @@ for no benefit, and there is no `qbit-port-sync` equivalent to feed.
 
 **The WireGuard key must be a second, distinct Proton config.** Reusing
 servarr's private key means two live sessions on one peer and both flap.
+
+### Secure Core
+
+This stack uses Proton **Secure Core** — a double hop, entering in
+Switzerland, Iceland or Sweden and exiting in `MANGA_VPN_COUNTRIES`.
+`SECURE_CORE_ONLY=on` enforces it; without that flag `SERVER_COUNTRIES` also
+matches the ordinary single-hop servers in the same country and gluetun may
+pick one silently — you would believe you had a double hop and not have it.
+
+**This is the only stack in the lab that can use Secure Core.** Of 782 Proton
+servers offering port forwarding, **zero** are secure-core, so `servarr` —
+which needs port forwarding for qBittorrent — is permanently excluded, while
+this outbound-only stack is free to take the second hop.
+
+`SERVER_COUNTRIES` names the **exit**. The entry hop is not filterable and
+appears only inside the server name (`CH-NL#2` = enter Switzerland, exit
+Netherlands), so it varies between reconnects. Check the pool size before
+choosing an exit: Netherlands has 19 WireGuard secure-core servers, Thailand
+2 — and a two-server pool means both being unavailable leaves no tunnel and,
+correctly, no Suwayomi.
+
+### FlareSolverr — why a second instance
+
+`manga-flaresolverr` is a separate instance from `servarr`'s, inside this
+stack's tunnel, and that is the entire point. **FlareSolverr is not a relay —
+it fetches the challenged page itself, with its own browser.** servarr's
+instance sits on `servarr_net`, outside any tunnel, so pointing Suwayomi at it
+would fetch every Cloudflare-protected manga page from the **home IP**,
+defeating this stack's reason for existing. It would also require opening a
+LAN hole in the kill-switch (`FIREWALL_OUTBOUND_SUBNETS`) for Suwayomi to
+reach it at all, since Suwayomi has no bridge interface.
+
+Because it shares gluetun's namespace, Suwayomi reaches it on
+`http://localhost:8191` — Suwayomi's own default, so `FLARESOLVERR_URL` is
+deliberately left unset. No port is published, so 8191 on ciri stays servarr's.
+
+`FLARESOLVERR_RESPONSE_AS_FALLBACK=true` makes it a fallback rather than the
+primary path: Suwayomi's bundled Chromium clears most sources on its own, and
+this keeps a second browser off the CPU for the common case.
 
 ## Where the files go
 

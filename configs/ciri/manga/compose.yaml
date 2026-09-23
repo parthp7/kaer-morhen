@@ -129,6 +129,23 @@ services:
       AUTH_MODE: basic_auth
       AUTH_USERNAME: ${SUWAYOMI_USER:?set in .env}
       AUTH_PASSWORD: ${SUWAYOMI_PASSWORD:?set in .env}
+      # Cloudflare challenge solver. FLARESOLVERR_URL is deliberately NOT set:
+      # its default is http://localhost:8191, and because manga-flaresolverr
+      # shares this very network namespace, localhost IS FlareSolverr. No
+      # port is published and no address needs configuring.
+      #
+      # DO NOT point this at the servarr stack's FlareSolverr. It is not a
+      # relay — it fetches the challenged page itself, with its own browser —
+      # and that instance sits on servarr_net, OUTSIDE any tunnel. Using it
+      # would fetch every Cloudflare-protected manga page from the HOME IP,
+      # defeating this stack's entire reason for existing, and would also
+      # require opening a LAN hole in the kill-switch for Suwayomi to reach it.
+      FLARESOLVERR_ENABLED: "true"
+      # Fallback rather than primary: Suwayomi has its own bundled headless
+      # Chromium and clears most sources with it. FlareSolverr is tried only
+      # when that fails, which keeps a second browser off the CPU for the
+      # common case.
+      FLARESOLVERR_RESPONSE_AS_FALLBACK: "true"
       BIND_PORT: "4567"
       WEB_UI_ENABLED: "true"
       WEB_UI_FLAVOR: WebUI
@@ -145,6 +162,27 @@ services:
       - <<: *manga_library
         target: /home/suwayomi/.local/share/Tachidesk/downloads
     # NB: no `ports:` and no `networks:` here — both come from manga-gluetun.
+
+  # ---- Cloudflare solver (no own network — lives in gluetun's netns) ------
+  # Same image and pin as the servarr stack's solver, but a SEPARATE instance
+  # and deliberately so: this one egresses through Proton, where servarr's
+  # sits on servarr_net and fetches from the home IP. FlareSolverr performs
+  # the fetch itself, so which side of the tunnel it lives on decides which
+  # address the manga source sees.
+  #
+  # container_name must differ from servarr's `flaresolverr` — names are
+  # unique per host. No ports: Suwayomi reaches it on localhost:8191 inside
+  # the shared namespace, so 8191 stays free on ciri for servarr's instance.
+  manga-flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.0
+    container_name: manga-flaresolverr
+    restart: unless-stopped
+    network_mode: "service:manga-gluetun"
+    depends_on:
+      - manga-gluetun
+    environment:
+      TZ: Asia/Kolkata
+      LOG_LEVEL: info
 
   # ---- Library + reader (NOT behind the VPN, deliberately) ----------------
   komga:
