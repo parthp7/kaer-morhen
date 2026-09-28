@@ -1,19 +1,20 @@
 # obsidian-sync — CouchDB for Obsidian Self-hosted LiveSync
 
-Feature-rich, AI-assisted note-taking. **Obsidian runs on the client**
-(Mac/desktop); ciri hosts only the CouchDB replication target. AI comes from
+Feature-rich, AI-assisted note-taking. **Obsidian runs on the clients**
+(Mac + iPhone); ciri hosts only the CouchDB replication target. AI comes from
 the existing local stack — [configs/ciri/ai](../ai/README.md) — over the LAN.
 
 | Piece | Value |
 |---|---|
 | Live path | `ciri:/data/stacks/obsidian-sync/` (mirror of this directory) |
-| CouchDB | `http://<LAN_PREFIX>.150:5984` — **authenticated**, no anonymous access |
+| Client URI | `https://obsidian.kaermorhen.fyi` — Caddy on LXC 202 ([proposal 003](../../../docs/proposals/003-reverse-proxy.md)); **every client uses this**, on LAN and over Tailscale |
+| CouchDB (backend) | `http://<LAN_PREFIX>.150:5984` — **authenticated**, no anonymous access |
 | Fauxton admin UI | `http://<LAN_PREFIX>.150:5984/_utils` |
 | Database | `oxenfurt` (created by the plugin, not by hand) |
 | Data | `./data` on `/data` — **does** ride the nightly PBS job |
 | Chat model | `qwen2.5:7b-instruct` on the existing Ollama (`:11434/v1`) |
 | Embeddings | **client-side**, inside Obsidian — never touches ciri's GPU |
-| Clients today | desktop only (see "Mobile" below) |
+| Clients today | Mac + iPhone, both via the HTTPS URI, **LiveSync mode** (verified 2026-09-28) |
 
 ## Why this shape
 
@@ -135,8 +136,9 @@ docker exec ollama ollama ps          # MUST show 100% GPU
    first** — step 3 of the plugin wizard overwrites one side.
 2. Community plugins → install and enable **Self-hosted LiveSync**.
 3. LiveSync settings → wizard:
-   - URI `http://<LAN_PREFIX>.150:5984`, username/password from `.env`,
-     database `oxenfurt`.
+   - URI `https://obsidian.kaermorhen.fyi`, username/password from `.env`,
+     database `oxenfurt`. (The Mac originally used the plain LAN URI; it was
+     repointed on 2026-09-28 — same database, no rebuild needed.)
    - **Test Database Connection** → must pass.
    - **Check database configuration** → every row green. This is the plugin
      verifying the server-side settings from `couchdb/00-livesync.ini`. A red
@@ -148,6 +150,11 @@ docker exec ollama ollama ps          # MUST show 100% GPU
    - Preset **LiveSync**, then initialise the server ("Rebuild everything" /
      "I understand, overwrite server") — correct on a first device against an
      empty database.
+   - **Confirm the preset actually took**: Sync Settings → Synchronization
+     Preset → **LiveSync** → Apply. The 2026-08-05 setup finished with *every*
+     trigger off (live, on-start, on-save, periodic), so the vault uploaded once
+     and then silently stopped syncing until 2026-09-28. `isConfigured` being
+     true says nothing about whether anything replicates — check §Verify.
 4. **Copilot** plugin — chat only:
    - Provider: Ollama (or Custom OpenAI-compatible)
    - Base URL `http://<LAN_PREFIX>.150:11434/v1`, API key any non-empty string
@@ -155,6 +162,47 @@ docker exec ollama ollama ps          # MUST show 100% GPU
 5. **Smart Connections** plugin — semantic search, embeddings local to the Mac.
    Leave the embedding provider on its bundled local model; do **not** point it
    at Ollama, that is the whole point of the split.
+
+### 6. Additional devices (iPhone — done 2026-09-28)
+
+1. On an already-syncing device (the Mac), confirm its URI is the HTTPS one —
+   the new device inherits it, and a plain-HTTP URI is unusable on mobile.
+2. LiveSync → Setup → **Copy current settings as a new setup URI**. It asks
+   for a passphrase that encrypts the URI itself. Move the URI via the password
+   manager or AirDrop — it carries the CouchDB login and the E2EE passphrase.
+3. On the phone: create an **empty** vault `oxenfurt` with **Store in iCloud
+   OFF** (see Gotchas — no second sync tool), enable community plugins, install
+   and enable Self-hosted LiveSync.
+4. **Use the copied setup URI**, enter its passphrase, and choose **set up as a
+   secondary / subsequent device**. Never "rebuild" or "overwrite remote" from
+   a secondary — that replaces the server copy with the new, empty vault.
+5. Skip Smart Connections on mobile (on-device embeddings are slow there). If
+   Copilot is wanted, try `https://ollama.kaermorhen.fyi` rather than the
+   plain-HTTP LAN port.
+
+## Verify
+
+All server-side checks are read-only.
+
+```sh
+# doc_count / update_seq — must rise after any edit on any device (notes are
+# E2EE, so you cannot find a note by name server-side; the counter is the proof)
+ssh lab-ciri 'cd /data/stacks/obsidian-sync && set -a && . ./.env && set +a && curl -s -u "$COUCHDB_USER:$COUCHDB_PASSWORD" http://127.0.0.1:5984/oxenfurt | grep -oE "\"doc_count\":[0-9]+|\"update_seq\":\"[0-9]+"'
+
+# who is talking, and by which path: field 6 is the Host header
+# (obsidian.kaermorhen.fyi = through Caddy), field 7 the client address
+ssh lab-ciri 'docker logs --since 1h obsidian-couchdb 2>&1 | grep " /oxenfurt" | awk "{print \$6, \$7}" | sort | uniq -c'
+```
+
+A healthy live client shows repeated `GET /oxenfurt/_changes?...heartbeat=30000`
+(its open feed) and, after edits, `POST /oxenfurt/_revs_diff` + `_bulk_docs`.
+A handful of `404`s on `_local/…` at a device's first connection are normal
+(checkpoint not yet written). The end-to-end proof is by eye: edit on one
+device, see it on the other within seconds.
+
+Verified 2026-09-28: Mac and iPhone both via Caddy; phone first on LAN Wi-Fi,
+then on mobile data over Tailscale (arrives from `tailscale-1`, `.203`);
+a note created on the phone appeared on the Mac.
 
 ## Gotchas
 
@@ -184,23 +232,31 @@ docker exec ollama ollama ps          # MUST show 100% GPU
   **Hidden File Sync** is ever enabled, exclude it explicitly or every
   re-embed will replicate a large binary index to every device.
 - **Mobile will not work over plain HTTP.** Obsidian on iOS/Android requires a
-  publicly-trusted TLS certificate; self-signed is rejected by the plugin. See
-  follow-ups.
+  publicly-trusted TLS certificate; self-signed is rejected by the plugin.
+  Hence every client uses `https://obsidian.kaermorhen.fyi` (production
+  wildcard cert on Caddy), not the `:5984` LAN port.
 - **Do not run a second sync tool on the same vault** (iCloud/Syncthing/Git).
-  Concurrent writers to the same files corrupt LiveSync's chunk state.
+  Concurrent writers to the same files corrupt LiveSync's chunk state. On iOS
+  this means creating the vault with **Store in iCloud off**.
+- **iOS syncs only while Obsidian is in the foreground.** No background
+  replication; the phone catches up when the app is opened.
+- **CouchDB's log shows the real client, not Caddy.** Requests through the
+  proxy log the client's own address (the Mac's or phone's LAN address, or
+  `.203` for anything arriving over Tailscale) with Host `obsidian.kaermorhen.fyi` —
+  never `.202`. Filter by the Host field to tell proxied from direct traffic;
+  grepping for `.202` finds nothing and wrongly suggests the proxy is unused.
 
 ## Follow-ups
 
 - **Monitoring**: Uptime-Kuma HTTP monitor on `http://<LAN_PREFIX>.150:5984/_up`
   with Basic auth, expecting `"status":"ok"`; per
   [uptime-kuma.md](../../../docs/uptime-kuma.md) conventions.
-- **DNS**: `obsidian.kaermorhen.internal` → `.150` on pihole-1 (nebula-sync
-  mirrors to pihole-2).
-- **Mobile sync**: needs TLS, which needs the reverse-proxy **LXC 202** from
-  proposal 001 §4. Because the Boa/GPON router can't port-forward reliably,
-  the cert must come from a **DNS-01** ACME challenge (no inbound port) against
-  a real domain; reachable off-LAN via the existing Tailscale subnet router.
-  The `[cors]` origins here already allow the mobile clients.
+- ~~**DNS**: `obsidian.kaermorhen.internal`~~ — superseded by
+  `obsidian.kaermorhen.fyi` (Pi-hole records from proposal 003).
+- ~~**Mobile sync**~~ — **done 2026-09-28.** The TLS it needed arrived with
+  the Caddy reverse proxy (LXC 202, DNS-01 wildcard cert, proposal 003).
+  iPhone syncs on LAN and off-LAN via the Tailscale subnet router; the
+  `[cors]` origins here needed no change.
 - **Compaction watch**: LiveSync keeps revision history, so the database grows
   faster than the vault. CouchDB's built-in auto-compactor handles the normal
   case; if `./data` grows out of proportion, check the plugin's history

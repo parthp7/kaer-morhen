@@ -105,9 +105,12 @@ Web Search instead.
 
 ## API integrations
 
-- **Obsidian** (Copilot / Text Generator plugin): OpenAI-compatible provider,
-  base URL `http://<LAN_PREFIX>.150:11434/v1`, API key `ollama` (any non-empty
-  string), model `qwen3:8b`. Works over Tailscale too (subnet router).
+- **Obsidian** (Copilot plugin): Ollama provider, base URL
+  `http://<LAN_PREFIX>.150:11434` (or OpenAI-compatible at `…/v1`, any
+  non-empty API key), model **`qwen2.5:7b-instruct`** — not a qwen3, whose
+  thinking block Copilot renders as garbage; see
+  [obsidian-sync](../obsidian-sync/README.md). Works over Tailscale too
+  (subnet router).
 - **Keyed access** (when a real key is wanted): Open WebUI → Settings →
   Account → API keys; OpenAI-compatible endpoint under
   `http://<LAN_PREFIX>.150:8090/api/`.

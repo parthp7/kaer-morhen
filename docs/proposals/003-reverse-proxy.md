@@ -391,6 +391,8 @@ told to expect. Each needs a one-line change, then a stack restart:
   server URL afterwards.
 - **CouchDB / Obsidian LiveSync** — same body-size treatment; this is the one
   service that *gains* function, since mobile LiveSync requires HTTPS.
+  **Done 2026-09-28**: Mac repointed to the HTTPS name, iPhone added; no
+  backend change needed. CouchDB logs the forwarded client address, not `.202`.
 - **Jellyfin** — **UNRESOLVED, parked 2026-08-23.** `KnownProxies` is set to
   `<LAN_PREFIX>.202` and that part is done. The published-server-URI half is
   not, and is the reason native/remote clients misbehave: Jellyfin
@@ -519,7 +521,9 @@ From a tailnet device **off the LAN** (phone on LTE, Wi-Fi off) — per
 
 - `https://memos.kaermorhen.fyi` loads with a valid padlock
 - `https://geralt.kaermorhen.fyi` reaches the Proxmox UI
-- Obsidian LiveSync syncs against `https://obsidian.kaermorhen.fyi`
+- Obsidian LiveSync syncs against `https://obsidian.kaermorhen.fyi` —
+  **verified 2026-09-28**: iPhone on mobile data over Tailscale, a note
+  created on the phone appeared on the Mac
 
 Then reboot 202 and confirm it comes back serving unattended (`onboot=1`), and
 reboot ciri to confirm Caddy recovers when backends return rather than caching

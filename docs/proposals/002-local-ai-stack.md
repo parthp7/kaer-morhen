@@ -114,7 +114,9 @@ mkdir -p /mnt/ai-models/ollama
 - **Ollama native/OpenAI-compatible**: `http://<LAN_PREFIX>.150:11434/v1`,
   api key `ollama` (unauthenticated — same flat-LAN + Tailscale exposure as
   every other service; revisit when the reverse proxy LXC 202 gets built).
-  Obsidian (Copilot / Text Generator plugins) points here, model `qwen3:8b`.
+  Obsidian (Copilot plugin) points here, model `qwen2.5:7b-instruct` — planned
+  as `qwen3:8b`, changed at build time because Copilot renders qwen3's
+  thinking block inline ([obsidian-sync](../../configs/ciri/obsidian-sync/README.md)).
 - **Open WebUI keyed API**: per-user API keys (Settings → Account),
   OpenAI-compatible under `http://<LAN_PREFIX>.150:8090/api/`.
 - **Sure**: done 2026-07-31 — `OPENAI_ACCESS_TOKEN` + `OPENAI_URI_BASE` +
