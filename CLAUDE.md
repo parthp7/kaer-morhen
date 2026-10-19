@@ -29,6 +29,7 @@ Homelab configurations and helper scripts for personal infrastructure. Private r
 - Add a header comment describing purpose, usage, and required env/args.
 
 ## Conventions
+- The project follows a git worktree based feature implementation. If you are on main branch for any task - offer to switch to a feature worktree and branch for commit. Always make changes in feature branch, never on the main branch directly unless explicitly asked by user.
 - SSH to homelab can be done by using `ssh lab-<name>` in most cases, I update ssh config files after creating VM/nodes (usually not LXCs). 
 - Document every non-trivial script or config in its directory README.
 - Prefer relative paths and env vars over hardcoded machine-specific values.
