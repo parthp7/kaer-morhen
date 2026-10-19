@@ -1,0 +1,17 @@
+[Unit]
+Description=Run media-link-health every 5 minutes
+
+[Timer]
+# The journal needs a moment after boot before a window query means anything.
+OnBootSec=120
+# Wall-clock, not OnUnitActiveSec, and AccuracySec=1s — a relative timer's period
+# is always >= nominal and the error accumulates, and systemd defers wakeups by
+# up to AccuracySec (default 1 min) to batch them. Kuma's push window is a hard
+# deadline. Measured 2026-08-23 on media-export-health: 61-90 s against a 60 s
+# window with the defaults, exactly 30.0 s with these two lines.
+OnCalendar=*:0/5:00
+AccuracySec=1s
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

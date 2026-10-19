@@ -248,6 +248,116 @@ push cannot trip the monitor.
 Unit + timer are in this directory; deploy per
 [proposal 005](../../docs/proposals/005-nfs-media-share.md) Phase A5.
 
+## media-link-health.sh
+
+The **third** media monitor on geralt, and the only one that is not a liveness
+check. `media-mount-health.sh` and `media-export-health.sh` both answer "can I
+read a byte right now?" — two faults on this disk were invisible to that question
+for opposite reasons, and this script answers both.
+
+**The drops were hidden by the fix for them.** Proposal 005's `media-autoheal.sh`
+remounts and re-exports about 14 s after a USB re-enumeration. Between 2026-08-24
+and 2026-09-02 it did that **54 times** and nobody noticed: every outage was
+shorter than the monitors' probe interval, so both stayed green throughout. The
+08-10 fault ran 12 days and was impossible to ignore; this one fired every few
+hours and produced no signal a human acted on. *An auto-healer that hides a fault
+must be paired with something that counts it.*
+
+**The link quietly fell back to USB 2.0 and stayed there.** On 2026-08-15 the
+bridge re-enumerated at 480 Mb/s instead of 5000, and `max_sectors_kb` fell
+1024 → 120 with it. Nothing was down, so nothing alerted — for **eighteen days**,
+until it starved Jellyfin off the disk on 2026-09-02 while `ls`, `df` and a cached
+`dd` all still returned at ~3 GB/s. Speed is not liveness, and no liveness check
+can see this.
+
+Four checks, first failure wins:
+
+1. the disk is present — resolvable via `/dev/disk/by-label/media`
+2. its USB link is **SuperSpeed** (`speed` ≥ `MIN_SPEED`, default 5000) — 08-15
+3. `max_sectors_kb` ≥ `MIN_SECTORS_KB` (default 1024) — the quiet half of 08-15
+4. `USB disconnect` events on the disk's port ≤ `DROP_MAX` (default **0**) in a
+   rolling `WINDOW_H` (default **24**) hours
+
+- **Deployed to**: `/usr/local/bin/media-link-health.sh` on **geralt** (0755),
+  push URL in `/etc/kuma-push.media-link` (mode 600).
+- **Timer every 5 min**, Kuma heartbeat **600 s** — the same "push at half the
+  heartbeat" rule and the same `OnCalendar` + `AccuracySec=1s` drift fix as
+  `media-export-health`. Set `resend_interval` to 60 min: a monitor that reports
+  a *rate* is worthless if it notifies once and goes quiet, which is the 08-10
+  lesson.
+- Both Kuma deployment traps above (**address by IP**, **store the bare base
+  URL**) apply verbatim.
+
+### Why it does not check the mount
+
+Because `media-export-health.sh` already does, and one fault firing two red
+monitors teaches you to ignore one of them. This script is scoped to what the
+others structurally cannot see: **degraded-but-up**, and **broken-then-repaired**.
+
+### Why `DROP_MAX=0`, and when to raise it
+
+Any drop inside 24 h turns the monitor red. That is deliberate — the whole
+finding of 2026-09-02 is that a self-healed 14 s drop is still a hardware fault,
+and 54 of them is a trend. Two consequences to know before it surprises you:
+
+- **A deliberate reseat counts.** Unplugging the drive shows up as a drop and the
+  monitor stays red for the rest of the window. Per the 08-03 standing lesson —
+  *this disk is hand-portable; check physical handling before counting a drop as
+  a hardware trend* — that is the right default, not a bug.
+- **Raise `DROP_MAX` only to ride out a known-bad phase**, and lower it back
+  afterwards. A threshold set high enough never to fire is the same as no
+  monitor.
+
+### How the port is matched, and why not `/dev/sdX`
+
+The disk has walked `sdb → sdm → sdn → sdp → sdq → sdv → sdb` across
+re-enumerations, so the kernel name is meaningless between drops. The script
+resolves the label to its block device, walks up `/sys` to the USB device node
+that owns it, and derives the port from there (`2-3`). The **bus** number changes
+when the link renegotiates — it was `1-3` at 480 Mb/s and `2-3` at 5000 — so the
+match is `usb [0-9]+-3: USB disconnect`: pin the port, let the bus float.
+
+Counting uses `journalctl --since … _TRANSPORT=kernel`, not `journalctl -k` and
+not `dmesg`:
+
+- **`-k` implies `-b`**, which would silently scope a rolling 24 h window to the
+  current boot.
+- **`dmesg` wraps.** Measured 2026-09-04 on an 11-day uptime: `dmesg` reported 58
+  disconnects where the journal held 59. The check originally written into
+  storage.md — `dmesg -T | grep -c "USB disconnect"` against uptime — undercounts
+  exactly when the history matters most. Persistent journald (`/var/log/journal`)
+  is therefore a requirement, not a nicety.
+
+The `ok` message carries the count even when green (`0 drop(s) in 23.4/24 h`), so
+Kuma's history shows the trend rather than only the exceedances. The second
+number is how much of the window the journal can actually speak for — after a
+reboot it is smaller than `WINDOW_H`, and "0 drops" means less.
+
+### Verified before deploying (2026-09-04)
+
+Every branch exercised against the live host by piping the script over `ssh`, so
+nothing was installed until all five verdicts were seen:
+
+```bash
+# pass
+ssh lab-geralt 'bash -s' < media-link-health.sh
+# → ok: 5000M on 2-3, max_sectors_kb 1024, 0 drop(s) in 23.4/24 h        exit 0
+# drop threshold — 48 h reaches back past the connector swap and its one drop
+ssh lab-geralt 'WINDOW_H=48 bash -s' < media-link-health.sh
+# → FAIL — 2 USB drop(s) on port 2-3 in the last 48 h (max 0)            exit 1
+ssh lab-geralt 'WINDOW_H=48 DROP_MAX=5 bash -s' < media-link-health.sh   # exit 0
+# link degraded / transfers capped / disk gone
+ssh lab-geralt 'MIN_SPEED=10000 bash -s'      < media-link-health.sh     # exit 1
+ssh lab-geralt 'MIN_SECTORS_KB=2048 bash -s'  < media-link-health.sh     # exit 1
+ssh lab-geralt 'MEDIA_LABEL=nosuchlabel bash -s' < media-link-health.sh  # exit 1
+```
+
+`push()` swallows a missing URL file with a warning, so a dry run like this
+cannot corrupt a live monitor's state.
+
+Background: [docs/storage.md](../../docs/storage.md), incidents 2026-08-10/22 and
+2026-09-02, and the 2026-09-04 postscript that this monitor came out of.
+
 ## servarr-vpn-health.sh
 
 Uptime-Kuma **Push** monitor proving qBittorrent's traffic still leaves through

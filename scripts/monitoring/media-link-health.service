@@ -1,0 +1,9 @@
+[Unit]
+Description=Push media USB link health and drop count to Uptime-Kuma
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/media-link-health.sh
+# journalctl over a 24 h window on a busy journal is the only slow part; nothing
+# here touches the disk, so this must never take long enough to overlap a beat.
+TimeoutStartSec=120
