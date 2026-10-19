@@ -187,3 +187,49 @@ Any future pass on geralt pays this tax until the cache exists.
 - **Watch the AER counter.** Now that it should read 0, any future growth is a
   genuine signal rather than background noise:
   `grep TOTAL_ERR_COR /sys/bus/pci/devices/0000:05:00.0/aer_dev_correctable`
+
+---
+
+## 8. Link flapping, geralt-only — OPEN (2026-09-12)
+
+Separate from the RX-drop defect above, and separate from the switch-power fault
+that was fixed on 2026-09-11
+([hardware-inventory.md](hardware-inventory.md#dc-power-backup--as-built-2026-09-11)).
+
+`nic0` drops link in **short rapid bursts** while yennefer, on the same switch,
+records nothing:
+
+| When | Events |
+|---|---|
+| 2026-09-11 21:11:26 → 21:12:08 | **9 in 42 s** |
+| 2026-09-12 04:20:01, 04:20:04 | 2 |
+
+**How to tell this apart from a switch reboot** — the distinction that matters,
+because both present as "the network dropped":
+
+| | Switch power-cycling | This fault |
+|---|---|---|
+| yennefer also flaps | **yes**, same second | **no** |
+| gap between down and up | 35–68 s (switch boot) | seconds |
+| pattern | pairs ~10–15 min apart | bursts of 2–9 |
+
+Corroborating symptom reported by the user: geralt's link had at one point
+negotiated **below 1000 Mb/s** and recovered only after physically re-seating the
+patch cable. Currently `1000Mb/s / Full`, autoneg on, and 18 h clean as of
+2026-09-12 22:00 — but the bursts were ~7 h apart, so that is not yet a clean bill.
+
+**Suspects, in order:** the patch cable at geralt's end; switch port 7; the `alx`
+NIC itself (`rx_rxf_ov_drop_packets` 235,524 — the defect in §5).
+
+**Next step — bisect by moving one variable at a time.** Ports 2–6 on the switch
+are free. Move geralt to a different port *keeping the same cable*, then swap the
+cable *keeping the new port*. If the flapping follows the cable it is the cable;
+if it follows the port it is the switch port; if it follows neither it is the NIC,
+and there is no fix — `alx` exposes no tunables (§6).
+
+**Why it matters beyond the host:** ciri is bridged to `vmbr0` on this NIC, so a
+geralt link flap takes the whole servarr/VPN stack's egress with it. It is a
+candidate trigger for gluetun healthcheck failures — see the incident in
+[uptime-kuma.md](uptime-kuma.md#the-servarr-vpn-push-monitor-added-2026-07-29--and-what-it-actually-proves).
+On 2026-09-12 the 04:20 flaps landed *after* the 04:06 gluetun restart, so they
+did not cause that one, but the coupling is real.

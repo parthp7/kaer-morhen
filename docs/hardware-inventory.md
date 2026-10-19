@@ -212,6 +212,13 @@ targeted fix rather than new hardware.
 - **No per-device UAS quirk**: `0bc2:ab24` is absent from the kernel's
   `unusual_uas.h` (only `0bc2:331a` "Expansion Desk" is listed), so `uas` always
   binds and nothing is auto-mitigated.
+- **Cable replaced 2026-09-11** (fresh cable, replacing the one borrowed from another
+  drive during the 09-02 connector fix). Baseline on the new cable: **119 MB/s**
+  sequential read, SuperSpeed 5000M, `Command_Timeout` 65558. Six self-healed bus
+  drops occurred between 09-02 and 09-08 and raised **no alerts** — judge link health
+  from `media-link-health.sh`'s rolling drop counter, never from the absence of mount
+  notifications. Full analysis and the ≥7–10 day verification bar:
+  [storage.md](storage.md#postscript-2026-09-11--the-residual-drop-source-and-the-cable-fitted).
 - **SMR write behaviour is the root cause** of the 2026-07-26 and 2026-08-03
   outages: the small CMR persistent cache exhausts under sustained write, forcing
   read-modify-write on shingled tracks; commands stall for seconds; the UAS
@@ -323,26 +330,72 @@ that plugs into this switch:
 With only 3 of 8 ports linked (uplink + geralt + yennefer) real draw sits well under
 the 3.68 W ceiling — budget **~1.5–2.5 W** when sizing backup.
 
-### DC backup options for this switch
+### DC power backup — as-built 2026-09-11
 
-Scope note: [proposal 007](proposals/007-ups-power-protection.md) sizes a lab-wide
-**AC** UPS for the Proxmox nodes. This section covers only the switch's own **DC**
-requirement, which is small enough to solve independently and far more cheaply.
+**The switch runs from a USB port on yennefer**, through a USB-A → DC 3.5 × 1.35 mm
+cable, instead of its own wall adapter. yennefer's laptop battery is now the switch's
+UPS.
 
-Both nodes hold working batteries and are already on an incidental UPS (see the
-battery notes above), so during a mains cut the switch and the ISP's GPON router are
-what actually drop. **Backing up the switch alone buys nothing** — if the router is
-down the LAN is dead regardless — so any solution must cover both, or be paired with
-router backup.
+Why this is sufficient: the switch draws 5 V at ≤0.6 A (3.68 W worst case, ~1.5–2.5 W
+real with three ports linked) and a USB 3.0 port supplies 5 V at 900 mA. The job is
+only to bridge the **5–10 minute** transfer between mains and the building's backup
+generator — about **0.33 Wh**, trivial for a laptop battery.
 
-| Option | Cost | Notes |
+What it closes: with the ISP GPON router already on its own mini-UPS
+([proposal 007 §7](proposals/007-ups-power-protection.md)) and both nodes carrying
+laptop batteries, the switch was the last unprotected link in the chain. It no longer
+is, for the price of one cable.
+
+**Accepted trade-off — do not re-litigate.** This couples the entire LAN to yennefer:
+if yennefer loses power or is shut down, the switch dies and every host loses
+connectivity, geralt and all guests included. It was chosen deliberately over a
+₹900–1,200 standalone mini-UPS, on the grounds that both laptops sit on mains and any
+node-down event is already an on-site investigation. Whole-lab downtime in that case
+is tolerated by choice.
+
+**VALIDATED 2026-09-12 — and it fixed a bigger fault than expected.** Before the
+USB cable, geralt and yennefer were losing link **at the same second**, repeatedly.
+Simultaneous loss on both nodes means the common element: **the switch itself was
+rebooting.** yennefer's `Link is Down` → `Link is Up` gaps were 35–68 s, i.e. its
+boot time.
+
+| Date | Paired events (both nodes) |
+|---|---|
+| 09-03 | 07:20:41, 07:26:32 |
+| 09-04 | 01:58:59, 02:10:53, 02:28:37, 02:33:42 |
+| 09-06 | 18:02:03, 18:15:05, 20:47:02, 20:51:16 |
+| 09-07 | 07:09:29, 07:25:20, 15:59:50, 16:11:05 |
+| 09-09 | 09:45:33, 09:53:22, 10:25:54 |
+| 09-10 | 18:07:39, 18:16:23 |
+| 09-11 | 20:33:01 (last one — cable went in at 20:33:40) |
+
+Note the **shape**: they arrive in *pairs 10–15 minutes apart* — mains dropping
+(generator starts), then the transfer back. Roughly **two switch outages per day**,
+which is precisely the fault the cable was bought for and which nothing in the lab
+was alerting on.
+
+**Since 2026-09-11 20:33:40, yennefer has recorded zero link events** (verified
+25.5 h later). No switch reboots. The USB feed is stable and the arrangement works.
+
+**Do not read geralt-only link flapping as a switch-power problem.** geralt
+flapped 9 times in 42 s on 09-11 21:11–21:12 and twice on 09-12 04:20 while
+yennefer stayed untouched, and those bursts are seconds apart rather than the
+35–68 s of a switch reboot. That is geralt's own link — cable, switch port 7, or
+the known `alx` defect — tracked in
+[geralt-nic-throughput.md](geralt-nic-throughput.md#8-link-flapping-geralt-only-open-2026-09-12).
+
+Alternatives priced 2026-09-04, kept in case the trade-off is ever revisited:
+
+| Option | Cost | Note |
 |---|---|---|
-| Pass-through USB power bank + USB-A → DC 3.5 × 1.35 mm cable | **₹159–290** | Cheapest by far. USB is natively 5 V, so no conversion and no pigtail. Only behaves as a true UPS if the bank supports pass-through charging. |
-| Resonate RouterUPS CRU5V (5 V / 2 A) | ₹1,799–1,999 list | Correct voltage; needs a 5.5 × 2.1 → 3.5 × 1.35 pigtail. Out of stock everywhere except IndiaMART (₹2,911) as of 2026-09-04. |
-| Oakter Mini UPS Basic / Cuzor 12 V 2 A | ₹899–1,499 | **Do not buy — these are 12 V.** Feeding 12 V to a 5 V switch destroys it. They are the cheapest units on the market and the easiest mistake to make here. |
+| Bem ANAVARATA 54ANA-5V + 5.5×2.1→3.5×1.35 pigtail | ~₹985 | Native 5 V output |
+| Geonix Trot R7 (USB 5 V/2 A out) + USB→DC cable | ~₹1,158 | USB route avoids the niche pigtail |
+| Resonate RouterUPS CRU5V | ₹1,799+ | BIS-certified, chronically out of stock |
 
-At ~2 W, a 4000 mAh (≈14.8 Wh) pack yields roughly **6–8 h** of switch uptime; vendor
-"4 hour" claims assume a 12 V/1 A router drawing ~12 W, i.e. 5–6× this load.
+**Never buy a 12 V mini-UPS for this switch.** Oakter Basic (₹949), Catvision (₹849),
+Cuzor (₹1,499) and most cheap units are 12 V only, and 12 V into a 5 V switch destroys
+it. They are also the top results for "router mini UPS", which makes this the easiest
+mistake to make here.
 
 ## Proxmox-specific notes
 
