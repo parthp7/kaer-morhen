@@ -372,10 +372,12 @@ place the question can be asked honestly.
 
 **Hard** (red at once): egress == ciri's public IP; the `tun0` interface missing
 from the netns; no egress at all; gluetun control server unreachable; qBittorrent
-API unreachable. **Soft** (green, reason in the heartbeat log): forwarded port
+API unreachable; port forwarding EXITED. **Soft** (green, reason in the heartbeat
+log): qBit's external address ≠ the tunnel's (a *stranded* client); forwarded port
 `0`; forwarded port ≠ qBit's `listen_port`; or the egress comparison being
-unverifiable — all escalate to red after `MAX_STRIKES` (default 6, ≈30 min)
-consecutive runs.
+unverifiable — all escalate to red after `MAX_STRIKES` (default 10 at the 3-min
+timer, ≈30 min) consecutive runs. Three of these are **auto-fixed** — see
+[Auto-fix](#auto-fix-servarr-vpn-remediatesh-added-2026-10-20) below.
 
 **The exit IP's owner is deliberately NOT a check.** The first version hard-failed
 unless the exit's `organization` contained `proton`, and it raised a false leak
@@ -395,25 +397,16 @@ never decides the verdict.
 - **Strike counter**: `/var/lib/servarr-vpn-health/degraded.strikes`, deliberately
   not in `/tmp` so a reboot can't reset a genuinely stuck port to zero strikes.
 - **Needs `docker exec`** — runs as root from the timer, same as the other script.
-- **Fails closed**: if a lookup breaks, the run is a hard failure rather than a
-  green heartbeat. "Cannot determine" is never "fine".
+- **Fails closed**: if a lookup breaks, the run is never a clean green. A broken
+  netns probe is a hard failure; an unverifiable host-IP comparison is *soft*
+  (degraded, escalating through the strike counter) so an ipify outage cannot
+  fake a leak. "Cannot determine" is never "fine".
 
-Unit + timer on ciri (same shape as media-mount, including the drop-in — the
-`Type=oneshot` timeout argument applies identically here, and more so: this
-script makes network calls that can hang):
-
-```ini
-# /etc/systemd/system/servarr-vpn-health.service
-[Unit]
-Description=Uptime-Kuma push: qBittorrent egress still goes through the VPN
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-TimeoutStartSec=150
-ExecStart=/usr/local/bin/servarr-vpn-health.sh
-```
+Unit + timer on ciri: [`servarr-vpn-health.service`](servarr-vpn-health.service)
+and [`servarr-vpn-health.timer`](servarr-vpn-health.timer) in this directory,
+installed verbatim to `/etc/systemd/system/`. The `Type=oneshot` timeout argument
+from media-mount applies identically here, and more so, because this script
+makes network calls that can hang.
 
 `TimeoutStartSec` is set directly in the unit here rather than as a drop-in,
 because unlike media-mount this script was written with it from the start. It
@@ -421,19 +414,17 @@ must exceed the internal network timeouts: checks are 10 + 15 + 10 + 10 + 10 =
 55 s worst case, and the retrying push adds up to 36 s more — 91 s total, so the
 original `90` was under the line by a second. **150** leaves real margin.
 
-```ini
-# /etc/systemd/system/servarr-vpn-health.timer
-[Unit]
-Description=Run servarr-vpn-health every 5 minutes
-
-[Timer]
-OnBootSec=3min
-OnUnitActiveSec=5min
-AccuracySec=30s
-
-[Install]
-WantedBy=timers.target
-```
+**The timer is `OnCalendar=*:0/3` + `AccuracySec=1s`** (since 2026-10-20; it was
+`OnUnitActiveSec=5min` + `AccuracySec=30s`). Same lesson as
+[media-export-health](#timer-cadence--why-oncalendar-not-onunitactivesec), learned
+a second time. From 2026-09-01 to 10-19, **401 of 13,835 push gaps exceeded the
+360 s Kuma window** (max 394 s). Every Kuma alert on this monitor in October read
+`No heartbeat in the time window`, and most recovered on the very next push with
+`ok`. They were late beats, not faults. They also hid the real faults: when a
+stranded client began, Kuma was often already red from a late beat, so the
+reason never reached ntfy. Pushing every 180 s against a 360 s window means even
+the worst case (180 s + a ~100 s run, the push lands at the end) is 280 s.
+`MAX_STRIKES` went from 6 to 10 so escalation still takes ~30 min.
 
 `OnBootSec=3min` (vs media-mount's 2 min) gives gluetun time to bring the tunnel
 up after a reboot, so the first run isn't a spurious "no egress" alert.
@@ -441,17 +432,79 @@ up after a reboot, so the first run isn't a spurious "no egress" alert.
 Deploy:
 
 ```bash
-sudo install -m 0755 servarr-vpn-health.sh /usr/local/bin/
+sudo install -m 0755 servarr-vpn-health.sh servarr-vpn-remediate.sh /usr/local/bin/
+sudo install -m 0644 servarr-vpn-health.service servarr-vpn-health.timer \
+  'servarr-vpn-remediate@.service' /etc/systemd/system/
 printf '%s\n' '<KUMA_PUSH_URL>' | sudo tee /etc/kuma-push.servarr-vpn >/dev/null
 sudo chmod 600 /etc/kuma-push.servarr-vpn
+printf '%s\n' '<NTFY_TOPIC>' | sudo tee /etc/ntfy.topic >/dev/null
+sudo chmod 600 /etc/ntfy.topic
 sudo systemctl daemon-reload && sudo systemctl enable --now servarr-vpn-health.timer
+sudo systemctl restart servarr-vpn-health.timer   # pick up a changed schedule
 journalctl -u servarr-vpn-health.service -n 10 --no-pager
 ```
 
 Kuma monitor: **Push**, name `servarr vpn health`, Heartbeat Interval **360 s**,
-Retries **1** — see the heartbeat-interval note above; 300 s here would flap red
-on every beat. Strip the `?status=up&msg=OK&ping=` query string from the URL
+Retries **1** — twice the 180 s push period; see the heartbeat-interval note
+above. Strip the `?status=up&msg=OK&ping=` query string from the URL
 Kuma displays — the script appends its own parameters.
+
+### Auto-fix: `servarr-vpn-remediate.sh` (added 2026-10-20)
+
+The health check always knew the cure for its recurring verdicts and printed it
+in the alert. Nothing applied it. A **stranded** client (qBit's external
+address ≠ the tunnel's) followed gluetun's own tunnel restarts every few days and
+**never cleared on its own**: ~15 h on 2026-10-11 and ~49 h on 2026-10-17, each
+time until someone restarted it by hand. qBit's log confirmed the 10-17 one was
+real, with no `Detected external IP` for the whole 49 h.
+
+Now, *after* its push, the health script starts
+`servarr-vpn-remediate@<action>.service` with `--no-block`. The ladder runs in
+its own unit, so it can never delay a heartbeat.
+
+| Verdict | Triggers after | Action | What it restarts, in order |
+|---|---|---|---|
+| `stranded` | 3 consecutive runs (~9 min) | `client` | qbittorrent → wait for API → qbit-port-sync → wait for port match |
+| port ≠ `listen_port` | 3 consecutive runs | `sync` | qbit-port-sync → wait for port match |
+| PF **EXITED** | first run | `full` | gluetun → wait healthy + egress + port ≠ 0 → then `client` |
+| leak, no egress, `tun0` missing, API/ctl unreachable, PF 0 retrying, unverifiable | never | — | page only |
+
+- **Each wait polls real state** against a wall-clock deadline (90 s, 180 s for
+  gluetun), not a fixed sleep. Then it **verifies** with
+  `servarr-vpn-health.sh --dry-run`, which must say `ok:`. Exit 0 alone is not
+  enough, because a degraded run below `MAX_STRIKES` also exits 0. If `sync` or
+  `client` fails, it escalates once to `full`.
+- **Per-reason counter** (`reason` + `reason.count` in the state dir) next to the
+  shared strike counter. A hard fail between two stranded runs neither resets nor
+  bumps it, because gluetun's reconnects (`no egress`) interleaved with the
+  stranded runs on both 10-11 and 10-17. Retries every 20 runs (~1 h) while the
+  verdict persists.
+- **Guard rails**: qBittorrent's bind sources (`/mnt/media/downloads`,
+  `/mnt/torrents/incomplete`) must be reachable first, under `timeout 30`,
+  because its `create_host_path:false` guards would otherwise turn a degraded
+  client into one that won't start. At most **3 runs per 6 h**
+  (`remediate.log`); past that, one ntfy saying it gave up, and paging takes
+  over. `flock -n`, so one ladder runs at a time. Leaves `manga-gluetun` alone.
+- **One ntfy per run** with the steps and the outcome, via `/etc/ntfy.topic` on
+  ciri (new; same 0600 convention as the nodes). A successful fix usually lands
+  before the monitor escalates, so Kuma may never go red. The ntfy is the only
+  sign it happened.
+- `REMEDIATE=0` in the health script's environment disables the trigger.
+
+Tests:
+
+- **Dry-run the ladder** (prints every step, restarts nothing):
+  `sudo servarr-vpn-remediate.sh --dry-run client`
+- **End-to-end on the stranded path**. This really restarts qbittorrent and
+  qbit-port-sync, a ~1 min torrent pause. Fake a stranded client three times
+  within one timer period:
+  ```bash
+  for i in 1 2 3; do sudo QBIT_IP_OVERRIDE=192.0.2.1 /usr/local/bin/servarr-vpn-health.sh; done
+  journalctl -u 'servarr-vpn-remediate@*' -n 20 --no-pager
+  ```
+  → the third run starts `remediate@client`. Expect restart → waits → `verified: ok:`,
+  an ntfy "servarr auto-fixed (client)", and `reason.count` / `degraded.strikes` back to 0.
+  A timer run landing between the three resets the count, so just run it again.
 
 - **Test the leak path** without touching the tunnel, by telling the script that
   ciri's public IP *is* the current egress IP — which is exactly what a leak looks
@@ -463,7 +516,7 @@ Kuma displays — the script appends its own parameters.
   → hard fail, Kuma reddens, ntfy fires. Re-run without the override to clear.
   `HOST_IP_OVERRIDE` never writes the host-IP cache, so this leaves no residue.
 - **Test the soft path**: `sudo MAX_STRIKES=1 /usr/local/bin/servarr-vpn-health.sh`
-  while the forwarded port is 0 → escalates immediately instead of after 6.
+  while the forwarded port is 0 → escalates immediately instead of after 10.
   Reset afterwards with
   `sudo rm -f /var/lib/servarr-vpn-health/degraded.strikes`.
 

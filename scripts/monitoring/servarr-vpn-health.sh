@@ -23,15 +23,36 @@
 #     5. qBittorrent's API is unreachable             → dead client behind a live tunnel
 #     6. gluetun's port-forwarding service has EXITED → PF is gone until a restart
 #
-#   Why 6 is hard and not soft: gluetun's PF retry loop covers the "get external
-#   IPv4 address" RPC but NOT the "add UDP port mapping" RPC that follows it. A
-#   refusal on the second one during PF *startup* (i.e. straight after a VPN
-#   reconnect) is not retried — it propagates to the [vpn] supervisor, which does
-#   nothing because the tunnel itself is healthy. Port forwarding is then over for
-#   the life of the container. Observed 2026-07-30 (v3.41.1, ~22h) and again
-#   2026-08-25 (v3.41.3, 8.7h): both times the container stayed "healthy", every
-#   other monitor stayed green, and only a restart recovered it. Waiting cannot
-#   help, so waiting out $MAX_STRIKES would only delay the page by ~30 minutes.
+#   Why 6 is hard and not soft: gluetun's PF startup sequence is a chain of NAT-PMP
+#   RPCs — get external IPv4 address, add the UDP mapping, then add the TCP one —
+#   and its retry loop does not cover the whole chain. A refusal on the LAST link,
+#   during PF *startup* (i.e. straight after a VPN reconnect), is not retried: it
+#   propagates to the [vpn] supervisor, which does nothing because the tunnel
+#   itself is healthy. Port forwarding is then over for the life of the container.
+#
+#   Which link escapes was measured, not guessed, from the 2026-09-08 failure —
+#   note the log tag, which is the whole tell:
+#     21:52:56 ERROR [port forwarding] … adding UDP port mapping: … connection
+#                                       refused - retrying in 5s      ← retried
+#     21:57:36 ERROR [vpn] … adding TCP port mapping: … connection refused
+#                                                                     ← fatal, silent
+#   An earlier version of this comment blamed the UDP mapping. It is one RPC
+#   further along than that, and the distinction is not academic: [port forwarding]
+#   means gluetun is still working the problem, [vpn] means it has handed a dead
+#   service back to a supervisor that will not act on it. Nothing in the container
+#   changes state — no unhealthy flag, no exit, no further log line ever.
+#
+#   Observed 2026-07-30 (v3.41.1, ~22h uptime), 2026-08-25 (v3.41.3, 8.7h) and
+#   2026-09-08 (v3.41.3, 6 days — so uptime confers no immunity): every time the
+#   container stayed "healthy", every other monitor stayed green, and only a
+#   restart recovered it. Waiting cannot help, so waiting out $MAX_STRIKES would
+#   only delay the page by ~30 minutes.
+#
+#   Recovering from this restarts gluetun, which rebuilds its network namespace and
+#   strands EVERY container sharing it — qbittorrent and qbit-port-sync both. Hence
+#   the message below naming all three; a stranded sidecar leaves qBit on a stale
+#   port and lands you in soft check 8 instead. See "A gluetun-only restart strands
+#   every container in its netns" in configs/ciri/servarr/README.md (2026-09-09).
 #
 #   NOT a hard check: which organisation owns the exit IP. The first version of this
 #   script hard-failed unless the exit's `organization` contained "proton", which
@@ -61,7 +82,11 @@
 #                                     worse — which is what case 6 above is for.
 #     8. forwarded port != qBit's listen_port — qbit-port-sync polls every 30s, so a
 #                                     brief mismatch right after a rotation is normal.
-#                                     A persistent one means the sidecar is broken.
+#                                     A persistent one means the sidecar is broken —
+#                                     most often stranded in the netns a gluetun-only
+#                                     restart tore down (2026-09-08), where its poll
+#                                     of 127.0.0.1:8000 is refused forever. Restart
+#                                     qbit-port-sync.
 #     9. qBit's external address != the tunnel's — gluetun's own healthcheck can
 #                                     restart the VPN under a running client (5
 #                                     times in the 36h to 2026-08-25). When it does,
@@ -97,11 +122,33 @@
 #                `systemctl --failed` shows it on ciri too
 #   Script/timer dead → no heartbeat → Kuma reddens on its own (the backstop)
 #
+# Auto-fix (added 2026-10-20)
+#   Three verdicts have one known cure, a restart in order, and two of them never
+#   cure themselves. Stranded ran ~15 h (10-11) and ~49 h (10-17) unattended while
+#   this script's message said exactly which containers to restart. So after the
+#   push, a verdict that has persisted long enough starts
+#   servarr-vpn-remediate@<action>.service with --no-block. The restart ladder runs
+#   in its own unit, so it can never delay a heartbeat or eat this unit's timeout.
+#     stranded       3 consecutive runs (~9 min) → client  (qbittorrent, port-sync)
+#     port_mismatch  3 consecutive runs          → sync    (port-sync)
+#     pf_exited      first run                   → full    (gluetun, then both)
+#   Retried every $REMEDIATE_RETRY_RUNS runs (~1 h) while the verdict persists; the
+#   remediator's own rate limit decides whether a retry actually acts. Everything
+#   else is page-only. A LEAK is a human decision, never a restart. no_egress is
+#   gluetun reconnecting on its own. A dead qBit API has so far meant the NFS mount,
+#   which no restart fixes. See servarr-vpn-remediate.sh.
+#
+#   The count is per reason, kept in $REASON_FILE / $REASON_COUNT_FILE. A hard
+#   fail between two stranded runs neither resets nor bumps it: on 10-11 and 10-17
+#   gluetun's reconnects (no_egress) interleaved with the stranded runs, and
+#   resetting on them would have meant never reaching 3.
+#
 # Usage
 #   servarr-vpn-health.sh              # run from a systemd timer on ciri
 #   servarr-vpn-health.sh --dry-run    # verify a deploy by hand: same checks and
 #                                      # same exit status, but pushes nothing to
-#                                      # Kuma and leaves the strike counter alone
+#                                      # Kuma, leaves the counters alone and never
+#                                      # starts a remediation
 #
 # Deploy (on ciri) — see scripts/monitoring/README.md for the unit + timer
 #   sudo install -m 0755 servarr-vpn-health.sh /usr/local/bin/
@@ -112,8 +159,9 @@
 #           carries a token, so it lives ONLY in that 0600 file and in
 #           secrets.local.yaml — never here.
 # Env overrides: GLUETUN_CTR, TUN_IF, MAX_STRIKES, KUMA_URL_FILE, STATE_DIR,
-#                PF_QUIET_SECS,
-#                HOST_IP_OVERRIDE (test hook — see the leak-path test in the README)
+#                PF_QUIET_SECS, REMEDIATE (0 disables the auto-fix trigger),
+#                HOST_IP_OVERRIDE (test hook — see the leak-path test in the README),
+#                QBIT_IP_OVERRIDE (test hook — fakes a stranded client)
 
 set -euo pipefail
 
@@ -122,10 +170,10 @@ readonly GLUETUN_CTR="${GLUETUN_CTR:-gluetun}"
 # proof that the tunnel exists at all — unlike the exit IP's registered owner, this
 # cannot drift when the provider rotates servers or upstream hosts.
 readonly TUN_IF="${TUN_IF:-tun0}"
-# 6 consecutive degraded runs. At the 300s timer that is ~30 minutes — long enough
+# 10 consecutive degraded runs. At the 180s timer that is ~30 minutes — long enough
 # to ride out a Proton PF rotation, short enough to catch a stuck sidecar the same
-# evening.
-readonly MAX_STRIKES="${MAX_STRIKES:-6}"
+# evening. (It was 6 at the old 300s timer — same 30 minutes.)
+readonly MAX_STRIKES="${MAX_STRIKES:-10}"
 readonly KUMA_URL_FILE="${KUMA_URL_FILE:-/etc/kuma-push.servarr-vpn}"
 readonly STATE_DIR="${STATE_DIR:-/var/lib/servarr-vpn-health}"
 readonly STRIKE_FILE="$STATE_DIR/degraded.strikes"
@@ -136,6 +184,15 @@ readonly HOST_IP_CACHE="$STATE_DIR/host-public-ip"
 # simulates a leak exactly, which is how the hard path is exercised without
 # touching the tunnel. See scripts/monitoring/README.md.
 readonly HOST_IP_OVERRIDE="${HOST_IP_OVERRIDE:-}"
+# Test hook: pretend qBittorrent reports this external address. Any value other
+# than the current egress IP is a stranded client, which is how the auto-fix path
+# is exercised end-to-end without waiting for gluetun to reconnect.
+readonly QBIT_IP_OVERRIDE="${QBIT_IP_OVERRIDE:-}"
+# Auto-fix bookkeeping — see "Auto-fix" in the header.
+readonly REMEDIATE="${REMEDIATE:-1}"
+readonly REASON_FILE="$STATE_DIR/reason"
+readonly REASON_COUNT_FILE="$STATE_DIR/reason.count"
+readonly REMEDIATE_RETRY_RUNS=20
 # How long gluetun's port-forwarding component may be silent, while the forwarded
 # port is 0, before we call it dead rather than retrying. A live retry loop logs a
 # [port forwarding] line every ~5s; the worst gap measured inside one is 127s (a
@@ -242,7 +299,60 @@ write_strikes() {
   echo "$1" > "$STRIKE_FILE" 2>/dev/null || true
 }
 
-# Emits a verdict line on stdout. Return: 0 healthy, 1 hard failure, 2 degraded.
+# Map a reason to the remediation it earns and how many consecutive runs it must
+# persist first. Echoes "<action> <threshold>", or nothing for page-only reasons.
+remedy_for() {
+  case $1 in
+    stranded)      echo "client 3" ;;
+    port_mismatch) echo "sync 3" ;;
+    pf_exited)     echo "full 1" ;;
+  esac
+}
+
+# Bump the per-reason consecutive count and echo the new value. Healthy and
+# page-only SOFT verdicts reset it — a soft verdict means the client is not
+# stranded right now. Page-only HARD verdicts (no_egress, leak, …) leave it
+# untouched: see "Auto-fix" in the header for why.
+bump_reason() {
+  local code=$1 rc=$2 prev="" n=0
+  [[ -r "$REASON_FILE" ]] && prev=$(< "$REASON_FILE")
+  if [[ -r "$REASON_COUNT_FILE" ]]; then
+    n=$(< "$REASON_COUNT_FILE")
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  fi
+  if [[ -n "$(remedy_for "$code")" ]]; then
+    if [[ "$code" == "$prev" ]]; then n=$(( n + 1 )); else prev=$code; n=1; fi
+  elif (( rc == 1 )); then
+    echo 0
+    return 0
+  else
+    prev=""; n=0
+  fi
+  if (( ! DRY_RUN )); then
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    echo "$prev" > "$REASON_FILE" 2>/dev/null || true
+    echo "$n" > "$REASON_COUNT_FILE" 2>/dev/null || true
+  fi
+  echo "$n"
+}
+
+# Start the restart ladder once a reason has persisted long enough, then again
+# every $REMEDIATE_RETRY_RUNS runs while it still persists. --no-block: the
+# heartbeat has already gone out, and this unit must not wait on the restarts.
+maybe_remediate() {
+  local code=$1 count=$2 action threshold
+  (( DRY_RUN || ! REMEDIATE )) && return 0
+  read -r action threshold <<< "$(remedy_for "$code")"
+  [[ -n "${action:-}" ]] || return 0
+  (( count >= threshold && (count - threshold) % REMEDIATE_RETRY_RUNS == 0 )) || return 0
+  echo "servarr-vpn-health: $code persisted $count run(s) — starting servarr-vpn-remediate@$action" >&2
+  systemctl start --no-block "servarr-vpn-remediate@$action.service" \
+    || echo "servarr-vpn-health: could not start servarr-vpn-remediate@$action" >&2
+}
+
+# Emits `<reason>|<verdict>` on stdout. The reason is a stable code for the auto-fix
+# bookkeeping and never reaches Kuma; the verdict is what gets pushed.
+# Return: 0 healthy, 1 hard failure, 2 degraded.
 check() {
   local ctl vpn_ip host_ip org pf_port qbit_port qbit_xfer qbit_ip
   local waited note="" deadline started
@@ -251,7 +361,7 @@ check() {
   #    wedged, and nothing below can be trusted.
   if ! ctl=$(in_netns wget -qO- --timeout=10 http://127.0.0.1:8000/v1/publicip/ip) \
      || [[ -z "$ctl" ]]; then
-    echo "gluetun control server unreachable — container down, wedged, or renamed"
+    echo "ctl_unreachable|gluetun control server unreachable — container down, wedged, or renamed"
     return 1
   fi
 
@@ -262,14 +372,14 @@ check() {
   # 2. Tunnel interface. Vendor-neutral: if this is gone but egress still works,
   #    the kill-switch has failed open regardless of what the exit IP looks like.
   if ! in_netns ip -o addr show "$TUN_IF" | grep -q inet; then
-    echo "tunnel interface $TUN_IF is missing from gluetun's netns — kill-switch has failed open"
+    echo "tun_missing|tunnel interface $TUN_IF is missing from gluetun's netns — kill-switch has failed open"
     return 1
   fi
 
   # 3. Real egress test: an actual outbound request from inside the torrent netns.
   #    This is the heart of the monitor — everything else is corroboration.
   if ! vpn_ip=$(in_netns wget -qO- --timeout=15 https://api.ipify.org) || [[ -z "$vpn_ip" ]]; then
-    echo "no egress from gluetun netns — tunnel down or kill-switch engaged (torrenting is stopped)"
+    echo "no_egress|no egress from gluetun netns — tunnel down or kill-switch engaged (torrenting is stopped)"
     return 1
   fi
 
@@ -291,12 +401,12 @@ check() {
   if [[ -z "$host_ip" ]]; then
     # Soft, not hard: an ipify outage must not fake a leak. The strike counter still
     # escalates if we stay unable to verify.
-    echo "degraded: cannot verify egress — ciri's public IP lookup failed and no cached value (egress is $vpn_ip, $org)"
+    echo "host_ip_unknown|degraded: cannot verify egress — ciri's public IP lookup failed and no cached value (egress is $vpn_ip, $org)"
     return 2
   fi
 
   if [[ "$vpn_ip" == "$host_ip" ]]; then
-    echo "LEAK: torrent egress $vpn_ip is ciri's own public IP — traffic is NOT going through the VPN"
+    echo "leak|LEAK: torrent egress $vpn_ip is ciri's own public IP — traffic is NOT going through the VPN"
     return 1
   fi
 
@@ -305,14 +415,14 @@ check() {
   if ! qbit_port=$(in_netns wget -qO- --timeout=10 \
                      http://127.0.0.1:8080/api/v2/app/preferences \
                    | jq -r '.listen_port // empty') || [[ -z "$qbit_port" ]]; then
-    echo "qBittorrent API unreachable behind a healthy tunnel — client dead or localhost-bypass off"
+    echo "qbit_api|qBittorrent API unreachable behind a healthy tunnel — client dead or localhost-bypass off"
     return 1
   fi
   # Same endpoint family, same netns, same severity: if preferences answered and
   # this did not, the API is not healthy and "cannot determine" is not "fine".
   if ! qbit_xfer=$(in_netns wget -qO- --timeout=10 \
                      http://127.0.0.1:8080/api/v2/transfer/info) || [[ -z "$qbit_xfer" ]]; then
-    echo "qBittorrent API answered preferences but not transfer/info — client is not healthy"
+    echo "qbit_api|qBittorrent API answered preferences but not transfer/info — client is not healthy"
     return 1
   fi
 
@@ -320,16 +430,16 @@ check() {
 
   # 6. Is qBittorrent bound to the CURRENT tunnel generation? See the header note.
   #    Empty is not stale: a freshly started client has had no peer feedback yet.
-  qbit_ip=$(printf '%s' "$qbit_xfer" | jq -r '.last_external_address_v4 // empty')
+  qbit_ip=${QBIT_IP_OVERRIDE:-$(printf '%s' "$qbit_xfer" | jq -r '.last_external_address_v4 // empty')}
   if [[ -n "$qbit_ip" && "$qbit_ip" != "$vpn_ip" ]]; then
-    echo "degraded: qBittorrent still thinks it exits $qbit_ip but the tunnel now exits $vpn_ip — client stranded on a torn-down tunnel; restart qbittorrent and qbit-port-sync"
+    echo "stranded|degraded: qBittorrent still thinks it exits $qbit_ip but the tunnel now exits $vpn_ip — client stranded on a torn-down tunnel; restart qbittorrent and qbit-port-sync"
     return 2
   fi
 
   pf_port=$(fetch_pf_port)
 
   if [[ -z "$pf_port" || ! "$pf_port" =~ ^[0-9]+$ ]]; then
-    echo "degraded: gluetun did not report a forwarded port (egress ok via $vpn_ip)"
+    echo "pf_noreport|degraded: gluetun did not report a forwarded port (egress ok via $vpn_ip)"
     return 2
   fi
 
@@ -339,7 +449,7 @@ check() {
     # opposite responses — one wants patience, the other wants a restart tonight.
     case "$(pf_service_state)" in
       exited)
-        echo "gluetun's port-forwarding service has EXITED — forwarded port 0 with no [port forwarding] log activity for ${PF_QUIET_SECS}s. This does not self-heal: restart gluetun, then qbittorrent and qbit-port-sync. (egress ok via $vpn_ip, qBit holding stale port $qbit_port)"
+        echo "pf_exited|gluetun's port-forwarding service has EXITED — forwarded port 0 with no [port forwarding] log activity for ${PF_QUIET_SECS}s. This does not self-heal: restart gluetun, then qbittorrent and qbit-port-sync. (egress ok via $vpn_ip, qBit holding stale port $qbit_port)"
         return 1
         ;;
       retrying)
@@ -360,7 +470,7 @@ check() {
         done
         waited=$(( SECONDS - started ))
         if [[ ! "$pf_port" =~ ^[0-9]+$ ]] || (( pf_port == 0 )); then
-          echo "degraded: forwarded port is 0 and gluetun is still retrying NAT-PMP (still 0 after ${PF_RECHECK_SECS}s); qBit still on last good port $qbit_port, egress ok via $vpn_ip"
+          echo "pf_zero|degraded: forwarded port is 0 and gluetun is still retrying NAT-PMP (still 0 after ${PF_RECHECK_SECS}s); qBit still on last good port $qbit_port, egress ok via $vpn_ip"
           return 2
         fi
         # Came back mid-run. Reported, not counted: the mapping churned, the port
@@ -369,23 +479,23 @@ check() {
         note=" (rode out a ${waited}s NAT-PMP dip)"
         ;;
       *)
-        echo "degraded: forwarded port is 0 and gluetun's log is unreadable, so retrying cannot be told from dead; qBit still on last good port $qbit_port, egress ok via $vpn_ip"
+        echo "pf_zero|degraded: forwarded port is 0 and gluetun's log is unreadable, so retrying cannot be told from dead; qBit still on last good port $qbit_port, egress ok via $vpn_ip"
         return 2
         ;;
     esac
   fi
 
   if (( pf_port != qbit_port )); then
-    echo "degraded: gluetun forwarded port $pf_port != qBit listen_port $qbit_port — qbit-port-sync has not caught up"
+    echo "port_mismatch|degraded: gluetun forwarded port $pf_port != qBit listen_port $qbit_port — qbit-port-sync has not caught up"
     return 2
   fi
 
-  echo "ok: egress $vpn_ip ($org), port-forward $pf_port matches qBit, no leak${note}"
+  echo "ok|ok: egress $vpn_ip ($org), port-forward $pf_port matches qBit, no leak${note}"
   return 0
 }
 
 main() {
-  local detail rc strikes
+  local detail rc strikes code count
   case "${1:-}" in
     --dry-run|-n) DRY_RUN=1 ;;
     "")           ;;
@@ -396,6 +506,10 @@ main() {
   detail=$(check)
   rc=$?
   set -e
+
+  code=${detail%%|*}
+  detail=${detail#*|}
+  count=$(bump_reason "$code" "$rc")
 
   case $rc in
     0)
@@ -411,16 +525,19 @@ main() {
         detail="$detail [persisted $strikes consecutive checks]"
         push "down" "$detail"
         echo "servarr-vpn-health: FAIL — $detail" >&2
+        maybe_remediate "$code" "$count"
         exit 1
       fi
       push "up" "$detail [strike $strikes/$MAX_STRIKES]"
       echo "servarr-vpn-health: $detail [strike $strikes/$MAX_STRIKES]"
+      maybe_remediate "$code" "$count"
       ;;
     *)
       # Hard failures do not touch the strike counter: they are their own alert,
       # and zeroing it here would let a leak mask an already-escalating port fault.
       push "down" "$detail"
       echo "servarr-vpn-health: FAIL — $detail" >&2
+      maybe_remediate "$code" "$count"
       exit 1
       ;;
   esac

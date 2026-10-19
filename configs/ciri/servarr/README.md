@@ -351,13 +351,17 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
   `qbit-port-sync` have no LAN HTTP endpoint — covered by Beszel. These 7 are **liveness only**:
   they cannot see a VPN leak or port-forwarding stuck at 0.
 - **`servarr vpn health` Push monitor** (added 2026-07-29) closes exactly that gap, fed by
-  [`servarr-vpn-health.sh`](../../../scripts/monitoring/servarr-vpn-health.sh) on a 300 s
+  [`servarr-vpn-health.sh`](../../../scripts/monitoring/servarr-vpn-health.sh) on a 180 s
   timer. It makes a real outbound request **from inside gluetun's netns** and compares the
   answer to ciri's own public IP — a leak or a dead tunnel is a hard alert; a forwarded port
   of 0 is soft and only escalates after ~30 min, matching the transient-PF caveat above.
   Details in [uptime-kuma.md](../../../docs/uptime-kuma.md#the-servarr-vpn-push-monitor-added-2026-07-29--and-what-it-actually-proves).
-  It is an assurance check sampling every 5 minutes, **not** a replacement for the
+  It is an assurance check sampling every 3 minutes, **not** a replacement for the
   kill-switch — the `network_mode: "service:gluetun"` binding is still the actual protection.
+  Since 2026-10-20 it also **auto-fixes** a stranded qBittorrent, a stuck port-sync and an
+  exited PF service with an ordered restart ladder
+  ([`servarr-vpn-remediate.sh`](../../../scripts/monitoring/servarr-vpn-remediate.sh)),
+  and sends an ntfy each time it does.
 - **Beszel**: agents inside ciri, so all 9 servarr containers appear automatically with
   per-container CPU/mem/net.
 - **Backups:** these `./config` dirs live on ciri's `/data` disk → already covered by the
@@ -499,13 +503,32 @@ renamed, which is cosmetic.
   a fresh port is applied automatically once gluetun forwards one again. If it stays stuck at 0
   for long, reconnect onto a working PF server:
   ```bash
-  ⚙️ ssh lab-ciri 'docker restart gluetun && sleep 8 && docker restart qbittorrent'
+  ⚙️ ssh lab-ciri 'docker restart gluetun && sleep 8 && docker restart qbittorrent qbit-port-sync'
   ```
-  (Restart qBittorrent after gluetun — it must re-attach to the fresh netns; the sidecar
-  recovers on its own.)
-- **"Always restart qBittorrent after the port-sync sidecar" is too broad** — clarified
-  2026-07-29. The manual restart is needed **only when gluetun alone is restarted**, because
-  that destroys and recreates the network namespace underneath a still-running qBittorrent.
+  (Restart **both** qBittorrent and the sidecar after gluetun. They join gluetun's netns by
+  container *ID*, and `docker restart` keeps that ID while building a **fresh sandbox** — so
+  every container still running from before is left holding the destroyed namespace.)
+- **A gluetun-only restart strands *every* container in its netns** — corrected 2026-09-09.
+  The 2026-07-29 note here used to say only qBittorrent needed the manual restart and that
+  "the sidecar recovers on its own". That is wrong, and it cost an evening: recovering from
+  the 2026-09-08 port-forwarding failure (case 6 in
+  [`servarr-vpn-health.sh`](../../../scripts/monitoring/servarr-vpn-health.sh)) with
+  `docker restart gluetun && … docker restart qbittorrent` brought port forwarding back
+  (`41550`) while `qbit-port-sync` — untouched, `Up 6 days` — kept polling the dead
+  namespace and never pushed the new port. Its symptom, from inside the sidecar:
+  ```bash
+  docker exec qbit-port-sync wget -qO- http://127.0.0.1:8000/v1/portforward
+  # wget: can't connect to remote host (127.0.0.1): Connection refused
+  ```
+  qBittorrent was left listening on the stale `53196` — inbound peers still could not reach
+  it, the very thing the restart was meant to fix. The divergence was surfaced by
+  `servarr-vpn-health.sh`'s soft check 8 (forwarded port != qBit listen_port), which is the
+  only check that looks at both numbers.
+  The rule: **restart gluetun ⇒ restart qBittorrent *and* qbit-port-sync.** The health
+  script's own failure message said this correctly all along. Since 2026-10-20 the rule is
+  also applied by machine: `servarr-vpn-remediate.sh full` is exactly this sequence, with a
+  wait on real state between steps
+  ([scripts/monitoring/README.md](../../../scripts/monitoring/README.md#auto-fix-servarr-vpn-remediatesh-added-2026-10-20)).
   A **full stack, VM or host restart needs no manual step** and was verified self-healing on
   2026-07-27: `network_mode: service:gluetun` + `depends_on` make Docker start gluetun first
   so qBittorrent joins the *fresh* netns, and the sidecar's `last=""` resets so it re-pushes

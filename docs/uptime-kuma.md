@@ -163,7 +163,7 @@ Full set as of 2026-07-13:
 | photos-backup | **Push** (86400 s → **90000 s**) | fed by `restic-photos.sh` on geralt, daily 05:00 IST | dead-man switch for the nightly restic backup ([backups](../scripts/backup/README.md)); silent from 2026-07-16, fixed 2026-07-30 — see below |
 | ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; became an **NFS** probe 2026-08-23, see below |
 | media-export geralt | **Push** (60 s) | fed by `media-export-health.sh` on geralt | **functional, not liveness** — added 2026-08-23; the *server-side* half of the media path, see below |
-| servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft, see below |
+| servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri every 180 s | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft; stranded client / port mismatch / PF exited are **auto-fixed** since 2026-10-20, see below |
 | ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — deployed 2026-08-05; runs a real NVENC encode inside the jellyfin container, see below |
 | proxy-caddy | Ping | `<LAN_PREFIX>.202` | reverse proxy liveness — added 2026-08-23 ([proposal 003](proposals/003-reverse-proxy.md)) |
 | proxy-tls | HTTPS | `https://memos.kaermorhen.fyi` | proxy **plus** certificate expiry (expiry notification on, TLS errors not ignored). Backend up + proxy-tls down isolates the fault to the proxy. Needs a static `/etc/hosts` entry on 104 — see gotchas |
@@ -268,10 +268,12 @@ dropped push cannot trip anything. Measured on `media-export-health` before and
 after: `OnUnitActiveSec=60` + default accuracy gave **61 / 72 / 75 / 90 s**
 against a 60 s window — every beat late; `OnCalendar=*:*:0/30` + `AccuracySec=1s`
 gives **30.0 s with no drift**, beats landing on exact `:00`/`:30` boundaries, and
-1133 consecutive beats overnight with zero misses. **ciri's three producers
-(`media-mount-health`, `gpu-health`, `servarr-vpn-health`) still have the old
-defect** — all `AccuracySec=30s`, measured at ~330 s against a nominal 300 s —
-and are queued for the same treatment.
+1133 consecutive beats overnight with zero misses. **`servarr-vpn-health` got the
+same fix on 2026-10-20** (`OnCalendar=*:0/3`, 180 s against its 360 s window),
+after 401 late beats in seven weeks. **ciri's other two producers
+(`media-mount-health`, `gpu-health`) still have the old defect.** Both use
+`AccuracySec=30s`, measured at ~330 s against a nominal 300 s, and are queued for
+the same treatment.
 
 ### The media-export Push monitor (added 2026-08-23) — the server-side half
 
@@ -337,15 +339,29 @@ and prove nothing — that distinction is the whole monitor.
 | **Hard** | no egress at all from the netns | tunnel down / kill-switch shut — torrenting stopped |
 | **Hard** | gluetun control server unreachable | can't verify anything |
 | **Hard** | qBittorrent API unreachable | dead client behind a live tunnel |
+| **Hard** | gluetun's port-forwarding service has EXITED | a NAT-PMP refusal during PF startup is not retried, and PF is gone until a restart (**auto-fixed**) |
+| **Soft** | qBit's external address != the tunnel's | client stranded on a torn-down tunnel after gluetun reconnects; never self-heals (**auto-fixed** after 3 runs) |
 | **Soft** (green, reason logged) | forwarded port == 0 | Proton drops PF server-side intermittently; qbit-port-sync keeps the last good port so torrenting continues |
 | **Soft** | forwarded port != qBit's `listen_port` | the sidecar polls every 30 s; a brief mismatch after a rotation is normal |
 | **Soft** | egress comparison unverifiable | ciri's public-IP lookup failed *and* no cached value — an ipify outage must not fake a leak |
 
-Soft conditions escalate to a hard alert after **6 consecutive runs** (~30 min at
-the 300 s timer), counted in `/var/lib/servarr-vpn-health/degraded.strikes`. The
+Soft conditions escalate to a hard alert after **10 consecutive runs** (~30 min at
+the 180 s timer; 6 at the old 300 s one), counted in
+`/var/lib/servarr-vpn-health/degraded.strikes`. The
 counter lives outside `/tmp` on purpose: a reboot must not reset a genuinely
 stuck port back to zero strikes. A leak pages at once; a missing forwarded port
 only means slower torrents, and only pages once it stops being transient.
+
+**Auto-fix (added 2026-10-20).** A stranded client, a persistent port mismatch
+and an exited PF service each have a known cure: restarting the containers in
+order. The first and last never cure themselves. The stranded client ran ~15 h on
+10-11 and ~49 h on 10-17 waiting for a human. After pushing, the health script
+now starts `servarr-vpn-remediate@{client,sync,full}`. It restarts in order,
+waits on real state after each step, verifies with a dry-run of the check, and
+sends one ntfy with the outcome. It never acts on a leak, is rate-limited to 3
+runs per 6 h, and refuses to restart qBittorrent while its media mounts are
+unreachable. Details in
+[scripts/monitoring/README.md](../scripts/monitoring/README.md#auto-fix-servarr-vpn-remediatesh-added-2026-10-20).
 
 #### Incident 2026-09-11/12 — the two-stage failure, and why the restart order matters
 
@@ -391,11 +407,13 @@ keep here.
   capacity note below).
 
 **Fail-closed:** "cannot determine" is never treated as "fine". If ciri's public
-IP lookup fails, the IP comparison is impossible and the verdict falls back to
-the provider check; if that can't be made either, the run is a hard failure. The
-one thing this monitor must never do is report green because a lookup broke.
+IP lookup fails, the comparison uses the last cached value; with no cache either,
+the run is *degraded* and escalates through the strike counter, so an ipify
+outage cannot fake a leak. (The provider check this paragraph used to describe
+was removed on 2026-07-30 after it false-alarmed.) The one thing this monitor
+must never do is report green because a lookup broke.
 
-**What it does not prove:** it samples egress every 300 s, so a leak lasting less
+**What it does not prove:** it samples egress every 180 s, so a leak lasting less
 than one interval can slip through unseen. It is an assurance check, not a packet
 filter — the kill-switch is still the actual protection, and this only tells you
 whether the kill-switch is doing its job.

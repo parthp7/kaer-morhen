@@ -1,0 +1,9 @@
+[Unit]
+Description=Uptime-Kuma push: qBittorrent egress still goes through the VPN
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=150
+ExecStart=/usr/local/bin/servarr-vpn-health.sh

@@ -825,7 +825,7 @@ against uptime is the whole check.
 |---|---|
 | **Replace the USB cable; if the drops persist, the enclosure** — then confirm `/sys/bus/usb/devices/1-3/speed` returns to `5000` and stays there | the **root cause**, now the only remaining suspect. Promoted back to urgent — this reverses the 08-23 downgrade |
 | Check thermals — 47 °C running, 51 °C peak | a plausible contributing mechanism for bus-power drops, and free to eliminate |
-| **Count the drops.** A monitor on `USB disconnect` events per unit uptime, alerting on rate rather than on outage | the fact that 54 faults produced no signal a human acted on, because each one healed in 14 s |
+| ~~**Count the drops.** A monitor on `USB disconnect` events per unit uptime, alerting on rate rather than on outage~~ — **DONE 2026-09-04**, [`media-link-health.sh`](../scripts/monitoring/media-link-health.sh) | the fact that 54 faults produced no signal a human acted on, because each one healed in 14 s. Note the check written here — `dmesg -T` against uptime — undercounts once the ring buffer wraps; the monitor reads the journal instead |
 | Cap qBittorrent's log retention | 1,301 files / 92 MB of rotated logs on a PBS-backed disk, and the loss of forensic history exactly when it is needed |
 | ~~Auto-remount on re-enumeration~~ — **DONE 2026-08-23**, verified 54× in production | the 12-day outage. This one is finished; the evidence above is it working, not failing |
 
@@ -1112,7 +1112,7 @@ the cause of the 08-10/22 link fault as well.
 | Fix | Answers |
 |---|---|
 | **DONE 22:01:31** — connector replaced with the newer drive's | the root cause. 9.8 → 105 MB/s, 480M → 5000M, `max_sectors_kb` 120 → 1024. Removes the starvation condition outright |
-| **WATCHING** — drop rate on the new connector | the 58 drops. Needs days, not minutes. A brand-new cable is the next step if they recur |
+| **WATCHING** — drop rate on the new connector | the 58 drops. Needs days, not minutes. A brand-new cable is the next step if they recur. *(2026-09-04: **1 drop in 47 h**, a ~12× reduction, and one 86 GB move-on-completion survived — see the [09-04 postscript](#postscript-2026-09-04--47-h-on-the-new-connector-one-drop). Still watching; the fault is not gone.)* |
 | **DONE 23:38:56** — `nfsd` threads 16 → **32** | the 16-of-16 blocked pool. Cheap insurance, not a fix — see the sizing below for why 32 and not 64. Applied and verified — see "Applied" below |
 | **PENDING** — an uncached read-latency probe in `media-mount-health.sh` | the detection gap. Every existing check passed during a total playback outage |
 | **DEFERRED** — re-test whether `quirks=…:u` is still needed | `queue_depth=1`. Now much less urgent: with the link fixed there is bandwidth to spare, and re-enabling UAS risks re-opening the 08-03 stall. Only worth trying if contention recurs *after* the connector is proven |
@@ -1274,3 +1274,334 @@ in one day):
 ACTION=="add|change", SUBSYSTEM=="block", ENV{ID_SERIAL_SHORT}=="<MEDIA_USB_SERIAL>", \
   ATTR{bdi/max_ratio}="5", ATTR{bdi/strict_limit}="1"
 ```
+
+### Postscript 2026-09-04 — 47 h on the new connector: one drop
+
+The verification the resolution above asked for, measured at **2026-09-04 21:03**,
+**47.0 h** after the swap at 09-02 22:01:31.
+
+| | Pre-swap (this boot) | Post-swap |
+|---|---|---|
+| Window | 08-24 16:48 (boot) → 09-02 22:00:55 — **221 h** | 09-02 22:01:41 → 09-04 21:03 — **47.0 h** |
+| `usb N-3: USB disconnect` | **58** | **1** |
+| `Aborting journal on device` | 58 | **1** |
+| Mean interval | one per **3.8 h** | one per **47 h** |
+
+**A ~12× reduction, and not a quiet patch.** At the old rate the expected count
+over 47 h is 12.3; observing 1 has P ≈ 6 × 10⁻⁵. The connector was the dominant
+factor in the drop fault as well as in the throughput collapse.
+
+**Count from the journal, not from `dmesg`.** The ring buffer has now wrapped:
+`dmesg -T | grep -c "USB disconnect"` reports 58 where
+`journalctl -k -b | grep -c "USB disconnect"` reports 59. The check named in the
+[09-02 fixes table](#fixes-and-which-failure-each-one-answers-2026-09-02) was
+`dmesg -T` against uptime; on a host with an 11-day uptime that check silently
+undercounts. Use `_TRANSPORT=kernel` with `--since` — `-k` implies `-b` and would
+scope a rolling window to the current boot.
+
+#### The one drop — 2026-09-03 07:16:33
+
+```
+usb 2-3: USB disconnect, device number 8
+sd 26:0:0:0: [sdv] tag#0 CDB: Read(10) 28 00 3a 94 63 a0 00 03 60 00
+EXT4-fs (sdv1): shut down requested (2) / Aborting journal on device sdv1-8
+usb 2-3: new SuperSpeed USB device number 9 using xhci_hcd
+```
+
+- **Read-dominant.** Every failed command was a `READ`; no import was running.
+  Same signature as 08-10 — the physical link, not SMR, and not write pressure.
+- **It re-enumerated on the same SuperSpeed bus**, device 8 → 9, in the same
+  second. No fallback to 480 this time.
+- **Healed in 22 s**: `media-autoheal` detached the dead mount, remounted and
+  refreshed the export by 07:16:55.
+- **`12 Power_Cycle_Count` did not move** across it (311 → 312 for the swap
+  itself, then flat), so the drive kept its power — this was a bus-level
+  disconnect, not a power loss.
+- **Nothing downstream saw it.** ciri logged no `nfs: server not responding` (a
+  22 s stall sits under the `timeo=150`/`retrans=3` threshold of ~45 s) and
+  `media-mount-health` passed at 07:17:24. The same invisibility the 09-02
+  postscript complained about, one more time — which is what the new monitor
+  below is for.
+
+#### The link is holding, and it has been through a move-on-completion
+
+| Now | At the swap | Before it |
+|---|---|---|
+| `2-3 speed=5000`, `max_sectors_kb 1024`, `queue_depth 1` | 5000 / 1024 | 480 / 120 |
+| **132 MB/s** uncached sequential read (`dd iflag=direct`) | 105 MB/s | 9.8 MB/s |
+
+The resolution said not to call this fixed until the disk had held a SuperSpeed
+link for days, *ideally through a full move-on-completion*. That half is done: an
+**85.8 GB 4K REMUX** landed at 09-03 00:57 with no drop — the exact workload that
+starved Jellyfin on 09-02.
+
+That import is also the only client-visible disruption in the whole window:
+**626 `nfs: server not responding` lines on ciri, confined to 23:49 → 00:59:55**,
+with three `media-mount-health` timeouts inside it. Nothing since — 44 h clean.
+Worth noting the shape: at 32 nfsd threads and a 5000M link, one 86 GB move still
+makes the client wait. It no longer takes playback down for 40 minutes, but the
+disk is not free of the writer either.
+
+#### SMART, unchanged
+
+| Attribute | 09-02 | 09-04 |
+|---|---|---|
+| 188 Command_Timeout | 65558 | **65558** (+0) |
+| 5 / 197 / 198 / 187 / 199 | all 0 | all **0** |
+| 191 G-Sense_Error_Rate | 10 | **10** (+0 — no new handling, so nobody knocked the drive on 09-03) |
+| 9 Power_On_Hours | 2396 | 2451 |
+| 12 Power_Cycle_Count | 311 | 312 (the swap) |
+
+Health `PASSED`. Thirty-one days on from the 08-04 baseline of 65557,
+`Command_Timeout` has moved **+1 in total**. The SMR question stays closed.
+
+#### Verdict, and what is still open
+
+The starvation condition is gone and the drop rate is down an order of magnitude,
+but **a residual drop source survives on the new connector**. 47 h is one
+datapoint against a fault that used to fire every 3.8 h; it is not "several
+days", and one drop did occur. The next step named in the resolution — the
+brand-new cable — stays on the table and should be fitted if a second drop lands
+this week.
+
+**Now deployed: [`media-link-health.sh`](../scripts/monitoring/media-link-health.sh)**,
+which closes the "count the drops" item from the 09-02 fixes table and adds the
+check that would have caught 08-15 on the day. It pushes to Kuma every 5 minutes
+with three assertions the existing monitors cannot make:
+
+| Check | The fault it answers |
+|---|---|
+| USB link speed ≥ 5000 | 08-15 → 09-02: the link fell back to 480 and **stayed there for 18 days** with nothing down and nothing alerting |
+| `max_sectors_kb` ≥ 1024 | the quiet half of the same fault — 120 KB commands, 9.8 MB/s |
+| `USB disconnect` events on the disk's port ≤ 0 in a rolling 24 h | the 54 self-healed drops nobody noticed, and this postscript's 07:16 drop |
+
+Deliberately **not** a mount/export check — that is `media-export-health.sh`'s
+job, and duplicating it would double-alert on one fault. The drop count rides in
+the `up` message too, so Kuma's history carries the trend while the monitor is
+still green. Deployment and thresholds:
+[scripts/monitoring/README.md](../scripts/monitoring/README.md#media-link-healthsh).
+
+---
+
+## Postscript 2026-09-11 — the residual drop source, and the cable fitted
+
+The 09-02 verdict above left one item open: *"the brand-new cable stays on the table
+and should be fitted if a second drop lands this week."* **Five more landed.** The
+cable was fitted 2026-09-11 20:32.
+
+### The drops nobody saw
+
+Between the 09-02 connector swap and the cable fit, `usb 2-3` dropped **six** times:
+
+| When | Gap since previous |
+|---|---|
+| 09-03 07:16:22 | 9 h 15 m (the drop already noted in the 09-02 postscript) |
+| 09-05 00:33:07 | 41 h |
+| 09-05 02:35:28 | 2 h 02 m |
+| 09-05 03:22:51 | 47 m |
+| 09-06 05:55:01 | 26 h |
+| 09-08 03:33:09 | 45 h 38 m |
+
+Then a clean run from 09-08 03:33 to the 09-11 cable swap — **3 d 17 h**, the longest
+stretch on the old cable.
+
+**Every one of these self-healed in ~1 second** (disconnect and re-enumerate in the
+same or next second), so `mnt-media.mount` never stayed down long enough to alert and
+**no downtime notification was ever raised**. Absence of alerts measured the
+self-healing from [proposal 004](proposals/004-media-mount-self-healing.md) working as
+designed — it did **not** mean the link was healthy. This is the same trap the
+`media-link-health.sh` rolling-24 h drop counter was added to close; read that monitor,
+not the mount monitors, when judging link health.
+
+### The diagnostic that narrows it
+
+`Command_Timeout` moved **65557 → 65558** — a single increment in five weeks, against a
+counter that was the sole degraded attribute in the 08-04 baseline. So these six drops
+are **not** the SMR-stall → UAS-timeout → bus-drop chain from the 08-03 root cause.
+That mechanism is genuinely fixed. What remains is a **link/physical-layer** fault,
+which is exactly what a cable replacement targets.
+
+### Baseline for the new cable — measured 2026-09-11 21:43
+
+| Metric | Value | Previous |
+|---|---|---|
+| Sequential read (`dd bs=1M count=3000 iflag=direct`) | **119 MB/s** | 105 MB/s (09-02), 9.8 MB/s (pre-fix) |
+| USB link | SuperSpeed **5000M**, `Driver=usb-storage` | quirk still applied correctly |
+| `Command_Timeout` | 65558 | 65557 (08-04) |
+| `Reallocated` / `Pending` / `Offline_Uncorrectable` / `UDMA_CRC` | **0 / 0 / 0 / 0** | all 0 (08-04) |
+| `Power_On_Hours` | 2620 | 1687 (08-04) |
+| Lifetime writes | 624 GB | 282 GB (08-03) |
+| Airflow temperature | **46 °C** (min/max 43/46) | 39 °C (08-04) |
+| Filesystem | `clean`, `errors=remount-ro`, mounted r/w 20:33:18 | — |
+
+The swap itself yanked a mounted disk: `USB disconnect` at 20:31:05 produced an I/O
+error and `JBD2: I/O error when updating journal superblock` on `sdb1`. It re-enumerated
+as `sdc` 95 s later and ext4 replayed cleanly — `Filesystem state: clean`, no data loss.
+Note the device node moved `sdb` → `sdc` again, as the inventory warns.
+
+### How to judge whether the cable worked — do not call it early
+
+**The old cable produced a 3 d 17 h clean run.** A few quiet days on the new one
+therefore prove nothing. The bar is **≥7–10 days with zero `usb 2-3: USB disconnect`
+events**, read from `media-link-health.sh`'s rolling counter rather than from the
+absence of mount alerts. Check with:
+
+```sh
+dmesg -T | grep -E 'usb 2-3:' | grep -Ei 'disconnect|new SuperSpeed'
+```
+
+### Watch item
+
+Airflow temperature has risen 39 °C → 46 °C (normalised 054 against a threshold of
+040, worst 044). Still in spec for a 7 mm 2.5" drive, and partly seasonal, but it is
+now the closest attribute to its threshold and is worth re-reading at the next
+check — this drive has no `smartd` history to fall back on for trend.
+
+## Incident 2026-09-14 — `/mnt/media` hung on ciri, with the disk and the server healthy
+
+**The first media outage where the geralt side was entirely fine.** Every previous
+one in this file resolved to the USB link, the SMR spindle or a full filesystem. This
+one resolved to **ciri's NFS client deadlocking in session recovery** — the server
+never saw the writes it was waiting for. About **1 h 40 m** of no media, 10:55 →
+12:33 IST.
+
+It is the outage this document was least prepared for: the disk was readable, the
+cable had not dropped, `nfsd` was idle, and the export health check was green — all
+at the same time as the mount was unusable.
+
+### What happened
+
+| When (IST) | Event |
+|---|---|
+| 10:54 | qBittorrent starts move-on-completion of a **19.9 GB** UHD file from the `scsi3` NVMe scratch to `/mnt/media` over NFS |
+| ~10:55 | the move **stalls at ~4 GB** and `/mnt/media` hangs on ciri. Anything that stats the mount blocks |
+| 10:55–12:33 | diagnosis. No intervention on geralt, and none possible from there — see below |
+| 12:33 | `qm stop 150 && qm start 150` on geralt |
+| 12:36:22 | `media-mount-health` green; qBittorrent resumes the move by itself at ~49 MiB/s |
+
+### Everything that normally explains this was healthy
+
+Worth listing in full, because the value of this incident is the eliminations:
+
+- **The disk.** `sdc1` mounted and readable, all SMART media counters 0.
+- **The link.** **Zero** `usb 2-3` disconnects since the 09-11 cable fit. (The next
+  one landed at 23:57 the same night, **after** this outage was resolved — see the
+  postscript below. It played no part in this.)
+- **The server.** `nfsd` 32/32 threads **idle**, not blocked — the exact opposite of
+  the 09-02 starvation signature, where all 16 sat in `D`.
+- **The export.** `media-export-health` green throughout.
+- **The network.** TCP `ESTAB` with empty send and receive queues; the NFS lease
+  renewing normally; **no** `nfs: server not responding` in ciri's `dmesg` — the
+  client never considered the server down, because by its own accounting it had not
+  sent anything that went unanswered.
+
+### The signature — it is client-side, and it is specific
+
+These five readings together are what identify this failure, and they are the thing
+to check before touching geralt or the disk:
+
+| Where | Check | Reading during the outage |
+|---|---|---|
+| ciri | kernel stack of the `10.77.0.21-manager` kthread | **`nfs4_begin_drain_session`** |
+| ciri | `/sys/kernel/debug/sunrpc/rpc_clnt/*/tasks` | WRITE tasks parked `a:call_start q:delayq` — queued, never sent |
+| geralt | `/proc/net/rpc/nfsd` `proc4ops` delta | **only `SEQUENCE`**, ~3.6/s. No WRITE, no ACCESS |
+| geralt | `/proc/fs/nfsd/clients/*/info` | session slots **444** against a target of **167** |
+| ciri | `dmesg` | no `server not responding` |
+
+The client was holding the session still in order to shrink it, and the writes queued
+behind that hold. From geralt's side the client looked alive and simply quiet.
+
+### Root cause — inferred, not traced
+
+**The server reduced its session slot target, the client began draining the session
+to adopt the new size, and that drain never completed.** The 444-vs-167 mismatch and
+the WRITE tasks parked behind `nfs4_begin_drain_session` are consistent with it, and
+nothing else observed contradicts it.
+
+**This is inference from state, not a traced mechanism.** Nobody caught the slot
+renegotiation happening; it was read off after the fact. Treat it as the leading
+explanation, not a settled one.
+
+Why the server would shrink slots at all: **geralt had only ~3.5 GiB available** at
+the time. NFSv4 session slots are a memory commitment on the server, and that is the
+obvious pressure to have triggered a reduction — but that link, too, is unproven.
+
+### Why nothing alerted
+
+Same shape as 09-02, one layer up. **The mount was present, listable and fast on
+cached data**, so `media-mount-health` had nothing to fail on; the fault was in the
+client's session layer, underneath everything this repo monitors. `media-export-health`
+watches the server, and the server was genuinely fine.
+
+The gap is real and currently unclosed: **no check looks at whether the client's RPC
+tasks are actually moving.** The `rpc_clnt/*/tasks` reading above is the candidate —
+a queue that is non-empty and not draining for N seconds is unambiguous — but nothing
+has been built.
+
+### Collateral
+
+- **47 processes in `D` state.** [`qbit-move-progress.sh`](../scripts/ops/qbit-move-progress.sh)
+  runs an **un-timed `du -sb`** (line 32) every 2 minutes. Against a hung mount every invocation
+  blocks forever and the next one starts anyway, so they accumulated for the whole
+  outage. A stuck monitor becoming its own pile-up is the fix at the top of the table
+  below.
+- **55 stale delegations on geralt.** `nfsd` was holding delegations pinned to
+  superblocks of device nodes that no longer existed, left over from earlier USB
+  re-enumerations. They were not a cause — they were released automatically when the
+  old client expired — but they are a standing cost of the `sdX` churn this file has
+  documented since 08-10.
+- **ciri's NVIDIA userland had drifted from the loaded module** (`580.178.04` vs
+  `580.173.02`). Unrelated to the hang, found while looking; DKMS had already built
+  for `7.0.0-31`, so the restart resolved it.
+
+### Recovery — `qm stop 150 && qm start 150`, 12:33
+
+There is no client-side fix short of restarting the guest: the drain holds the session
+and the mount cannot be lazily unmounted while tasks are parked on it.
+
+Verified after the restart:
+
+| Check | Result |
+|---|---|
+| ciri kernel / NVIDIA | booted `7.0.0-31`, userland `580.178.04` matching the loaded module |
+| `media-mount-health` | ok at 12:36:22 |
+| geralt client table | a **new** client, slots **70/70** |
+| delegations | **158 → 16**, all on the live superblock — old-client expiry released the stale pins |
+| WRITE throughput | ~55 ops/s, qBittorrent resumed the move unaided at ~49 MiB/s |
+
+The `qm start` PCI-reset warning is the documented harmless one — see
+[`gpu-passthrough.md`](gpu-passthrough.md).
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| **PENDING** — `timeout -s KILL` around the `du` in `qbit-move-progress.sh` | the 47 blocked processes. A monitor must not be able to pile up against the thing it monitors |
+| **PENDING** — a client-side liveness check on `rpc_clnt/*/tasks` (non-empty and not draining) | the detection gap. Every existing check passed for 1 h 40 m of total outage |
+| **DONE** — this write-up, and the five-reading signature table above | the diagnosis cost. The next occurrence should be recognised in minutes, not rediscovered |
+| **OPEN** — whether the slot reduction was memory pressure on geralt, and whether headroom prevents it | the root cause, which is inferred. Until traced, a recurrence is the only thing that will settle it |
+| **NOT PROPOSED** — `nconnect` | tempting, since a single TCP connection carries everything (see 09-02), but it changes session behaviour and this failure is in exactly that layer. Not a fix to reach for on the strength of an inference |
+
+### Postscript — the cable's clean run ended at 23:57 the same night
+
+Unrelated to the outage, but it lands in the same day's journal and it **changes the
+verdict the 09-11 postscript left open**:
+
+```
+Sep 11 20:33:01  usb 2-3: new SuperSpeed USB device number 15   ← cable fitted
+Sep 14 23:57:29  usb 2-3: USB disconnect, device number 15
+Sep 14 23:57:29  usb 2-3: new SuperSpeed USB device number 16
+Sep 14 23:57:29  Aborting journal on device sdc1-8
+Sep 14 23:57:31  sd 6:0:0:0: [sdb] Attached SCSI disk
+```
+
+- **Clean run on the new cable: 3 d 3 h**, against a bar of **≥7–10 days**. The old
+  cable managed 3 d 17 h. **The cable is not proven, and on this evidence it has not
+  beaten what it replaced.**
+- Self-healed in ~2 s, re-enumerated on the same SuperSpeed bus, and — as always — the
+  node moved: **`sdc` → `sdb`**. `/mnt/media` is on `/dev/sdb1` as of 09-16.
+- Verified 2026-09-16 10:02 (geralt up 22 d 17 h): **one** disconnect since the cable
+  fit, link still `5000`, mount `rw,noatime`. That is 1 d 10 h clean since the drop.
+
+The enclosure is now the next suspect in line, but one drop is not enough to act on.
+Restart the ≥7–10 day clock from **2026-09-14 23:57**.
