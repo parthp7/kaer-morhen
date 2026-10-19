@@ -347,6 +347,49 @@ counter lives outside `/tmp` on purpose: a reboot must not reset a genuinely
 stuck port back to zero strikes. A leak pages at once; a missing forwarded port
 only means slower torrents, and only pages once it stops being transient.
 
+#### Incident 2026-09-11/12 — the two-stage failure, and why the restart order matters
+
+A real firing of this monitor, worth recording because the obvious remediation is
+**incomplete** and the container that was actually broken reported itself healthy
+throughout.
+
+| When | State |
+|---|---|
+| overnight | gluetun logs `[port forwarding]` NAT-PMP RPC timeouts to `10.2.0.1:5351` every 20–40 min |
+| **04:06:24** | gluetun: `restarting VPN because it failed to pass the healthcheck` — new tunnel, **new exit IP** |
+| ~04:11 | monitor starts failing: *"qBittorrent still thinks it exits <VPN_EXIT_OLD> but the tunnel now exits <VPN_EXIT_NEW> — client stranded on a torn-down tunnel"* |
+| +10¼ h | **123 consecutive failing checks.** Seeding dead the whole time |
+| remediation 1 | `docker restart qbittorrent qbit-port-sync` → egress correct again, **but a second fault surfaced underneath** |
+| — | *"gluetun's port-forwarding service has EXITED — forwarded port 0 with no `[port forwarding]` log activity for 600 s. This does not self-heal."* |
+| remediation 2 | `docker restart gluetun`, wait for PF to establish, **then** qbittorrent + qbit-port-sync |
+| resolved | `ok: egress <VPN_EXIT_NEW> (AS208172 Proton AG), port-forward 44464 matches qBit, no leak`; strikes 123 → **0** |
+
+**The correct order is gluetun first, then qbittorrent and qbit-port-sync.**
+Restarting gluetun establishes a new tunnel and a new forwarded port, so the
+client must be restarted *after* it or it is immediately stranded again — which
+is exactly how stage one was reached. Restarting the client alone fixes egress
+and leaves PF dead.
+
+**Why nothing else caught it:** `docker ps` reported gluetun **`Up 3 days
+(healthy)`** for the entire outage. Its healthcheck validates egress only and has
+no view of the port-forwarding subprocess, so the `qbittorrent` HTTP monitor
+(which doubles as gluetun liveness) stayed green too. Forwarded port was 0 the
+whole time. This is the blind spot this monitor exists for, and it earned its
+keep here.
+
+**Two things to recognise next time:**
+
+- **"gluetun healthy" is not evidence.** Read the script's own message, which
+  distinguishes *stranded client* (restart client) from *PF service exited*
+  (restart gluetun first). They look identical from the dashboard.
+- **The NAT-PMP instability is upstream and ongoing.** Even after recovery,
+  gluetun logged a PF RPC timeout at 21:59:21 and re-established port 44464, and
+  the monitor logged *"rode out a 5 s NAT-PMP dip"*. The soft/strike design is
+  what keeps that from paging. If PF ever fails to establish *at all* after a
+  gluetun restart, the exit is likely on capacity that cannot do port forwarding
+  — force a different server rather than restarting again (see the Proton
+  capacity note below).
+
 **Fail-closed:** "cannot determine" is never treated as "fine". If ciri's public
 IP lookup fails, the IP comparison is impossible and the verdict falls back to
 the provider check; if that can't be made either, the run is a hard failure. The
