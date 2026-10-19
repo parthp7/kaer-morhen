@@ -1,0 +1,13 @@
+[Unit]
+Description=servarr VPN auto-fix: %i restart ladder
+After=docker.service
+# Started by servarr-vpn-health.sh with --no-block, never by a timer. The
+# instance name is the action: sync | client | full.
+
+[Service]
+Type=oneshot
+# Worst case is client failing and escalating to full: client waits 90+90s, two
+# verifying health runs (~150s each + 20s), then gluetun 180s + 90+90s + the same
+# verify again, plus four `docker restart`s (~10s each). That is ~1050s.
+TimeoutStartSec=1200
+ExecStart=/usr/local/bin/servarr-vpn-remediate.sh %i

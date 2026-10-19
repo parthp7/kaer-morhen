@@ -1,0 +1,24 @@
+[Unit]
+Description=Run servarr-vpn-health every 3 minutes
+
+[Timer]
+# Gives gluetun time to bring the tunnel up after a reboot, so the first run
+# isn't a spurious "no egress" alert.
+OnBootSec=3min
+# Wall-clock, not OnUnitActiveSec: a relative timer restarts its countdown from
+# the last activation, so its period is always >= the nominal value and the error
+# accumulates. Kuma's push window is a hard deadline — a beat that is ever late
+# reads as "No heartbeat in the time window". Measured 2026-09-01 → 10-19 with
+# OnUnitActiveSec=5min + AccuracySec=30s: 401 push gaps over the 360s window
+# (max 394s), and every Kuma alert in October carried that message.
+#
+# 180s is half the 360s Kuma window, so one dropped push cannot trip it. The
+# push lands at the END of a run (up to ~100s), so the worst gap is 280s.
+OnCalendar=*:0/3
+# systemd defaults to AccuracySec=1min and will defer the wakeup that far to
+# batch wakeups.
+AccuracySec=1s
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target
