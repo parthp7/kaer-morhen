@@ -343,6 +343,71 @@ labels above.
   `https://` HUB_URL fails with curl exit 35, and does so silently, because
   nothing dials it under the default polling mode.
 
+## Tool scope — Beszel vs Pulse (evaluated 2026-09-12)
+
+Question raised once Pulse had been running a few days
+([proposal 008](proposals/008-lab-dashboard.md), LXC 205, built 2026-09-07):
+should Beszel be retired in favour of Pulse, or should temperature tracking move
+to Pulse?
+
+**Decision: keep both, split unchanged.** They are complementary. The only real
+duplication is node CPU/memory, which both happen to display.
+
+### The premise that does not hold
+
+*"Both need agents on every LXC/VM for the rich data."* Not true:
+
+- **Pulse is agentless.** It polls the PVE and PBS APIs — which is exactly why it
+  needed read-only tokens and pinned certificate fingerprints instead of anything
+  installed in a guest.
+- **Beszel needs one agent per system**, and they are already running on
+  **geralt, yennefer and ciri**.
+- **For temperature specifically Pulse needs a host-side component anyway**:
+  `pulse-host-agent` natively on the host, or `pulse-sensor-proxy` on each PVE
+  node because Pulse lives in an LXC. Both tools then read the same
+  `/sys/class/hwmon` files Beszel's agents already read. **The tool is not the
+  bottleneck for temperature — see [proposal 011 brief](proposals/011-temperature-monitoring.prompt.md).**
+
+### Capability split
+
+| Capability | Beszel | Pulse |
+|---|---|---|
+| Host CPU / memory / disk / net | ✅ agent | ✅ API |
+| Host + NVMe temperatures | ✅ already working | ⚠️ needs a sensor proxy per host |
+| **Docker containers (35 on ciri)** | ✅ | ❌ structurally impossible |
+| **GPU telemetry (card is inside ciri)** | ✅ via ciri's agent | ❌ structurally impossible |
+| Inside-guest filesystems | ✅ `EXTRA_FILESYSTEMS` | ❌ |
+| Alerting → ntfy | ✅ wired, thresholds tuned | ⚠️ deliberately **off** (proposal 008) |
+| Non-Proxmox targets | ✅ | ❌ |
+| PBS datastores / backup jobs | ❌ | ✅ |
+| Per-guest view with no agent installed | ❌ | ✅ |
+
+### Why retiring Beszel would be a net loss
+
+Pulse reads the Proxmox API, so **ciri is a single guest row to it** — it cannot
+see the 35 containers, their per-container CPU/memory, or ciri's internal
+filesystems. The GTX 1060 is VFIO-bound to ciri, so **GPU metrics are only ever
+reachable from inside ciri**, where Pulse can never reach. Retiring Beszel would
+additionally mean rebuilding the entire ntfy alert chain (host-down, temperature,
+disk, CPU, memory thresholds) inside a tool whose alerting was disabled on
+purpose.
+
+Against that, retirement saves one LXC (204, 512 MiB *cap*) and ~15 MiB per
+agent — noise against yennefer's 8 GB.
+
+This matches what [proposal 008 §10](proposals/008-lab-dashboard.md) already
+concluded when it rejected Netdata/Glances because *"Beszel already owns that
+slot"*.
+
+### The condition that would change the answer
+
+If per-container resource metrics stopped being worth their keep — Kuma already
+reports a service *down* and Homepage carries the tiles — then Beszel's remaining
+job is host metrics plus alerting, which Pulse plus `smartd`/`zed`/PVE natives
+could plausibly cover. The gap left behind would be **memory leaks and runaway
+containers**, which nothing else currently catches. Revisit only if that gap is
+judged acceptable.
+
 ## Next steps (not yet built)
 
 - **yennefer-down blind spot: closed (2026-07-11)** — Uptime-Kuma in LXC 104
