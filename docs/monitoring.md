@@ -184,6 +184,12 @@ install -m 0755 smartd-ntfy.sh /usr/local/bin/smartd-ntfy.sh
 
 # /etc/smartd.conf — replace the default DEVICESCAN line with:
 #   DEVICESCAN -a -n standby,q -m <nomailer> -M exec /usr/local/bin/smartd-ntfy.sh
+#
+# geralt ONLY — one extra line above it for the USB media disk. DEVICESCAN
+# enumerates that enclosure as SCSI and never tries `-d sat`, so it must be
+# named explicitly, by-id (the kernel name changes across a bus drop):
+#   /dev/disk/by-id/usb-Seagate_BUP_Slim_BK_<MEDIA_USB_SERIAL>-0:0 -d sat -a -n standby,q -m <nomailer> -M exec /usr/local/bin/smartd-ntfy.sh
+# Only works because of usb-storage.quirks=0bc2:ab24:u — see hardware-inventory.md.
 systemctl restart smartmontools
 
 # full-chain test: temporarily append " -M test" to that line, restart,
@@ -208,14 +214,14 @@ curl -s -o /dev/null -w '%{http_code}\n' http://<LAN_PREFIX>.102:8090   # 200
 systemctl is-active beszel-agent zfs-zed smartmontools
 systemctl show beszel-agent -p Environment   # not `systemctl cat | grep` — see gotchas
 grep -E '^ZED_NTFY' /etc/zfs/zed.d/zed.rc
-grep -v '^#' /etc/smartd.conf | grep DEVICESCAN
+grep -vE '^\s*#|^\s*$' /etc/smartd.conf   # TWO lines: the USB disk, then DEVICESCAN
 cat /etc/cron.d/zfsutils-linux            # TRIM 1st Sunday, scrub 2nd Sunday
 cat /etc/pve/notifications.cfg           # webhook 'ntfy' + default-matcher
 
 # yennefer (same minus zed/zfs lines)
 systemctl is-active beszel-agent smartmontools
 systemctl show beszel-agent -p Environment
-grep -v '^#' /etc/smartd.conf | grep DEVICESCAN
+grep -vE '^\s*#|^\s*$' /etc/smartd.conf   # ONE line: DEVICESCAN (no USB disk here)
 cat /etc/pve/notifications.cfg
 ```
 

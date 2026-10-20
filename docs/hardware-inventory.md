@@ -207,9 +207,21 @@ targeted fix rather than new hardware.
   generic `-d scsi` works (`SMART Health Status: OK`, but
   `Error Counter logging not supported` and no self-test support). This is
   overridable — see the runbook in [storage.md](storage.md).
-- **Consequence**: `smartd` (`DEVICESCAN`, both nodes) silently monitors nothing
-  on this disk. There are **no reallocated/pending-sector counters** for it, so
-  its media health is genuinely unobserved.
+- **Consequence (historical — resolved, see above)**: while `US_FL_NO_ATA_1X`
+  applied, `smartd` silently monitored nothing on this disk and there were **no
+  reallocated/pending-sector counters** for it. Since the quirk, geralt's
+  `/etc/smartd.conf` carries an **explicit device line** for it — `DEVICESCAN`
+  alone is not enough, because it enumerates the disk as SCSI and never tries
+  `-d sat`:
+
+  ```
+  /dev/disk/by-id/usb-Seagate_BUP_Slim_BK_<MEDIA_USB_SERIAL>-0:0 -d sat -a -n standby,q -m <nomailer> -M exec /usr/local/bin/smartd-ntfy.sh
+  ```
+
+  By-id, never `/dev/sdX` — the kernel name is exactly what changes across a bus
+  drop ([storage.md](storage.md)). geralt only; yennefer has no USB disk and
+  keeps the bare `DEVICESCAN` line
+  ([scripts/monitoring/README.md](../scripts/monitoring/README.md)).
 - **No per-device UAS quirk**: `0bc2:ab24` is absent from the kernel's
   `unusual_uas.h` (only `0bc2:331a` "Expansion Desk" is listed), so `uas` always
   binds and nothing is auto-mitigated.
