@@ -107,6 +107,25 @@
 		reverse_proxy <LAN_PREFIX>.150:3474
 	}
 
+	# ---- Dashboard (proposal 008) -------------------------------------------
+	# All three carry their own login (Homepage 2.x gate, OliveTin local user,
+	# Pulse admin); Caddy is a plain proxy here like everywhere else.
+
+	@home host home.kaermorhen.fyi
+	handle @home {
+		reverse_proxy <LAN_PREFIX>.150:3010
+	}
+
+	@olivetin host olivetin.kaermorhen.fyi
+	handle @olivetin {
+		reverse_proxy <LAN_PREFIX>.150:1337
+	}
+
+	@pulse host pulse.kaermorhen.fyi
+	handle @pulse {
+		reverse_proxy <LAN_PREFIX>.205:7655
+	}
+
 	# ---- AI -----------------------------------------------------------------
 
 	@chat host chat.kaermorhen.fyi
@@ -121,6 +140,18 @@
 		reverse_proxy <LAN_PREFIX>.150:11434 {
 			header_up Host {upstream_hostport}
 		}
+	}
+
+	# ---- Automation (proposal 010) ------------------------------------------
+
+	@n8n host n8n.kaermorhen.fyi
+	handle @n8n {
+		# n8n's own login gates the editor. HTTPS here is load-bearing, not
+		# cosmetic: N8N_SECURE_COOKIE=true means the session cookie is only
+		# ever set over TLS, so the bare port on .150 cannot log in at all.
+		# Editor and execution views use WebSockets; Caddy proxies them
+		# without extra directives.
+		reverse_proxy <LAN_PREFIX>.150:5678
 	}
 
 	# ---- *arr stack ---------------------------------------------------------
@@ -211,37 +242,6 @@
 				tls_insecure_skip_verify
 			}
 		}
-	}
-
-	# ---- Dashboard (proposal 008) -------------------------------------------
-	# All three carry their own login (Homepage 2.x gate, OliveTin local user,
-	# Pulse admin); Caddy is a plain proxy here like everywhere else.
-
-	@home host home.kaermorhen.fyi
-	handle @home {
-		reverse_proxy <LAN_PREFIX>.150:3010
-	}
-
-	@olivetin host olivetin.kaermorhen.fyi
-	handle @olivetin {
-		reverse_proxy <LAN_PREFIX>.150:1337
-	}
-
-	@pulse host pulse.kaermorhen.fyi
-	handle @pulse {
-		reverse_proxy <LAN_PREFIX>.205:7655
-	}
-
-	# ---- Automation (proposal 010) ------------------------------------------
-
-	@n8n host n8n.kaermorhen.fyi
-	handle @n8n {
-		# n8n's own login gates the editor. HTTPS here is load-bearing, not
-		# cosmetic: N8N_SECURE_COOKIE=true means the session cookie is only
-		# ever set over TLS, so the bare port on .150 cannot log in at all.
-		# Editor and execution views use WebSockets; Caddy proxies them
-		# without extra directives.
-		reverse_proxy <LAN_PREFIX>.150:5678
 	}
 
 	# ---- Anything else ------------------------------------------------------
