@@ -44,6 +44,8 @@ each node over SSH). Software versions re-verified 2026-09-09 (`pveversion`, `un
 
 **CPU**
 - Intel(R) Core(TM) i7-8750H @ 2.20GHz — 6 cores / 12 threads, max 4.1 GHz, 9 MiB L3
+- Runs hot for its load (throttles at about 5 % average use); power policy
+  changed 2026-10-21 and a repaste is pending. See [geralt-thermals.md](geralt-thermals.md).
 
 **Memory**
 - **32 GB total** — both SODIMM slots populated, dual-channel, dual-rank,
