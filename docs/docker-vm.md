@@ -419,10 +419,13 @@ plus `.env.example` + README).
   [scripts/backup/README.md](../scripts/backup/README.md)) — library
   import now unblocked; B2 offsite later — see
   [configs/ciri/immich/README.md](../configs/ciri/immich/README.md).
-- **Memos follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on
-  `:5230`.
-- **Sure follow-ups**: DNS name on pihole-1, Uptime-Kuma HTTP monitor on
-  `:3000`.
+- ~~**Memos follow-ups**~~ — **done**: `memos.kaermorhen.fyi` on pihole-1
+  (synced to pihole-2) and the Kuma HTTP monitor on `:5230`
+  ([uptime-kuma.md](uptime-kuma.md)).
+- ~~**Sure follow-ups**~~ — **done**: `sure.kaermorhen.fyi` on pihole-1 and a
+  Kuma HTTP monitor — pointed at **`https://sure.kaermorhen.fyi`**, not
+  `:3000` as planned here, so it also covers the proxy hop
+  ([uptime-kuma.md](uptime-kuma.md)).
 - **Jellyfin**: deployed + configured 2026-07-22
   ([as-built](../configs/ciri/jellyfin/README.md)). GPU done 2026-07-16 — GTX
   1060 passed through with NVENC/CUDA ([gpu-passthrough.md](gpu-passthrough.md));
