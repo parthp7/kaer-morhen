@@ -129,12 +129,13 @@ register map for that board:
 
 | Step | Do | Verify (read-only) | Status |
 |---|---|---|---|
-| F1 | On geralt: `modprobe ec_sys` (in-tree; `write_support` defaults to off) | `cat /sys/module/ec_sys/parameters/write_support` → `N`; `/sys/kernel/debug/ec/ec0/io` exists | **done 2026-10-21**, `N`. Not persistent yet |
+| F1 | On geralt: `modprobe ec_sys` (in-tree; `write_support` defaults to off) | `cat /sys/module/ec_sys/parameters/write_support` → `N`; `/sys/kernel/debug/ec/ec0/io` exists | **done 2026-10-21**, `N`; made persistent the same day |
 | F2 | — | Dump EC RAM; check `0xA0` holds `16P5EMS1.109`, `0x68` follows `coretemp` and `0x80` follows ciri's `nvidia-smi` | **done**: firmware string ✓, EC CPU 52 vs coretemp 53 ✓, EC GPU 46 vs nvidia-smi 46 ✓ |
 | F3 | Short CPU load to make the fans ramp | `0x71` / `0x89` rise with temperature and match what you hear | **done**, results below |
 | F4 | Decide how to surface it | — | **declined**: no fan-failure alert, see below |
 
-To make F1 survive reboots (keeps `write_support` off by default):
+Persistent since 2026-10-21 (verified: the file contains `ec_sys`, and there
+is no `options` line, so `write_support` stays `N`):
 
 ```bash
 echo ec_sys > /etc/modules-load.d/ec_sys.conf
@@ -215,8 +216,13 @@ same load before the change ran 62–66 °C. This was night time, so a cooler
 room accounts for part of the drop. The 7-day Beszel comparison in §7 is the
 real test.
 
-**Not yet persistent: a reboot reverts all three settings.** The monthly
-maintenance pass reboots geralt. Proposed oneshot unit (user installs):
+**Made persistent 2026-10-21 (~01:53 IST)** with a oneshot unit; without
+it, the reboot in the monthly maintenance pass would revert all three
+settings. Verified (read-only): unit `enabled` + `active`,
+`Result=success`, exit 0, `systemd-analyze verify` clean, live values
+unchanged (12× `powersave`, 12× `balance_performance`, `max_perf_pct=85`).
+**Still unproven across a real reboot**: re-run the verify block after the
+next maintenance pass.
 
 ```ini
 # /etc/systemd/system/cpu-power-policy.service
@@ -277,9 +283,11 @@ Throttle counters reset on reboot, so record the uptime with every reading.
 
 ## 8. Open
 
-- Install the §5 unit so the CPU policy survives reboots.
-- Fan visibility: F1–F3 done 2026-10-21, F4 alert declined. Still open:
-  persist `ec_sys` (§4).
+- After the next reboot, confirm that `cpu-power-policy.service` and the
+  `ec_sys` autoload both came back on their own (§5 verify block, plus
+  `cat /sys/module/ec_sys/parameters/write_support` → `N`). Both were
+  installed and verified live 2026-10-21.
+- Fan visibility: F1–F3 done and persistent 2026-10-21, F4 alert declined (§4).
 - **After the repaste**, revisit Cooler Boost or a custom curve to lift the
   75 % auto-curve ceiling (EC write) (§4). Deferred by decision: the user
   will raise it once the repaste is done.
