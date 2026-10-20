@@ -368,6 +368,7 @@ and prove nothing — that distinction is the whole monitor.
 | **Hard** | `tun0` missing from gluetun's netns | kill-switch failed open (vendor-neutral; replaced a provider check that false-alarmed — see below) |
 | **Hard** | no egress at all from the netns | tunnel down / kill-switch shut — torrenting stopped |
 | **Hard** | gluetun control server unreachable | can't verify anything |
+| **Hard** | qbittorrent or qbit-port-sync orphaned (netns ≠ gluetun's) | gluetun restarted without them; they sit in a dead netns with only `lo` (**auto-fixed**, added 2026-10-21 after a 5 h outage) |
 | **Hard** | qBittorrent API unreachable | dead client behind a live tunnel |
 | **Hard** | gluetun's port-forwarding service has EXITED | a NAT-PMP refusal during PF startup is not retried, and PF is gone until a restart (**auto-fixed**) |
 | **Soft** | qBit's external address != the tunnel's | client stranded on a torn-down tunnel after gluetun reconnects; never self-heals (**auto-fixed** after 3 runs) |
@@ -382,15 +383,18 @@ counter lives outside `/tmp` on purpose: a reboot must not reset a genuinely
 stuck port back to zero strikes. A leak pages at once; a missing forwarded port
 only means slower torrents, and only pages once it stops being transient.
 
-**Auto-fix (added 2026-10-20).** A stranded client, a persistent port mismatch
-and an exited PF service each have a known cure: restarting the containers in
-order. The first and last never cure themselves. The stranded client ran ~15 h on
+**Auto-fix (added 2026-10-20).** A stranded or orphaned client, a persistent
+port mismatch and an exited PF service each have a known cure: restarting the
+containers in order. None of them except the mismatch cures itself. The stranded client ran ~15 h on
 10-11 and ~49 h on 10-17 waiting for a human. After pushing, the health script
 now starts `servarr-vpn-remediate@{client,sync,full}`. It restarts in order,
 waits on real state after each step, verifies with a dry-run of the check, and
 sends one ntfy with the outcome. It never acts on a leak, is rate-limited to 3
 runs per 6 h, and refuses to restart qBittorrent while its media mounts are
-unreachable. Details in
+unreachable. Its first real run, on 2026-10-20, turned a stranded client into a
+5 h outage: a Proton port-0 dip made it escalate to a gluetun restart, and it then
+skipped the client restart. That was fixed on 10-21. Details and the incident
+timeline are in
 [scripts/monitoring/README.md](../scripts/monitoring/README.md#auto-fix-servarr-vpn-remediatesh-added-2026-10-20).
 
 #### Incident 2026-09-11/12 — the two-stage failure, and why the restart order matters

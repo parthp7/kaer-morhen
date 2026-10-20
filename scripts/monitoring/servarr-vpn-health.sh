@@ -20,10 +20,21 @@
 #     2. the tunnel interface is gone                 → kill-switch has failed open
 #     3. no egress at all from the netns              → tunnel down / kill-switch shut
 #     4. LEAK: netns egress IP == ciri's public IP    → traffic is bypassing the VPN
-#     5. qBittorrent's API is unreachable             → dead client behind a live tunnel
-#     6. gluetun's port-forwarding service has EXITED → PF is gone until a restart
+#     5. qBittorrent or qbit-port-sync is ORPHANED    → it is still in the netns of a
+#                                                       gluetun that has since restarted
+#     6. qBittorrent's API is unreachable             → dead client behind a live tunnel
+#     7. gluetun's port-forwarding service has EXITED → PF is gone until a restart
 #
-#   Why 6 is hard and not soft: gluetun's PF startup sequence is a chain of NAT-PMP
+#   Why 5 is its own check: a gluetun-only restart builds a new netns, and the
+#   containers that joined the old one stay in it, with only `lo`. Check 6 sees
+#   that too, but it reads as "client dead or localhost-bypass off". That cause is
+#   page-only, so on 2026-10-20 the client sat orphaned for 5 h (13:05 → 18:14)
+#   after the auto-fix itself had restarted gluetun. Comparing the netns inode of
+#   each container with gluetun's is exact, and the fix is always the same restart.
+#   Because this is a hard check that comes before the PF checks, it also hid the
+#   EXITED port forwarding that was happening at the same time.
+#
+#   Why 7 is hard and not soft: gluetun's PF startup sequence is a chain of NAT-PMP
 #   RPCs — get external IPv4 address, add the UDP mapping, then add the TCP one —
 #   and its retry loop does not cover the whole chain. A refusal on the LAST link,
 #   during PF *startup* (i.e. straight after a VPN reconnect), is not retried: it
@@ -42,16 +53,28 @@
 #   service back to a supervisor that will not act on it. Nothing in the container
 #   changes state — no unhealthy flag, no exit, no further log line ever.
 #
-#   Observed 2026-07-30 (v3.41.1, ~22h uptime), 2026-08-25 (v3.41.3, 8.7h) and
-#   2026-09-08 (v3.41.3, 6 days — so uptime confers no immunity): every time the
+#   Since 2026-10-21 that tag is also how it is detected: if the newest
+#   port-forwarding line in gluetun's log is an `ERROR [vpn]` one, PF has exited
+#   right now, with no need to wait out $PF_QUIET_SECS of
+#   silence. In 72 h of logs to 2026-10-20 the retried form appeared 192 times and
+#   the fatal one twice (13:05:26 and 18:02:14). Nothing PF-related followed either
+#   of them. The quiet window stays as the fallback for an exit that logs nothing.
+#   It used to be the only test, and the fatal line itself contains "port
+#   forwarding", so it counted as activity for 10 minutes after PF had died.
+#
+#   Observed 2026-07-30 (v3.41.1, ~22h uptime), 2026-08-25 (v3.41.3, 8.7h),
+#   2026-09-08 (v3.41.3, 6 days — so uptime confers no immunity) and twice on
+#   2026-10-20, each time on PF's first attempt after a gluetun restart: every time the
 #   container stayed "healthy", every other monitor stayed green, and only a
 #   restart recovered it. Waiting cannot help, so waiting out $MAX_STRIKES would
-#   only delay the page by ~30 minutes.
+#   only delay the page by ~30 minutes. (A restart is not guaranteed to work
+#   either. When Proton's gateway is refusing, the fresh PF can fail its first
+#   attempt the same way, as both 10-20 cases did.)
 #
 #   Recovering from this restarts gluetun, which rebuilds its network namespace and
 #   strands EVERY container sharing it — qbittorrent and qbit-port-sync both. Hence
 #   the message below naming all three; a stranded sidecar leaves qBit on a stale
-#   port and lands you in soft check 8 instead. See "A gluetun-only restart strands
+#   port and lands you in soft check 9 instead (or, since 10-21, hard check 5). See "A gluetun-only restart strands
 #   every container in its netns" in configs/ciri/servarr/README.md (2026-09-09).
 #
 #   NOT a hard check: which organisation owns the exit IP. The first version of this
@@ -70,7 +93,7 @@
 #
 #   SOFT (push up, message says degraded; escalates to down after $MAX_STRIKES
 #   consecutive runs) — things that self-heal and would otherwise cry wolf:
-#     7. forwarded port == 0, gluetun STILL RETRYING — Proton drops NAT-PMP
+#     8. forwarded port == 0, gluetun STILL RETRYING — Proton drops NAT-PMP
 #                                     server-side intermittently (refused or timed
 #                                     out); gluetun re-requests and usually wins
 #                                     within a beat or two — three such dips on
@@ -79,15 +102,15 @@
 #                                     good port on a 0, so torrenting continues
 #                                     meanwhile. Paging on this would be noise;
 #                                     never noticing it going permanent would be
-#                                     worse — which is what case 6 above is for.
-#     8. forwarded port != qBit's listen_port — qbit-port-sync polls every 30s, so a
+#                                     worse — which is what case 7 above is for.
+#     9. forwarded port != qBit's listen_port — qbit-port-sync polls every 30s, so a
 #                                     brief mismatch right after a rotation is normal.
 #                                     A persistent one means the sidecar is broken —
 #                                     most often stranded in the netns a gluetun-only
 #                                     restart tore down (2026-09-08), where its poll
 #                                     of 127.0.0.1:8000 is refused forever. Restart
 #                                     qbit-port-sync.
-#     9. qBit's external address != the tunnel's — gluetun's own healthcheck can
+#    10. qBit's external address != the tunnel's — gluetun's own healthcheck can
 #                                     restart the VPN under a running client (5
 #                                     times in the 36h to 2026-08-25). When it does,
 #                                     qBittorrent can be left bound to the torn-down
@@ -129,6 +152,7 @@
 #   push, a verdict that has persisted long enough starts
 #   servarr-vpn-remediate@<action>.service with --no-block. The restart ladder runs
 #   in its own unit, so it can never delay a heartbeat or eat this unit's timeout.
+#     orphaned       first run                   → client  (qbittorrent, port-sync)
 #     stranded       3 consecutive runs (~9 min) → client  (qbittorrent, port-sync)
 #     port_mismatch  3 consecutive runs          → sync    (port-sync)
 #     pf_exited      first run                   → full    (gluetun, then both)
@@ -148,7 +172,9 @@
 #   servarr-vpn-health.sh --dry-run    # verify a deploy by hand: same checks and
 #                                      # same exit status, but pushes nothing to
 #                                      # Kuma, leaves the counters alone and never
-#                                      # starts a remediation
+#                                      # starts a remediation. Also prints
+#                                      # "[dry-run] reason=<code>" on stderr, which
+#                                      # is what the remediator verifies against
 #
 # Deploy (on ciri) — see scripts/monitoring/README.md for the unit + timer
 #   sudo install -m 0755 servarr-vpn-health.sh /usr/local/bin/
@@ -158,7 +184,7 @@
 # Requires: curl, jq, docker (must be able to `docker exec gluetun`). The push URL
 #           carries a token, so it lives ONLY in that 0600 file and in
 #           secrets.local.yaml — never here.
-# Env overrides: GLUETUN_CTR, TUN_IF, MAX_STRIKES, KUMA_URL_FILE, STATE_DIR,
+# Env overrides: GLUETUN_CTR, QBIT_CTR, SYNC_CTR, TUN_IF, MAX_STRIKES, KUMA_URL_FILE, STATE_DIR,
 #                PF_QUIET_SECS, REMEDIATE (0 disables the auto-fix trigger),
 #                HOST_IP_OVERRIDE (test hook — see the leak-path test in the README),
 #                QBIT_IP_OVERRIDE (test hook — fakes a stranded client)
@@ -166,6 +192,9 @@
 set -euo pipefail
 
 readonly GLUETUN_CTR="${GLUETUN_CTR:-gluetun}"
+# The two containers that live in gluetun's netns (network_mode: service:gluetun).
+readonly QBIT_CTR="${QBIT_CTR:-qbittorrent}"
+readonly SYNC_CTR="${SYNC_CTR:-qbit-port-sync}"
 # The WireGuard interface inside gluetun's netns. Its presence is a vendor-neutral
 # proof that the tunnel exists at all — unlike the exit IP's registered owner, this
 # cannot drift when the provider rotates servers or upstream hosts.
@@ -266,14 +295,35 @@ in_netns() {
 # window's TOTAL line count is checked too: qbit-port-sync polls the control server
 # every 30s and gluetun logs every request, so a readable log over $PF_QUIET_SECS is
 # never empty. Empty means the log is unreadable, not that gluetun is quiet.
+#
+# The newest PF line is checked first. If it is an `ERROR [vpn]` line, that is the
+# last thing the service ever writes (see the header), so it means exited at once
+# rather than after $PF_QUIET_SECS. The match is on the tag, not the wording,
+# because the fatal RPC has differed between incidents (TCP mapping on 09-08,
+# external address and UDP mapping on 10-20).
 pf_service_state() {
-  local log pf
+  local log last
   if ! log=$(docker logs "$GLUETUN_CTR" --since "${PF_QUIET_SECS}s" 2>&1) || [[ -z "$log" ]]; then
     echo unknown
     return 0
   fi
-  pf=$(printf '%s\n' "$log" | grep -c 'port forwarding' || true)
-  if (( pf > 0 )); then echo retrying; else echo exited; fi
+  last=$(printf '%s\n' "$log" | grep 'port forwarding' | tail -n 1 || true)
+  if [[ -z "$last" ]]; then
+    echo exited
+  elif [[ "$last" == *'ERROR [vpn] '* ]]; then
+    echo exited
+  else
+    echo retrying
+  fi
+}
+
+# Inode of a running container's network namespace, e.g. "net:[4026535989]".
+# Fails if the container is not running: the API check reports that case.
+netns_of() {
+  local pid
+  pid=$(docker inspect -f '{{.State.Pid}}' "$1" 2>/dev/null) || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  readlink "/proc/$pid/ns/net" 2>/dev/null
 }
 
 # Current forwarded port, or empty if it cannot be read.
@@ -303,6 +353,7 @@ write_strikes() {
 # persist first. Echoes "<action> <threshold>", or nothing for page-only reasons.
 remedy_for() {
   case $1 in
+    orphaned)      echo "client 1" ;;
     stranded)      echo "client 3" ;;
     port_mismatch) echo "sync 3" ;;
     pf_exited)     echo "full 1" ;;
@@ -355,7 +406,7 @@ maybe_remediate() {
 # Return: 0 healthy, 1 hard failure, 2 degraded.
 check() {
   local ctl vpn_ip host_ip org pf_port qbit_port qbit_xfer qbit_ip
-  local waited note="" deadline started
+  local waited note="" deadline started gl_ns ns ctr
 
   # 1. gluetun's control server. If this is unreachable the container is gone or
   #    wedged, and nothing below can be trusted.
@@ -410,7 +461,20 @@ check() {
     return 1
   fi
 
-  # 5. qBittorrent alive behind the tunnel. Unauthenticated because it comes from
+  # 5. Both dependents still share gluetun's CURRENT netns. A gluetun-only restart
+  #    leaves them in the old one, which has only `lo`: the client is cut off, and
+  #    the API check below would blame the client. See the header.
+  if gl_ns=$(netns_of "$GLUETUN_CTR"); then
+    for ctr in "$QBIT_CTR" "$SYNC_CTR"; do
+      ns=$(netns_of "$ctr") || continue
+      if [[ "$ns" != "$gl_ns" ]]; then
+        echo "orphaned|$ctr is in a dead network namespace ($ns; gluetun is in $gl_ns) — gluetun was restarted without it; restart qbittorrent and qbit-port-sync (torrenting is stopped)"
+        return 1
+      fi
+    done
+  fi
+
+  # 6. qBittorrent alive behind the tunnel. Unauthenticated because it comes from
   #    localhost inside the shared netns (qBit's localhost-bypass must stay ON).
   if ! qbit_port=$(in_netns wget -qO- --timeout=10 \
                      http://127.0.0.1:8080/api/v2/app/preferences \
@@ -428,7 +492,7 @@ check() {
 
   # --- Hard checks all passed. Everything below is soft. --------------------
 
-  # 6. Is qBittorrent bound to the CURRENT tunnel generation? See the header note.
+  # 7. Is qBittorrent bound to the CURRENT tunnel generation? See the header note.
   #    Empty is not stale: a freshly started client has had no peer feedback yet.
   qbit_ip=${QBIT_IP_OVERRIDE:-$(printf '%s' "$qbit_xfer" | jq -r '.last_external_address_v4 // empty')}
   if [[ -n "$qbit_ip" && "$qbit_ip" != "$vpn_ip" ]]; then
@@ -449,7 +513,7 @@ check() {
     # opposite responses — one wants patience, the other wants a restart tonight.
     case "$(pf_service_state)" in
       exited)
-        echo "pf_exited|gluetun's port-forwarding service has EXITED — forwarded port 0 with no [port forwarding] log activity for ${PF_QUIET_SECS}s. This does not self-heal: restart gluetun, then qbittorrent and qbit-port-sync. (egress ok via $vpn_ip, qBit holding stale port $qbit_port)"
+        echo "pf_exited|gluetun's port-forwarding service has EXITED — forwarded port 0, and its last log line is a fatal ERROR [vpn] or it has been silent for ${PF_QUIET_SECS}s. This does not self-heal: restart gluetun, then qbittorrent and qbit-port-sync. (egress ok via $vpn_ip, qBit holding stale port $qbit_port)"
         return 1
         ;;
       retrying)
@@ -510,6 +574,9 @@ main() {
   code=${detail%%|*}
   detail=${detail#*|}
   count=$(bump_reason "$code" "$rc")
+  # For servarr-vpn-remediate.sh's verify step. Its pass/fail depends on the code,
+  # not the wording of the message.
+  (( DRY_RUN )) && echo "servarr-vpn-health: [dry-run] reason=$code" >&2
 
   case $rc in
     0)

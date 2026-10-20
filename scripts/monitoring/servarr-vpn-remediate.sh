@@ -14,18 +14,35 @@
 #   sync    restart qbit-port-sync → wait until gluetun's forwarded port == qBit's
 #           listen_port
 #   client  restart qbittorrent → wait for its API → then `sync`. For a client
-#           stranded on a torn-down tunnel: its sockets died with the old tun0
-#           and never re-bind.
-#   full    restart gluetun → wait for healthy + egress + a non-zero forwarded port
-#           → then `client`. For port forwarding that has EXITED. Order matters: a
-#           gluetun restart strands EVERY container in its netns (configs/ciri/
-#           servarr/README.md, 2026-09-09), so both dependents always follow.
+#           stranded on a torn-down tunnel (its sockets died with the old tun0 and
+#           never re-bind), or orphaned in the netns of a gluetun that restarted.
+#   full    restart gluetun → wait for healthy + egress → then `client`, ALWAYS.
+#           For port forwarding that has EXITED. A gluetun restart orphans EVERY
+#           container in its netns (configs/ciri/servarr/README.md, 2026-09-09),
+#           so once gluetun has been restarted, the dependents are restarted too,
+#           even if the tunnel never came up. A failed wait does not skip that.
 #   Every wait polls real state against a wall-clock deadline instead of sleeping
-#   a fixed time. A step that times out fails the ladder.
+#   a fixed time. A step that times out fails the ladder, except where noted.
 #
-#   Then verify with `servarr-vpn-health.sh --dry-run`. Its verdict must be "ok:",
-#   not just exit 0: below MAX_STRIKES a degraded run also exits 0. If sync or
-#   client fails, escalate once to full. If full fails, stop and say so.
+#   A forwarded port of 0 is NOT a ladder failure. It means Proton's NAT-PMP
+#   gateway is refusing, which none of these restarts can fix, and restarting
+#   gluetun only makes it worse: PF's first attempt after a restart is the one
+#   gluetun never retries. qbit-port-sync applies the port whenever it arrives.
+#
+#   Then verify with `servarr-vpn-health.sh --dry-run`, by its reason code, not
+#   its exit status (below MAX_STRIKES a degraded run also exits 0). `ok` passes.
+#   So does `pf_zero` (port 0, gluetun still retrying): the ladder fixed what it
+#   could, and the health monitor's own strike counter covers the rest. If sync
+#   or client fails, escalate once to full. If full fails, stop and say so.
+#
+# 2026-10-20: why the rules above are what they are
+#   12:57 stranded → 13:03 `client` restarted qbittorrent fine, but Proton was
+#   refusing NAT-PMP, so the forwarded port was 0 and "port == listen_port" timed
+#   out. That counted as a client failure and escalated to `full`. Then gluetun's
+#   fresh PF failed its first attempt and exited, the "non-zero forwarded port" wait
+#   timed out, and `full` returned BEFORE restarting the client. That left
+#   qbittorrent and port-sync orphaned in the dead netns: a 5 h total outage
+#   (13:05 → 18:14) made by the fix, from a fault that only slowed torrents.
 #
 # Guard rails
 #   - Media mounts first. qBittorrent's binds are create_host_path:false, so
@@ -74,6 +91,8 @@ readonly LOCK_FILE="$STATE_DIR/remediate.lock"
 readonly MOUNTS=(/mnt/media/downloads /mnt/torrents/incomplete)
 DRY_RUN=0
 STEPS=()
+# Set by verify when the fix held but the forwarded port is still 0 (Proton).
+PF_PENDING=0
 
 log() {
   echo "servarr-vpn-remediate: $*" >&2
@@ -152,14 +171,13 @@ qbit_api_up() {
   [[ -n "$(in_netns wget -qO- --timeout=5 http://127.0.0.1:8080/api/v2/app/version)" ]]
 }
 
-gluetun_ready() {
-  local health ip port
+# Tunnel only. The forwarded port is deliberately not part of this: see the header.
+tunnel_ready() {
+  local health ip
   health=$(docker inspect -f '{{.State.Health.Status}}' "$GLUETUN_CTR" 2>/dev/null) || return 1
   [[ "$health" == healthy ]] || return 1
   ip=$(in_netns wget -qO- --timeout=5 http://127.0.0.1:8000/v1/publicip/ip | jq -r '.public_ip // empty' 2>/dev/null) || return 1
-  [[ -n "$ip" ]] || return 1
-  port=$(pf_port)
-  [[ "$port" =~ ^[0-9]+$ ]] && (( port != 0 ))
+  [[ -n "$ip" ]]
 }
 
 ports_match() {
@@ -173,10 +191,19 @@ ports_match() {
 # --- the ladder ----------------------------------------------------------------
 
 # The port-sync sidecar polls every 30s and writes on its first poll after a
-# restart, so 90s is three polls of margin.
+# restart, so 90s is three polls of margin. A port still 0 at the deadline is
+# Proton's gateway, not the sidecar, so it does not fail the step (see the header).
 do_sync() {
+  local pf
   restart "$SYNC_CTR"
-  wait_for "forwarded port == qBit listen_port" 90 ports_match
+  wait_for "forwarded port == qBit listen_port" 90 ports_match && return 0
+  (( DRY_RUN )) && return 0
+  pf=$(pf_port)
+  if [[ "$pf" == 0 ]]; then
+    step "  forwarded port is still 0 (Proton NAT-PMP), not a sync fault; port-sync applies it when it arrives"
+    return 0
+  fi
+  return 1
 }
 
 do_client() {
@@ -185,29 +212,44 @@ do_client() {
   do_sync
 }
 
-# 180s: a WireGuard reconnect plus Proton's NAT-PMP, which has been measured
-# refusing for 11-80s at a time (2026-08-26).
+# 180s for a WireGuard reconnect. On 2026-10-20 gluetun went through three
+# servers that failed its healthcheck and was up in 25s.
 do_full() {
+  local rc=0
   restart "$GLUETUN_CTR"
-  wait_for "gluetun healthy with egress and a forwarded port" 180 gluetun_ready || return 1
-  do_client
+  if ! wait_for "gluetun healthy with egress" 180 tunnel_ready; then
+    rc=1
+    step "  restarting qbittorrent and qbit-port-sync anyway: they are in gluetun's old netns now"
+  fi
+  do_client || rc=1
+  return "$rc"
 }
 
-# Two attempts, 20s apart: a fresh client can land in a Proton NAT-PMP dip, and
-# one unlucky sample should not escalate to a gluetun restart.
+# Two attempts, 20s apart: one unlucky sample should not escalate to a gluetun
+# restart. Pass/fail is the health script's reason code (see the header).
 verify() {
-  local out i
+  local out reason verdict i
   if (( DRY_RUN )); then
     log "[dry-run] would verify with $HEALTH_SCRIPT --dry-run"
     return 0
   fi
   for i in 1 2; do
-    out=$("$HEALTH_SCRIPT" --dry-run 2>/dev/null || true)
-    if [[ "$out" == "servarr-vpn-health: ok:"* ]]; then
-      step "verified: ${out#servarr-vpn-health: }"
-      return 0
-    fi
-    step "verify $i/2 not ok: ${out#servarr-vpn-health: }"
+    out=$("$HEALTH_SCRIPT" --dry-run 2>&1 || true)
+    reason=$(sed -n 's/^servarr-vpn-health: \[dry-run\] reason=//p' <<< "$out" | tail -n 1)
+    verdict=$(grep -v '^servarr-vpn-health: \[dry-run\]' <<< "$out" | tail -n 1)
+    verdict=${verdict#servarr-vpn-health: }
+    case $reason in
+      ok)
+        step "verified: $verdict"
+        return 0
+        ;;
+      pf_zero)
+        PF_PENDING=1
+        step "verified, port forwarding still waiting on Proton: $verdict"
+        return 0
+        ;;
+    esac
+    step "verify $i/2 not ok (${reason:-no reason}): $verdict"
     (( i == 2 )) || sleep 20
   done
   return 1
@@ -310,6 +352,7 @@ main() {
     reset_health_counters
     title="servarr auto-fixed ($action)"
     [[ "$result" == fixed-by-full ]] && title="servarr auto-fixed ($action → full)"
+    (( PF_PENDING )) && title="$title, port forwarding pending"
     priority=default
   fi
   notify "$title" "$(printf '%s\n' "${STEPS[@]:-no steps (dry run)}")" "$priority"
