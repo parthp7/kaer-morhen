@@ -380,12 +380,13 @@ and prove nothing — qBittorrent lives in gluetun's namespace, so that is the o
 place the question can be asked honestly.
 
 **Hard** (red at once): egress == ciri's public IP; the `tun0` interface missing
-from the netns; no egress at all; gluetun control server unreachable; qBittorrent
-API unreachable; port forwarding EXITED. **Soft** (green, reason in the heartbeat
+from the netns; no egress at all; gluetun control server unreachable; qbittorrent
+or qbit-port-sync *orphaned* (its netns inode ≠ gluetun's); qBittorrent API
+unreachable; port forwarding EXITED. **Soft** (green, reason in the heartbeat
 log): qBit's external address ≠ the tunnel's (a *stranded* client); forwarded port
 `0`; forwarded port ≠ qBit's `listen_port`; or the egress comparison being
 unverifiable — all escalate to red after `MAX_STRIKES` (default 10 at the 3-min
-timer, ≈30 min) consecutive runs. Three of these are **auto-fixed** — see
+timer, ≈30 min) consecutive runs. Four of these are **auto-fixed** — see
 [Auto-fix](#auto-fix-servarr-vpn-remediatesh-added-2026-10-20) below.
 
 **The exit IP's owner is deliberately NOT a check.** The first version hard-failed
@@ -473,16 +474,26 @@ its own unit, so it can never delay a heartbeat.
 
 | Verdict | Triggers after | Action | What it restarts, in order |
 |---|---|---|---|
-| `stranded` | 3 consecutive runs (~9 min) | `client` | qbittorrent → wait for API → qbit-port-sync → wait for port match |
+| `orphaned` | first run | `client` | qbittorrent → wait for API → qbit-port-sync → wait for port match |
+| `stranded` | 3 consecutive runs (~9 min) | `client` | same as above |
 | port ≠ `listen_port` | 3 consecutive runs | `sync` | qbit-port-sync → wait for port match |
-| PF **EXITED** | first run | `full` | gluetun → wait healthy + egress + port ≠ 0 → then `client` |
+| PF **EXITED** | first run | `full` | gluetun → wait healthy + egress → then `client`, **always** |
 | leak, no egress, `tun0` missing, API/ctl unreachable, PF 0 retrying, unverifiable | never | — | page only |
 
 - **Each wait polls real state** against a wall-clock deadline (90 s, 180 s for
   gluetun), not a fixed sleep. Then it **verifies** with
-  `servarr-vpn-health.sh --dry-run`, which must say `ok:`. Exit 0 alone is not
-  enough, because a degraded run below `MAX_STRIKES` also exits 0. If `sync` or
-  `client` fails, it escalates once to `full`.
+  `servarr-vpn-health.sh --dry-run`, by the `[dry-run] reason=<code>` line it
+  prints. `ok` passes. `pf_zero` (port 0 while gluetun is still retrying) also
+  passes, and the ntfy says "port forwarding pending". Exit 0 alone is not enough,
+  because a degraded run below `MAX_STRIKES` also exits 0. If `sync` or `client`
+  fails, it escalates once to `full`.
+- **A forwarded port of 0 never fails a step.** It is Proton's NAT-PMP gateway
+  refusing. No restart fixes that, and a gluetun restart makes it worse, because
+  gluetun never retries PF's first attempt after a restart. qbit-port-sync
+  applies the port whenever it arrives.
+- **Once gluetun is restarted, the client is always restarted after it**, even
+  if the tunnel wait times out: by then the dependents are in the old, dead netns.
+  See the 2026-10-20 incident below.
 - **Per-reason counter** (`reason` + `reason.count` in the state dir) next to the
   shared strike counter. A hard fail between two stranded runs neither resets nor
   bumps it, because gluetun's reconnects (`no egress`) interleaved with the
@@ -499,6 +510,27 @@ its own unit, so it can never delay a heartbeat.
   before the monitor escalates, so Kuma may never go red. The ntfy is the only
   sign it happened.
 - `REMEDIATE=0` in the health script's environment disables the trigger.
+
+**Incident 2026-10-20: the auto-fix caused a 5 h outage.** It was the first
+real trigger, 19 h after deploy. All times IST:
+
+| Time | What happened |
+|---|---|
+| 12:51–12:55 | gluetun reconnected on its own to a new exit. PF granted a port. |
+| 12:57–13:03 | `stranded` for 3 runs → `remediate@client`. Correct so far. |
+| 13:00, 13:03 | Proton's NAT-PMP started refusing, and the forwarded port went to 0. |
+| 13:03–13:04 | qbittorrent restarted and its API was back in 4 s. Then "port == listen_port" timed out, because the port was 0. Counted as a client failure → escalated to `full`. |
+| 13:05:00 | gluetun restarted. qbittorrent and port-sync were left in the old netns, which has only `lo`. |
+| 13:05:26 | The fresh PF failed its first attempt (`ERROR [vpn] …`) and exited for good. |
+| 13:08:03 | The wait for "healthy + egress + **port ≠ 0**" timed out, and `full` returned **before** restarting the client. Result: FAILED ntfy. |
+| 13:12 → 18:14 | Every run said `qBittorrent API unreachable`, which is page-only, so nothing retried. A manual gluetun → qbittorrent + port-sync restart fixed it. |
+
+There was no leak: the orphaned netns has no route out. The fixes (2026-10-21)
+are the three rules above: port 0 is not a failure, verify by reason code, and
+`full` always finishes with `client`. The health check also gained the
+`orphaned` verdict, and it now detects an exited PF from its fatal log line at
+once, where before it took 600 s of silence. Before that change the fatal line
+counted as activity, because it contains "port forwarding".
 
 Tests:
 

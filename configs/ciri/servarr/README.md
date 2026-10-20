@@ -358,7 +358,8 @@ hardlink confirmed (not a copy). Then Jellyfin → the library → **Scan Librar
   Details in [uptime-kuma.md](../../../docs/uptime-kuma.md#the-servarr-vpn-push-monitor-added-2026-07-29--and-what-it-actually-proves).
   It is an assurance check sampling every 3 minutes, **not** a replacement for the
   kill-switch — the `network_mode: "service:gluetun"` binding is still the actual protection.
-  Since 2026-10-20 it also **auto-fixes** a stranded qBittorrent, a stuck port-sync and an
+  Since 2026-10-20 it also **auto-fixes** a stranded qBittorrent, an orphaned one (since
+  10-21), a stuck port-sync and an
   exited PF service with an ordered restart ladder
   ([`servarr-vpn-remediate.sh`](../../../scripts/monitoring/servarr-vpn-remediate.sh)),
   and sends an ntfy each time it does.
@@ -522,7 +523,7 @@ renamed, which is cosmetic.
   ```
   qBittorrent was left listening on the stale `53196` — inbound peers still could not reach
   it, the very thing the restart was meant to fix. The divergence was surfaced by
-  `servarr-vpn-health.sh`'s soft check 8 (forwarded port != qBit listen_port), which is the
+  `servarr-vpn-health.sh`'s soft check 9 (forwarded port != qBit listen_port), which is the
   only check that looks at both numbers.
   The rule: **restart gluetun ⇒ restart qBittorrent *and* qbit-port-sync.** The health
   script's own failure message said this correctly all along. Since 2026-10-20 the rule is
