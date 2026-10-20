@@ -44,8 +44,8 @@ sessions. Ample for home streaming.
 | Host binding | `vfio-pci` via `/etc/modprobe.d/vfio.conf` (ids + `disable_vga=1` + **`disable_idle_d3=1`**, softdeps beat `nouveau`/`snd_hda_intel` to the device); `nouveau` blacklisted; vfio modules in `/etc/modules`. `disable_idle_d3=1` is **not optional** — see the D3cold host-hang gotcha |
 | Kernel cmdline | **unchanged** (`quiet` only) — IOMMU is on by default; `iommu=pt` evaluated and skipped as unneeded |
 | VM attach | `hostpci0: 0000:01:00,pcie=1` — no `.0` suffix = all functions travel together (required: they share IOMMU group 2 and the audio function enables the slot-level bus reset) |
-| Guest driver | `nvidia-driver-580-server` 580.159.03 (Ubuntu 26.04 archive, `ubuntu-drivers` recommendation) |
-| Container runtime | `nvidia-container-toolkit` 1.19.1 from NVIDIA's apt repo (not in Ubuntu's); `nvidia` runtime registered in `/etc/docker/daemon.json` via `nvidia-ctk`, default runtime stays `runc` — containers opt in with `gpus` reservations |
+| Guest driver | `nvidia-driver-580-server` (Ubuntu 26.04 archive, `ubuntu-drivers` recommendation) — **580.173.02** as of 2026-09-09; installed at 580.159.03 |
+| Container runtime | `nvidia-container-toolkit` from NVIDIA's apt repo (not in Ubuntu's) — **1.20.0** as of 2026-09-09; installed at 1.19.1. `nvidia` runtime registered in `/etc/docker/daemon.json` via `nvidia-ctk`, default runtime stays `runc` — containers opt in with `gpus` reservations. Both versions ride ciri's apt upgrades, so [maintenance.md](maintenance.md)'s registry is the authority, not this table |
 | Memory | no change — `balloon: 0` was already set on the VM; VFIO pins guest RAM, which the 8 G fixed sizing anticipated ([docker-vm.md](docker-vm.md)) |
 | Idle cost | ~3 W / 46 °C at P8 with no processes (verified) — negligible thermal load for the laptop chassis |
 
@@ -325,7 +325,7 @@ journalctl -b 0 | grep -cE 'PGON|PG00\._ON|not ready'        # 0
 
 # ciri (ssh lab-ciri)
 nvidia-smi                             # GTX 1060, P8, ~3 W idle
-dpkg -l nvidia-container-toolkit | grep ^ii          # 1.19.1-1
+dpkg -l nvidia-container-toolkit | grep ^ii          # 1.20.0-1 (was 1.19.1-1)
 docker info --format '{{json .Runtimes}}' | grep -o nvidia   # runtime present
 docker info --format '{{.DefaultRuntime}}'           # runc (opt-in per service)
 cat /etc/docker/daemon.json            # data-root + log-opts + runtimes.nvidia

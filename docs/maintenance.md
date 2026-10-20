@@ -366,6 +366,7 @@ cannot name a version it never recorded.
 | 150 `ciri` | Docker Engine | **29.7.2** | docs said 29.6.1 — drift corrected |
 | 150 `ciri` | Docker Compose | **v5.5.0** | docs said v5.3.1 — drift corrected |
 | 150 `ciri` | nvidia-container-toolkit | **1.20.0** | docs said 1.19.1 — drift corrected |
+| 150 `ciri` | nvidia-driver-580-server | **580.173.02** | was 580.159.03 at install; rides ciri's apt upgrades. Added to the registry 2026-09-09 — it had drifted unrecorded ([gpu-passthrough.md](gpu-passthrough.md)) |
 | 150 `ciri` | `/data` disk (scsi1) | **128 G** | grown from 64 G on 2026-08-24 (`qm resize` + online `resize2fs`, no downtime); **67 G free** after the upgrade pass and the class-B prune |
 
 ## Container images (verified 2026-08-24, post-upgrade pass)

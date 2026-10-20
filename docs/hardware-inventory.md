@@ -8,7 +8,8 @@ Real IPs/serials/UUIDs referenced below are placeholders (`<NAME>`) resolved in 
 git-ignored `secrets.local.yaml` at the repo root, per `CLAUDE.md`.
 
 Last verified against live hosts: 2026-07-08 (`hostnamectl`, `lscpu`, `lsblk`, `lspci` on
-each node over SSH).
+each node over SSH). Software versions re-verified 2026-09-09 (`pveversion`, `uname -r`)
+— hardware itself not re-scanned.
 
 ## Cluster summary
 
@@ -24,7 +25,7 @@ each node over SSH).
 | Primary NIC | Killer E2400 GbE | Realtek RTL8111/8168/8211/8411 GbE |
 | Wireless | Intel CNVi WiFi (Cannon Lake PCH) | Realtek RTL8723DE 802.11b/g/n |
 | Boot mode | UEFI | UEFI |
-| Proxmox VE | 9.2.4 (kernel 7.0.14-4-pve, Debian 13 trixie) | 9.2.4 (kernel 7.0.14-4-pve, Debian 13 trixie) |
+| Proxmox VE | 9.2.11 (kernel 7.0.14-12-pve, Debian 13 trixie) | 9.2.11 (kernel 7.0.14-12-pve, Debian 13 trixie) |
 | Management IP | `<GERALT_IP>` (vmbr0) | `<YENNEFER_IP>` (vmbr0) |
 
 ## Node: geralt
@@ -346,8 +347,10 @@ At ~2 W, a 4000 mAh (≈14.8 Wh) pack yields roughly **6–8 h** of switch uptim
 
 ## Proxmox-specific notes
 
-- Both nodes run Proxmox VE 9.2.4 on Debian 13 (trixie), kernel 7.0.14-4-pve, and boot
-  UEFI.
+- Both nodes run Proxmox VE 9.2.11 on Debian 13 (trixie), kernel 7.0.14-12-pve, and boot
+  UEFI. (Built on 9.2.4 / 7.0.14-4-pve; both converged on the 2026-08-24 maintenance
+  pass, with 7.0.14-4-pve-signed retained as the rollback kernel. Software versions
+  move — [maintenance.md](maintenance.md)'s registry is the authority, not this file.)
 - Neither node has out-of-band management (no IPMI/BMC/iDRAC) — being consumer laptops,
   remote power-cycling depends on OS-level tools (WoL if enabled) or physical access.
   Keep this in mind for outage runbooks.
