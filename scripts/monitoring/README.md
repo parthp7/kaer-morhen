@@ -10,11 +10,20 @@ reallocated/pending sectors, error-log growth) to the shared ntfy topic.
 - **Deployed to**: `/usr/local/bin/smartd-ntfy.sh` on **both** nodes (0755).
 - **Wired via** `/etc/smartd.conf`:
   `DEVICESCAN -a -n standby,q -m <nomailer> -M exec /usr/local/bin/smartd-ntfy.sh`
+- **geralt carries a second, explicit line** for the USB media disk, above the
+  `DEVICESCAN` one:
+  `/dev/disk/by-id/usb-Seagate_BUP_Slim_BK_<MEDIA_USB_SERIAL>-0:0 -d sat -a -n standby,q -m <nomailer> -M exec /usr/local/bin/smartd-ntfy.sh`
+  — `DEVICESCAN` enumerates that enclosure as SCSI and never tries `-d sat`, so
+  without the line the disk is scanned but its ATA attributes are not. Address
+  it **by-id**: the kernel name (`sdb`→`sdc`→`sdd`) is exactly what changes
+  across a bus drop. Depends on `usb-storage.quirks=0bc2:ab24:u`
+  ([hardware-inventory.md](../../docs/hardware-inventory.md)).
 - **Reads** the topic from `/etc/ntfy.topic` (mode 600, git-ignored world —
   the real topic lives only on the nodes and in `secrets.local.yaml`).
-- **Test** the full chain: temporarily append ` -M test` to the DEVICESCAN
-  line, `systemctl restart smartmontools`, confirm the phone notification,
-  revert.
+- **Test** the full chain: temporarily append ` -M test` to a line,
+  `systemctl restart smartmontools`, confirm the phone notification, revert.
+  On geralt, test the **USB disk's** line rather than `DEVICESCAN` — that is
+  the one whose device type can silently stop working.
 
 ## media-mount-health.sh
 

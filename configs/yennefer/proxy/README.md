@@ -1,10 +1,15 @@
 # proxy — Caddy reverse proxy (LXC 202 on yennefer)
 
-**Status: partially built 2026-08-12.** LXC 202 is running Caddy with a
-production wildcard cert for `*.kaermorhen.fyi`, smoke-tested end-to-end on
-`memos.kaermorhen.fyi`. The `Caddyfile` here is the full target config — the
-live file currently serves memos only. Design, rationale and full runbook:
+**Status: built.** Started 2026-08-12 (wildcard cert, `memos.kaermorhen.fyi`
+only); all routes are live now. Verified 2026-09-09: Caddy 2.11.4 active in
+LXC 202, **27 routes** serving, and this `Caddyfile` matches the live one
+route-for-route. Design, rationale and full runbook:
 [docs/proposals/003-reverse-proxy.md](../../../docs/proposals/003-reverse-proxy.md).
+
+> **Mirror note (2026-09-09).** The live file and this copy agree on every
+> route and on block order; they differ only in two section-header comments,
+> which are richer here. Push this file up (see "Common operations") the next
+> time you touch the proxy, so a future `scp` back is a clean no-op.
 
 Gives every web service a name instead of a port —
 `https://jellyfin.kaermorhen.fyi` instead of `<LAN_PREFIX>.150:8096` —

@@ -8,7 +8,8 @@ Real IPs/serials/UUIDs referenced below are placeholders (`<NAME>`) resolved in 
 git-ignored `secrets.local.yaml` at the repo root, per `CLAUDE.md`.
 
 Last verified against live hosts: 2026-07-08 (`hostnamectl`, `lscpu`, `lsblk`, `lspci` on
-each node over SSH).
+each node over SSH). Software versions re-verified 2026-09-09 (`pveversion`, `uname -r`)
+— hardware itself not re-scanned.
 
 ## Cluster summary
 
@@ -24,7 +25,7 @@ each node over SSH).
 | Primary NIC | Killer E2400 GbE | Realtek RTL8111/8168/8211/8411 GbE |
 | Wireless | Intel CNVi WiFi (Cannon Lake PCH) | Realtek RTL8723DE 802.11b/g/n |
 | Boot mode | UEFI | UEFI |
-| Proxmox VE | 9.2.4 (kernel 7.0.14-4-pve, Debian 13 trixie) | 9.2.4 (kernel 7.0.14-4-pve, Debian 13 trixie) |
+| Proxmox VE | 9.2.11 (kernel 7.0.14-12-pve, Debian 13 trixie) | 9.2.11 (kernel 7.0.14-12-pve, Debian 13 trixie) |
 | Management IP | `<GERALT_IP>` (vmbr0) | `<YENNEFER_IP>` (vmbr0) |
 
 ## Node: geralt
@@ -206,9 +207,21 @@ targeted fix rather than new hardware.
   generic `-d scsi` works (`SMART Health Status: OK`, but
   `Error Counter logging not supported` and no self-test support). This is
   overridable — see the runbook in [storage.md](storage.md).
-- **Consequence**: `smartd` (`DEVICESCAN`, both nodes) silently monitors nothing
-  on this disk. There are **no reallocated/pending-sector counters** for it, so
-  its media health is genuinely unobserved.
+- **Consequence (historical — resolved, see above)**: while `US_FL_NO_ATA_1X`
+  applied, `smartd` silently monitored nothing on this disk and there were **no
+  reallocated/pending-sector counters** for it. Since the quirk, geralt's
+  `/etc/smartd.conf` carries an **explicit device line** for it — `DEVICESCAN`
+  alone is not enough, because it enumerates the disk as SCSI and never tries
+  `-d sat`:
+
+  ```
+  /dev/disk/by-id/usb-Seagate_BUP_Slim_BK_<MEDIA_USB_SERIAL>-0:0 -d sat -a -n standby,q -m <nomailer> -M exec /usr/local/bin/smartd-ntfy.sh
+  ```
+
+  By-id, never `/dev/sdX` — the kernel name is exactly what changes across a bus
+  drop ([storage.md](storage.md)). geralt only; yennefer has no USB disk and
+  keeps the bare `DEVICESCAN` line
+  ([scripts/monitoring/README.md](../scripts/monitoring/README.md)).
 - **No per-device UAS quirk**: `0bc2:ab24` is absent from the kernel's
   `unusual_uas.h` (only `0bc2:331a` "Expansion Desk" is listed), so `uas` always
   binds and nothing is auto-mitigated.
@@ -399,8 +412,10 @@ mistake to make here.
 
 ## Proxmox-specific notes
 
-- Both nodes run Proxmox VE 9.2.4 on Debian 13 (trixie), kernel 7.0.14-4-pve, and boot
-  UEFI.
+- Both nodes run Proxmox VE 9.2.11 on Debian 13 (trixie), kernel 7.0.14-12-pve, and boot
+  UEFI. (Built on 9.2.4 / 7.0.14-4-pve; both converged on the 2026-08-24 maintenance
+  pass, with 7.0.14-4-pve-signed retained as the rollback kernel. Software versions
+  move — [maintenance.md](maintenance.md)'s registry is the authority, not this file.)
 - Neither node has out-of-band management (no IPMI/BMC/iDRAC) — being consumer laptops,
   remote power-cycling depends on OS-level tools (WoL if enabled) or physical access.
   Keep this in mind for outage runbooks.
