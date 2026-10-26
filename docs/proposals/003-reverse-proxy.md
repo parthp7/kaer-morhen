@@ -667,9 +667,9 @@ only so the option isn't re-litigated later.
   `aborting with incomplete response` in the journal. Some of that is normal
   client seeking; 170 is not. Unrelated to the published-URI issue and
   untouched — no diagnosis attempted yet.
-- **Vaultwarden**, listed as an LXC candidate in
-  [001 §4](001-initial-infrastructure-plan.md), would be the first service
-  *built* behind the proxy rather than retrofitted. Worth doing after this.
+- **Vaultwarden — done 2026-10-26** as a ciri compose stack (not an LXC),
+  the first service *built* behind the proxy: `vault.kaermorhen.fyi`. See
+  [proposal 012](012-password-manager.md).
 - **Authentication** (Authelia/Tinyauth in front of the `*arr` stack) is
   deliberately out of scope. The tailnet is the current perimeter; adding SSO
   is a separate proposal once the proxy exists.

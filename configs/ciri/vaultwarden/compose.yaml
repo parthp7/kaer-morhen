@@ -1,0 +1,17 @@
+services:
+  vaultwarden:
+    image: vaultwarden/server:1.37.4
+    container_name: vaultwarden
+    restart: unless-stopped
+    ports:
+      - "8222:80"
+    volumes:
+      - ./data:/data
+    environment:
+      DOMAIN: https://vault.kaermorhen.fyi
+      SIGNUPS_ALLOWED: "false"
+      INVITATIONS_ALLOWED: "false"
+      PASSWORD_HINTS_ALLOWED: "false"
+      SHOW_PASSWORD_HINT: "false"
+      IP_HEADER: X-Forwarded-For
+      TZ: Asia/Kolkata
