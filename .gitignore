@@ -19,5 +19,10 @@ configs/ciri/homepage/olivetin/ssh/*
 # The redacted fixtures/hdfc-sms.txt stays tracked.
 configs/ciri/n8n/parser/fixtures/private/
 
+# vaultwarden stack (proposal 012): vault exports belong offline, never in git —
+# even the encrypted kind, which is offline-guessable against the master password.
+bitwarden_export_*
+bitwarden_encrypted_export_*
+
 # Claude Code local state: session worktrees and per-machine settings.
 .claude/

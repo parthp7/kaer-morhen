@@ -32,6 +32,13 @@
 		}
 	}
 
+	# ---- Password manager --------------------------------------------------
+	@vault host vault.kaermorhen.fyi
+	handle @vault {
+		# Vaultwarden. WebSocket live sync rides the same port.
+		reverse_proxy <LAN_PREFIX>.150:8222
+	}
+
 	# ---- Media -------------------------------------------------------------
 
 	@jellyfin host jellyfin.kaermorhen.fyi
