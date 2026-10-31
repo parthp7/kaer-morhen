@@ -9,7 +9,8 @@ component is within limits. Two things push the CPU temperature up:
 1. **A software policy** that keeps the CPU at maximum boost. The PVE kernel
    defaults `intel_pstate` to the `performance` governor with EPP
    `performance`, so every short burst jumps straight to 4.1 GHz. **Changed
-   2026-10-21** (§5): about 10 °C lower at idle within minutes.
+   2026-10-21** (§5). After 11 days, light workloads run about 7 °C cooler,
+   but heavy CPU-plus-GPU bursts still throttle as often as before (§5a).
 2. **Ageing thermal paste.** It has been repasted 2–3 times; the last was
    about 2–3 years ago, before geralt became a 24/7 server. Small rises in load cause steep
    temperature rises, the CPU hits its 100 °C limit at about 5 % average
@@ -249,6 +250,61 @@ cat /sys/devices/system/cpu/intel_pstate/max_perf_pct
 **Rollback:** `systemctl disable --now cpu-power-policy.service`, then write
 `performance` to `scaling_governor` and `100` to `max_perf_pct` (or reboot).
 
+## 5a. Result after 11 days (checked 2026-11-01)
+
+**Verdict.** Light workloads now run **about 7 °C cooler**. Heavy combined
+CPU and GPU bursts **still hit the limit**: daily throttling is unchanged,
+and the 85 °C alert fired once more. The policy fixed the everyday
+temperature; the cooler's capacity under load is still the repaste's job
+(§6).
+
+Beszel 8-hour buckets, matched as in §1. "Before" is 10-02 → 10-20
+(57 buckets), "after" is 10-21 → 10-31 (33 buckets). The 2-hour buckets for
+10-24 → 10-31 agree (package mean 54.8 °C).
+
+| | Before | After | Change |
+|---|---|---|---|
+| CPU package, mean / median | 63.5 / 63.4 °C | **55.2 / 54.9 °C** | **−8.3 °C** |
+| CPU package, range | 59.2–70.7 °C | 53.0–62.5 °C | max −8 °C |
+| `acpitz` | 64.6 °C | 56.8 °C | −7.8 °C |
+| Average CPU use | 4.8 % | 9.3 % | see below |
+| Chipset (`pch_cannonlake`) | 60.0 °C | 62.9 °C | +2.9 °C |
+| GTX 1060 (idle, ~4.5 W) | 47.7 °C | 51.0 °C | +3.3 °C |
+| NVMe composite (Kingston / WD) | 53.4 / 55.0 °C | 53.8 / 54.6 °C | no change |
+| yennefer CPU package (rough room-temperature proxy) | 43.8 °C | 42.8 °C | −1.0 °C |
+
+- **About 7 of the 8 °C is the change.** yennefer cooled by only ~1 °C over
+  the same period, so the room was only slightly cooler.
+- **CPU use doubled, not the work.** At 800–900 MHz the same work keeps the
+  cores busy for a larger share of each second. The drop holds at every load
+  level: 8–10 % CPU now averages 54.7 °C, where 4–6 % used to average
+  63.7 °C.
+- **Chipset and GPU are ~3 °C warmer, probably from slower fans.** The CPU
+  now sits below the curve's 64 °C step (§4), so the fan holds 47 % instead
+  of 54 % and moves less air over the shared heat pipe and the chipset. This
+  is an inference, and both are well within limits.
+- **One more alert:** 85 °C from 10-25 18:07 to 18:29 UTC (23:37–23:59 IST).
+  In that 2-hour bucket geralt's CPU use peaked at 53 % while ciri's GPU was
+  working (~15 W average, ~9 % utilisation), likely a local-AI burst. Same
+  pattern as the 10-20 alert: CPU and GPU loaded together on the shared heat
+  pipe.
+- **Throttling per day is unchanged:**
+
+  | | Before (57 d 8 h to 10-21 01:16 IST) | After (10.96 d to 11-01 00:20 IST) |
+  |---|---|---|
+  | Package throttle events | ~11,500/day | ~11,740/day (+128,653) |
+  | Time at the 100 °C limit | ~84 s/day | ~93 s/day (+1,020 s) |
+  | Core increments cpu0–5 | — | +71,482 / +3,977 / +65,438 / +1,014 / +20,848 / +464 |
+
+  The same two cores dominate. A 60-second idle check on 11-01 showed **zero**
+  new events (hottest core 66 °C), so all of it comes from load bursts. Some
+  of the before period was hotter summer weather, so "unchanged" is not
+  "worse".
+- **Persistence:** still live on 11-01 (12× `powersave` /
+  `balance_performance`, `max_perf_pct=85`, unit `active`, `ec_sys`
+  `write_support=N`). No reboot since 2026-08-24, so surviving a reboot is
+  **still unproven**.
+
 ## 6. Pending: repaste and fan clean
 
 Treat it as a maintenance window. geralt needs someone at the machine to
@@ -281,6 +337,19 @@ counter roughly flat week to week.
 
 Throttle counters reset on reboot, so record the uptime with every reading.
 
+**Re-read 2026-11-01 00:20 IST** (68 d 7 h uptime, same boot, CPU policy in
+place):
+
+| Measure | Value |
+|---|---|
+| Package throttle count / total time | 788,196 / 5,841,679 ms |
+| Core throttle counts cpu0–5 | 542,645 / 24,729 / 284,373 / 22,314 / 59,071 / 11,395 |
+| Beszel 8-hour package average, post-change | 53.0–62.5 °C, mean 55.2 °C |
+| Beszel temperature alerts fired | 28 (one more, 10-25) |
+
+The repaste comparison should be measured against these post-policy values,
+not the 10-21 ones, so it isolates the repaste's effect.
+
 ## 8. Open
 
 - After the next reboot, confirm that `cpu-power-policy.service` and the
@@ -291,7 +360,9 @@ Throttle counters reset on reboot, so record the uptime with every reading.
 - **After the repaste**, revisit Cooler Boost or a custom curve to lift the
   75 % auto-curve ceiling (EC write) (§4). Deferred by decision: the user
   will raise it once the repaste is done.
-- Repaste and fan clean (§6), then a 7-day Beszel comparison against §7.
+- Repaste and fan clean (§6), then a 7-day Beszel comparison against the
+  2026-11-01 re-read in §7.
+- Alert count after the policy change: 28 (one more, 10-25, §5a).
 - Beszel's 85 °C / 10-minute temperature alert has **already fired 27
   times** (2026-07-27 to 2026-10-20, ~228 min in total; per month: Jul 11,
   Aug 7, Sep 3, Oct 6). The latest ran 10-20 14:07–14:32 UTC, the GPU-burst
