@@ -38,7 +38,11 @@ x-rails-env: &rails_env
   # than the AI stack runs; align them with Ollama's 8192 context.
   LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-}
   LLM_MAX_RESPONSE_TOKENS: ${LLM_MAX_RESPONSE_TOKENS:-}
-  # Read by the mounted initializer below (upstream has no such env var).
+  # Upstream's own setting as of 0.7.6: sets the browser watchdog in seconds,
+  # and the server floor 10 s below it. Replaces the mounted initializer, which
+  # is now inert (Chat::UNDELIVERED_RESPONSE_TIMEOUT no longer exists; it checks
+  # first, so it skips harmlessly) and only matters if rolling back to 0.7.3.
+  AI_RESPONSE_TIMEOUT: ${LLM_UNDELIVERED_RESPONSE_TIMEOUT:-240}
   LLM_UNDELIVERED_RESPONSE_TIMEOUT: ${LLM_UNDELIVERED_RESPONSE_TIMEOUT:-240}
 
 services:
@@ -48,7 +52,7 @@ services:
   web:
     # ghcr publishes no version tags (only sha-<commit> + stable); stable is a
     # moving tag, so `docker compose pull` upgrades to the newest release.
-    image: ghcr.io/we-promise/sure:0.7.3
+    image: ghcr.io/we-promise/sure:0.7.6
     container_name: sure
     volumes:
       - ./storage:/rails/storage
@@ -75,7 +79,7 @@ services:
       - sure_net
 
   worker:
-    image: ghcr.io/we-promise/sure:0.7.3
+    image: ghcr.io/we-promise/sure:0.7.6
     container_name: sure-worker
     command: bundle exec sidekiq
     volumes:

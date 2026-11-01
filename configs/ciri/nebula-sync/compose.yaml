@@ -5,7 +5,7 @@ x-sync-env: &sync-env
 
 services:
   nebula-sync:
-    image: ghcr.io/lovelaze/nebula-sync:v0.11.2
+    image: ghcr.io/lovelaze/nebula-sync:v0.11.3
     container_name: nebula-sync
     restart: unless-stopped
     env_file: .env
@@ -14,7 +14,7 @@ services:
       CRON: "0 * * * *"
 
   sync-now:
-    image: ghcr.io/lovelaze/nebula-sync:v0.11.2
+    image: ghcr.io/lovelaze/nebula-sync:v0.11.3
     profiles: ["manual"]
     env_file: .env
     environment: *sync-env

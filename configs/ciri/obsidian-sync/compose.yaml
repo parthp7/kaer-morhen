@@ -24,7 +24,7 @@
 
 services:
   couchdb:
-    image: couchdb:3.5.2.1
+    image: couchdb:3.5.3
     container_name: obsidian-couchdb
     restart: unless-stopped
     ports:

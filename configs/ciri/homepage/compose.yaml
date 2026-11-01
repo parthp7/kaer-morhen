@@ -11,7 +11,7 @@
 services:
   # ---- Docker API, GET-only, never published ------------------------------
   socket-proxy:
-    image: lscr.io/linuxserver/socket-proxy:3.4.4
+    image: lscr.io/linuxserver/socket-proxy:3.4.7
     container_name: homepage-socket-proxy
     restart: unless-stopped
     read_only: true
@@ -28,7 +28,7 @@ services:
 
   # ---- The dashboard -------------------------------------------------------
   homepage:
-    image: ghcr.io/gethomepage/homepage:v2.2.0
+    image: ghcr.io/gethomepage/homepage:v2.7.0
     container_name: homepage
     restart: unless-stopped
     depends_on:
@@ -76,7 +76,7 @@ services:
     build:
       context: ./olivetin
       dockerfile: Dockerfile
-    image: kaermorhen/olivetin:3000.19.0     # local tag of the build; base pinned in the Dockerfile
+    image: kaermorhen/olivetin:3000.21.0     # local tag of the build; base pinned in the Dockerfile
     container_name: olivetin
     restart: unless-stopped
     ports:
@@ -97,7 +97,7 @@ services:
 
   # ---- Results for the customapi tiles — internal only ---------------------
   results:
-    image: docker.io/joseluisq/static-web-server:2.44.0
+    image: docker.io/joseluisq/static-web-server:2.44.1
     container_name: homepage-results
     restart: unless-stopped
     environment:

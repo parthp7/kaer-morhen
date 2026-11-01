@@ -134,6 +134,7 @@
           type: jellyfin
           url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8096
           key: "{{HOMEPAGE_VAR_JELLYFIN_KEY}}"
+          version: 2   # required from Jellyfin 12: v1 calls the removed /emby routes
           enableBlocks: true
     - qBittorrent:
         icon: qbittorrent.png
@@ -247,3 +248,45 @@
         href: https://obsidian.kaermorhen.fyi
         server: ciri
         container: obsidian-couchdb
+
+# Reading (proposal 011) — deliberately its own group, not folded into Media.
+# Manga and books are separate stacks with separate servers; the dashboard
+# mirrors that split rather than hiding it.
+- Reading:
+    - Komga:
+        icon: komga.png
+        href: https://manga.kaermorhen.fyi
+        description: manga library + reader
+        server: ciri
+        container: komga
+        widget:
+          type: komga
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:25600
+          username: "{{HOMEPAGE_VAR_KOMGA_USER}}"
+          password: "{{HOMEPAGE_VAR_KOMGA_PASSWORD}}"
+    - Kavita:
+        icon: kavita.png
+        href: https://books.kaermorhen.fyi
+        description: EPUB library + reader
+        server: ciri
+        container: kavita
+        widget:
+          type: kavita
+          url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:5000
+          # API key rather than username/password: one revocable field, and no
+          # admin password in this .env. Kavita → Settings → Account → API Key.
+          # (username/password also works, but wants the USERNAME, not the
+          # account email — getting that wrong returns a plain-text "Your
+          # credentials are not correct", which the widget cannot parse.)
+          key: "{{HOMEPAGE_VAR_KAVITA_API_KEY}}"
+    - Suwayomi:
+        icon: mdi-book-arrow-down
+        href: https://sources.kaermorhen.fyi
+        description: manga acquisition, behind its own VPN (no upstream widget)
+        server: ciri
+        container: suwayomi
+    - Manga VPN:
+        icon: gluetun.png
+        description: Secure Core tunnel — Suwayomi + FlareSolverr egress
+        server: ciri
+        container: manga-gluetun

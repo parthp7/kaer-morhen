@@ -18,7 +18,7 @@ services:
     # Pinned 2026-09-04 from the `stable` tag (2.37.10, published the same
     # day). 2.x runs Code nodes in a task runner (internal mode) by default;
     # N8N_RUNNERS_ENABLED is deprecated and deliberately not set.
-    image: docker.io/n8nio/n8n:2.37.10
+    image: docker.io/n8nio/n8n:2.45.7
     container_name: n8n
     restart: unless-stopped
     ports:

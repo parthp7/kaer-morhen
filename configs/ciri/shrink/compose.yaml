@@ -10,7 +10,7 @@
 
 services:
   stirling:
-    image: docker.io/stirlingtools/stirling-pdf:2.14.3
+    image: docker.io/stirlingtools/stirling-pdf:3.2.2
     container_name: stirling-pdf
     restart: unless-stopped
     ports:
@@ -48,7 +48,7 @@ services:
       STORAGE_SHARING_ENABLED: "false"
 
   mazanoke:
-    image: ghcr.io/civilblur/mazanoke:v1.1.6
+    image: ghcr.io/civilblur/mazanoke:v1.1.7
     container_name: mazanoke
     restart: unless-stopped
     ports:
