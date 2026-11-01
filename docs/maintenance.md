@@ -589,9 +589,18 @@ That the fix was needed at all is the argument for pinning these four.
   outage.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **Release the 2026-11-02 rollbacks** once the pass is signed off, by explicit
-  image name as in [Releasing rollbacks](#releasing-rollbacks-image-pruning).
-  The tarballs and dumps in `/data/backups/` go at the same time.
+- **Remove the pre-upgrade backups from the 2026-11-02 pass** once it is signed
+  off. They are the rollbacks until then, so keep them through a few weeks of real
+  use. Check each path before deleting it:
+  - ciri, `/data/backups/`: every `*2026-11-02*` file (seerr, open-webui, stirling,
+    memos ×2, immich, paperless, n8n, sure, qbittorrent, jellyfin). The Jellyfin
+    tarball is the only way back from 12.x, so it goes last.
+  - LXC 202: `/root/caddy-2.11.4-cloudflare`
+  - LXC 204: `/root/beszel-pre-0.21.1.tar.gz`
+  - LXC 205: `/root/pulse-pre-6.6.0.tar.gz`
+  - ciri, `/etc/nvidia-container-toolkit/nvidia-cdi-refresh.env.dpkg-old`
+  - ciri, the old images: remove by explicit name, as in
+    [Releasing rollbacks](#releasing-rollbacks-image-pruning).
 - **A pre-major `pg_dump` was planned and not taken** (paperless v3). The PBS
   snapshot happened to cover it. Add "verify the artifact exists with `ls -lh`"
   to the pre-flight for any future one-way migration.
