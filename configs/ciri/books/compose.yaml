@@ -1,0 +1,53 @@
+# Stack: books — EPUB library and reader (Kavita).
+# Design + runbook: docs/proposals/011-manga-and-ebook-reading.md
+# Mirror of ciri:/data/stacks/books/compose.yaml (CLAUDE.md mirror rule).
+#
+# Deliberately a SEPARATE stack from `manga`, not a second service inside it.
+# Two reasons, both structural: the user reads books and manga in different
+# modes and wants them apart; and a gluetun reconnect or a `docker compose
+# down` on the manga stack must not be able to take the book server with it.
+#
+# Kavita rather than Komga for books because Komga's EPUB support is built
+# around Kobo sync, which does nothing for an iPhone. Kavita is the only one
+# of the three servers with a native iOS client (Komic) that downloads text
+# EPUB *and* syncs reading progress back — the hard requirement here is
+# reading offline while travelling.
+#
+# THE LINUXSERVER IMAGE IS DELIBERATE. The official jvmilazz0/kavita image
+# ships no PUID/PGID and runs as root; this one takes the same `jaskier`
+# (13000) identity as every other writer in the lab.
+#
+# Unlike the manga library, /data/books IS inside the nightly PBS job: books
+# are hand-curated and not re-downloadable, where manga is. See proposal §4.
+
+services:
+  kavita:
+    image: lscr.io/linuxserver/kavita:version-v0.9.1.4
+    container_name: kavita
+    restart: unless-stopped
+    environment:
+      PUID: ${PUID:-13000}
+      PGID: ${PGID:-13000}
+      TZ: Asia/Kolkata
+    volumes:
+      - ./kavita:/config
+      # READ-ONLY: Kavita is a reader. Books are added by hand (scp/rsync
+      # into /data/books), which keeps the lab's "reader apps mount the
+      # library read-only" rule intact rather than carving an exception.
+      # create_host_path:false is belt-and-braces here — /data is the Docker
+      # data-root, so if it were missing the daemon would not be running at
+      # all — but the habit is worth keeping consistent across stacks.
+      - type: bind
+        source: /data/books
+        target: /books
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "5000:5000"
+    networks:
+      - books_net
+
+networks:
+  books_net:
+    driver: bridge

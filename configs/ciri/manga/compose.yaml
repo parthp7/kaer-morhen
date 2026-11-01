@@ -1,0 +1,213 @@
+# Stack: manga — acquisition (Suwayomi) + library/reader (Komga).
+# Design + runbook: docs/proposals/011-manga-and-ebook-reading.md
+# Mirror of ciri:/data/stacks/manga/compose.yaml (CLAUDE.md mirror rule).
+#
+# THE INTERFACE BETWEEN THESE TWO SERVICES IS A DIRECTORY, NOT A NETWORK.
+# Suwayomi writes CBZ files into /mnt/manga/library; Komga reads them. They
+# never speak over the network, which is what allows Suwayomi to live inside
+# gluetun's netns while Komga stays reachable on an ordinary bridge.
+#
+# Suwayomi runs INSIDE gluetun's network namespace: every request to a
+# third-party manga source exits through Proton, and if the tunnel drops it
+# loses all connectivity (kill-switch) — no home-IP leak. Komga does NOT and
+# must not: it serves the LAN and the reverse proxy, including while the
+# tunnel is down.
+#
+# NO PORT FORWARDING, unlike the servarr gluetun. Suwayomi only makes outbound
+# HTTP requests; PORT_FORWARD_ONLY would narrow the Proton server pool for
+# nothing and there is no qbit-port-sync equivalent to feed. The WireGuard key
+# here MUST be a second, distinct Proton config — reusing servarr's key means
+# two live sessions on one peer and both flap.
+#
+# Lab conventions: pinned image tags (verified current 2026-09-20 — bump
+# deliberately, read release notes, then `docker compose pull && up -d`),
+# container_name on every service, restart: unless-stopped, TZ=Asia/Kolkata,
+# dedicated bridge network, secrets only from .env (${VAR:?} fails loudly).
+#
+# Least-privilege: both writers run as the dedicated non-root service account
+# `jaskier` (13000:13000), the same one the *arr use. NEITHER image supports
+# PUID/PGID, so both take an explicit `user:` directive — Komga's own docs
+# recommend exactly this.
+
+# Missing-mount guard, the same pattern servarr documents at length.
+# /mnt/manga is mounted `nofail`, so if the disk is absent the mountpoint
+# still exists as an empty directory on the 64 G root disk. Without
+# create_host_path:false, Docker's default is to CREATE the bind source and
+# Suwayomi would download a library onto the root filesystem until it filled.
+# `library/` exists only on the real filesystem => absent disk means the
+# containers refuse to start. Fail loud. Verified by test E14.
+x-manga-library: &manga_library
+  type: bind
+  source: /mnt/manga/library
+  bind:
+    create_host_path: false
+
+services:
+  # ---- VPN egress + kill-switch -------------------------------------------
+  manga-gluetun:
+    image: qmcgaw/gluetun:v3.41.3
+    container_name: manga-gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      # Suwayomi's WebUI is published HERE (it shares this netns), not on the
+      # suwayomi service — same arrangement as qBittorrent's 8080 in servarr.
+      - "4567:4567"
+    environment:
+      TZ: Asia/Kolkata
+      VPN_SERVICE_PROVIDER: protonvpn
+      VPN_TYPE: wireguard
+      WIREGUARD_PRIVATE_KEY: ${MANGA_WG_PRIVATE_KEY:?set in .env}
+      WIREGUARD_ADDRESSES: ${MANGA_WG_ADDRESSES:-10.2.0.2/32}
+      # SECURE CORE (double hop). SERVER_COUNTRIES names the EXIT country:
+      # gluetun's `country` field is the exit, and the entry (CH/IS/SE) is
+      # Proton's choice, encoded only in the server name (e.g. "CH-TH#2") and
+      # NOT filterable. Switzerland has zero secure-core exits, which is the
+      # tell — it is an entry country only.
+      #
+      # SECURE_CORE_ONLY is load-bearing, not decorative. Without it,
+      # SERVER_COUNTRIES also matches the ordinary single-hop servers in the
+      # same country (Thailand has 4 of each) and gluetun may silently pick
+      # one — you would believe you had double hop and not have it.
+      #
+      # Mind the pool size when choosing an exit: Thailand has only 2
+      # WireGuard secure-core servers, so both being down means no tunnel and
+      # (correctly) no Suwayomi. Netherlands has 19, United States 77.
+      SERVER_COUNTRIES: ${MANGA_VPN_COUNTRIES:-Netherlands}
+      SECURE_CORE_ONLY: ${MANGA_SECURE_CORE:-on}
+      # VPN_PORT_FORWARDING deliberately UNSET — see the header.
+      # NB: Proton does not offer port forwarding on secure-core servers
+      # anyway, so this stack's outbound-only design and Secure Core are a
+      # natural fit — where servarr's PORT_FORWARD_ONLY would directly
+      # conflict with it.
+    networks:
+      - manga_net
+
+  # ---- Acquisition (no own network — lives in gluetun's netns) ------------
+  suwayomi:
+    image: ghcr.io/suwayomi/suwayomi-server:v2.3.2243
+    container_name: suwayomi
+    restart: unless-stopped
+    # All traffic goes through gluetun; dies with the tunnel (kill-switch).
+    network_mode: "service:manga-gluetun"
+    depends_on:
+      - manga-gluetun
+    user: "13000:13000"
+    environment:
+      TZ: Asia/Kolkata
+      # LOAD-BEARING. The image's default is "false" even though upstream's
+      # server.conf default is "true" — they genuinely differ. Unset, Suwayomi
+      # writes loose folders of images and Komga will not index them as books:
+      # the stack looks deployed and produces nothing readable.
+      DOWNLOAD_AS_CBZ: "true"
+      # Note the name — AUTO_DOWNLOAD_CHAPTERS, not AUTO_DOWNLOAD_NEW_CHAPTERS.
+      AUTO_DOWNLOAD_CHAPTERS: "true"
+      AUTO_DOWNLOAD_NEW_CHAPTERS_LIMIT: "0"
+      # Extension catalogue. Suwayomi ships with NONE by default, deliberately
+      # — upstream carries no source list, so this is the one thing that must
+      # be supplied before the server can browse anything at all. Declared
+      # here rather than clicked into the UI so it is git-tracked and survives
+      # a container recreate; it maps to server.extensionStores in server.conf.
+      #
+      # THE URL MUST BE THE PROTOBUF INDEX. Suwayomi 2.3 moved to Mihon's
+      # Extension Store system (server.extensionStores) from the older
+      # extensionRepos, and the .../repo/index.min.json URL that almost every
+      # guide still gives is a TRAP: it serves two sentinel entries to clients
+      # on the old extension API — "Outdated App" and "Update to Mihon
+      # 0.20.1+" — so the UI looks like it worked and lists two fake
+      # extensions while you have no sources. Verified 2026-09-20:
+      # index.min.json = 765 bytes / 2 sentinels, index.pb = 108 KB gzipped
+      # protobuf / the real catalogue. This URL is the one Keiyoushi's own
+      # README gives, and matches the index_v2 field in its repo.json.
+      EXTENSION_STORES: '["https://github.com/keiyoushi/extensions/raw/repo/index.pb"]'
+      # Its own gate. A tailnet-resolvable name must not be an open door, and
+      # basic auth at Caddy could never cover the bare port on .150 — the same
+      # reasoning as Homepage (008 §4) and Stirling (009 §5).
+      AUTH_MODE: basic_auth
+      AUTH_USERNAME: ${SUWAYOMI_USER:?set in .env}
+      AUTH_PASSWORD: ${SUWAYOMI_PASSWORD:?set in .env}
+      # Cloudflare challenge solver. FLARESOLVERR_URL is deliberately NOT set:
+      # its default is http://localhost:8191, and because manga-flaresolverr
+      # shares this very network namespace, localhost IS FlareSolverr. No
+      # port is published and no address needs configuring.
+      #
+      # DO NOT point this at the servarr stack's FlareSolverr. It is not a
+      # relay — it fetches the challenged page itself, with its own browser —
+      # and that instance sits on servarr_net, OUTSIDE any tunnel. Using it
+      # would fetch every Cloudflare-protected manga page from the HOME IP,
+      # defeating this stack's entire reason for existing, and would also
+      # require opening a LAN hole in the kill-switch for Suwayomi to reach it.
+      FLARESOLVERR_ENABLED: "true"
+      # Fallback rather than primary: Suwayomi has its own bundled headless
+      # Chromium and clears most sources with it. FlareSolverr is tried only
+      # when that fails, which keeps a second browser off the CPU for the
+      # common case.
+      FLARESOLVERR_RESPONSE_AS_FALLBACK: "true"
+      BIND_PORT: "4567"
+      WEB_UI_ENABLED: "true"
+      WEB_UI_FLAVOR: WebUI
+      WEB_UI_CHANNEL: stable
+    volumes:
+      # State, extensions and DB on /data (scsi1) — inside the nightly PBS
+      # job, unlike the downloads below. Losing the zvol costs re-downloading;
+      # it does not cost the library structure or the installed extensions.
+      - ./suwayomi:/home/suwayomi/.local/share/Tachidesk
+      # NESTED ON PURPOSE over the `downloads` subdirectory of the bind above.
+      # Docker orders binds by target depth, parent first, so the state
+      # directory lands first and the zvol on top of it — the same technique
+      # servarr uses to nest NVMe scratch inside the NFS downloads tree.
+      - <<: *manga_library
+        target: /home/suwayomi/.local/share/Tachidesk/downloads
+    # NB: no `ports:` and no `networks:` here — both come from manga-gluetun.
+
+  # ---- Cloudflare solver (no own network — lives in gluetun's netns) ------
+  # Same image and pin as the servarr stack's solver, but a SEPARATE instance
+  # and deliberately so: this one egresses through Proton, where servarr's
+  # sits on servarr_net and fetches from the home IP. FlareSolverr performs
+  # the fetch itself, so which side of the tunnel it lives on decides which
+  # address the manga source sees.
+  #
+  # container_name must differ from servarr's `flaresolverr` — names are
+  # unique per host. No ports: Suwayomi reaches it on localhost:8191 inside
+  # the shared namespace, so 8191 stays free on ciri for servarr's instance.
+  manga-flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.0
+    container_name: manga-flaresolverr
+    restart: unless-stopped
+    network_mode: "service:manga-gluetun"
+    depends_on:
+      - manga-gluetun
+    environment:
+      TZ: Asia/Kolkata
+      LOG_LEVEL: info
+
+  # ---- Library + reader (NOT behind the VPN, deliberately) ----------------
+  komga:
+    image: gotson/komga:1.27.0
+    container_name: komga
+    restart: unless-stopped
+    user: "13000:13000"
+    environment:
+      TZ: Asia/Kolkata
+      # If the JVM misbehaves on a large library, cap it here:
+      # JAVA_TOOL_OPTIONS: "-Xmx1g"
+    volumes:
+      # Komga's docs are explicit that /config must be a LOCAL filesystem, not
+      # a network share. This is ext4 on scsi1. Do not "tidy" it onto a share.
+      - ./komga:/config
+      # READ-ONLY: Komga is a reader here and never writes to the library.
+      # Same rule as Jellyfin's media bind in the jellyfin stack.
+      - <<: *manga_library
+        target: /data
+        read_only: true
+    ports:
+      - "25600:25600"
+    networks:
+      - manga_net
+
+networks:
+  manga_net:
+    driver: bridge
