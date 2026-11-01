@@ -9,6 +9,15 @@ everything is on. Design and rationale:
 action. These procedures exist to make that action cheap and repeatable, not to
 automate it away.
 
+`unattended-upgrades` must stay off everywhere. On 2026-11-01 it was found enabled
+on ciri, which is why ciri's kernel and NVIDIA driver had moved without a registry
+entry, and the decision was to disable it. The nodes and all nine LXCs do not have
+the package installed. Disabling `unattended-upgrades.service` is not enough:
+`apt-daily-upgrade.timer` runs the updater directly, gated by
+`APT::Periodic::Unattended-Upgrade`. ciri turns that off in
+`/etc/apt/apt.conf.d/99-no-unattended-upgrades`; confirm with
+`apt-config dump | grep Unattended-Upgrade`.
+
 ## The one hardware fact that shapes everything
 
 **Neither node can be woken remotely** — WoL fails on both and there is no BMC
@@ -32,6 +41,42 @@ back is a trip to the laptop. Therefore:
 | **Ad hoc** | a CVE with a working exploit; a feature you actually want | — | — |
 | **Planned** | DB majors, PVE major version | own proposal | **Physical** |
 
+## Full pass — everything in one visit
+
+Use this order when the weekly, monthly and quarterly work are all due. Each
+stage names a section below for the detail. Stop at the first failed gate.
+
+| # | Stage | Gate before moving on |
+|---|---|---|
+| 0 | **Baseline**: inventory, smoke, deep check, Tailscale primary, last night's backups | Failures understood and written down |
+| 1 | **yennefer LXCs**, standby before primary: 204, 205, 201, 203, 202, then 200 | Smoke green; Caddy plugin present |
+| 2 | **yennefer node**: upgrade + reboot. **This drops the whole LAN** (see below) | `--strict`, smoke, deep check |
+| 3 | **geralt LXCs**: 103, then 101, then 104 | Smoke green |
+| 4 | **ciri apt**: this restarts every container. Confirm DKMS built the new kernel | `dkms status` lists the new kernel |
+| 5 | **geralt node**: `qm shutdown 150`, upgrade, reboot. ciri boots its new kernel here | `--strict` **inside the 68–124 s wedge window**, smoke, deep check |
+| 6 | **Docker tiers** 0, then 1, then 2 | Each stack verified before the next |
+| 7 | **Registry and sign-off**: record versions, then prune rollbacks later | — |
+
+Why this order:
+
+- **Docker last.** The hosts change first, so a broken app afterwards points at
+  the app's own bump rather than at the platform under it.
+- **ciri apt just before the geralt reboot.** Upgrading `docker-ce` restarts
+  dockerd, which restarts every container (no `live-restore`). Doing it here
+  means one disruption is absorbed rather than two.
+- **Avoid ~21:50 IST**, where the WAN has been dropping for ~17 minutes every 72
+  hours, and **04:00–05:00**, the PBS backup window. Do not upgrade LXC 200 while
+  a backup is running.
+- **Remote access can drop at any stage.** Tailscale upgrades restart the daemon
+  and yennefer's reboot takes the LAN down. Be on site, or stop after stage 1.
+
+**yennefer's reboot is a whole-lab outage.** The TL-SG108E switch is powered from
+its USB port, so geralt, ciri and every guest lose LAN connectivity until it is
+back. Expect Kuma to go red across the board, with alerts arriving late or not
+at all, and don't read that as a fault in the upgrade. One node per window still
+holds for risk, but the Pi-hole and Tailscale pairs give **no** redundancy during
+this particular reboot.
+
 ## Weekly pass
 
 ```bash
@@ -39,6 +84,9 @@ back is a trip to the laptop. Therefore:
 scripts/maintenance/lab-inventory.sh
 scripts/maintenance/lab-smoke.sh
 ```
+
+From a worktree, `lab-smoke.sh` cannot find the git-ignored secrets file. Run
+`SECRETS_FILE=<main-checkout>/secrets.local.yaml scripts/maintenance/lab-smoke.sh`.
 
 A failure in the *baseline* is pre-existing — understand it now, rather than
 misattributing it to the upgrade later.
@@ -49,7 +97,11 @@ apt update
 for id in $(pct list | awk 'NR>1 {print $1}'); do pct exec "$id" -- apt update; done
 
 # 3. Upgrade guests: LXCs first, then ciri.  [on the node]
+#    Order within a pair: the Tailscale/Pi-hole that is NOT primary goes first.
 pct exec <id> -- apt full-upgrade -y
+
+# ciri is a VM, so it is not in `pct list`.  [inside ciri]
+sudo apt update && sudo apt full-upgrade -y
 ```
 
 Then the **per-guest exceptions** below.
@@ -64,9 +116,12 @@ scripts/maintenance/lab-deep-check.sh
 
 | Guest | Extra step |
 |---|---|
-| **202 `proxy`** | `apt upgrade` **drops the `caddy-dns/cloudflare` plugin.** Re-run `caddy add-package github.com/caddy-dns/cloudflare`, then confirm `caddy list-modules \| grep cloudflare`. Skip it and renewals fail ~30 days later with "no solvers available" |
-| **104 `uptime-kuma`** | Not apt: `systemctl stop uptime-kuma` → `runuser -u uptime-kuma -- bash -c 'cd /opt/uptime-kuma && git fetch --all && npm run setup'` → start |
-| **150 `ciri`** | Ubuntu apt + Docker's repo + NVIDIA's repo. After a toolkit bump, confirm the `docker.service.d/wait-for-cdi.conf` drop-in survived and `NVIDIA_CTK_CDI_OUTPUT_FILE_PATH` still points at `/etc/cdi/nvidia.yaml` |
+| **202 `proxy`** | **Only when `caddy` is in the upgrade set** (check `apt list --upgradable`). The package overwrites the custom build and **drops the `caddy-dns/cloudflare` plugin**. First `cp -a /usr/bin/caddy /root/caddy-<version>-cloudflare`, the rollback if the rebuild fails. After apt, run `caddy add-package github.com/caddy-dns/cloudflare`, `systemctl restart caddy`, then confirm `caddy list-modules --packages \| grep cloudflare` and `systemctl is-active caddy`. Skip it and renewals fail ~30 days later with "no solvers available". Caddy also **stops until the plugin is back**, taking down every proxied name at once: on 2026-11-01 (2.11.4 → 2.11.7) the service failed to start at 23:00:52 and came back at 23:01:31 once the plugin was restored. Have the fix ready to run straight after apt |
+| **101, 201 Pi-hole** | Apt only moves `pihole-meta`, **not Pi-hole itself**. Run `/usr/local/bin/pihole -up` (`pct exec` has no `/usr/local/bin` on its `PATH`). pihole-2 (201) first, confirm it resolves, then 101. nebula-sync overwrites 201 from 101 hourly |
+| **103, 203 Tailscale** | Apt, from Tailscale's own repo. The daemon restarts on upgrade, so upgrade the **standby first** ([which is which](#subnet-router-failover-is-expected-and-does-not-fail-back)), confirm it is online, then the primary |
+| **104 `uptime-kuma`** | Not apt, and **`npm run setup` alone does not upgrade**: its script is `git checkout <installed version> && …`, so it reinstalls what you already have. Stop the service, then `runuser -u uptime-kuma -- bash -c 'cd /opt/uptime-kuma && git fetch --all --tags && git checkout <new tag> --force && npm ci --omit dev --no-audit && npm run download-dist'`, then start it. Run as root, `git` refuses this repo as dubious ownership. Confirm the version in the UI |
+| **204 `beszel` + agents** | Not apt, and on no one's list until 2026-11-01. The hub is `/opt/beszel/beszel` and the agents are `beszel-agent` on geralt, yennefer and ciri. Keep hub and agents in step. Decline any offer of auto-update ([monitoring.md](monitoring.md)) |
+| **150 `ciri`** | Ubuntu apt + Docker's repo + NVIDIA's repo. **`docker-ce` restarts dockerd, so every container restarts**, including the gluetun netns set: re-check `qbit-port-sync` and `suwayomi` afterwards. Before rebooting, `dkms status` must list `nvidia-srv` for the **new** kernel, or ciri boots without the GPU. A toolkit bump can raise a dpkg prompt for `/etc/nvidia-container-toolkit/nvidia-cdi-refresh.env`: **answer `N`**, because that file holds the fix for the [boot race](gpu-passthrough.md). Answering `Y` on 2026-11-01 dropped the setting, and the spec silently moved to tmpfs `/var/run/cdi`. Before rebooting, confirm the `docker.service.d/wait-for-cdi.conf` drop-in survived and that an **uncommented** `NVIDIA_CTK_CDI_OUTPUT_FILE_PATH=/etc/cdi/nvidia.yaml` is present (a `.dpkg-old` hit doesn't count) |
 | Both nodes | Nothing — the subscription-nag patch re-applies itself via `/etc/apt/apt.conf.d/no-nag-script` |
 | **205 `pulse`** | Not apt: `curl -fsSL <install.sh> -o /tmp/pulse-install.sh`, read it, then `bash /tmp/pulse-install.sh --version <next tag>`. Auto-update is deliberately off. After a PVE or PBS certificate is regenerated, its **pinned fingerprint in Pulse goes stale** and that instance goes Unreachable, then **paused** — re-pin and resume it explicitly ([proposal 008](proposals/008-lab-dashboard.md)) |
 | **150 `ciri` — `homepage` stack** | The only stack with a **`build:`** (OliveTin plus `openssh-clients` and `jq`). Bump the `FROM` tag in `olivetin/Dockerfile`, then `docker compose build --pull` **before** `up -d`; a plain `pull` leaves the old local image in place |
@@ -75,8 +130,12 @@ scripts/maintenance/lab-deep-check.sh
 
 **One node.** yennefer first, geralt only after yennefer is fully green.
 
+**Geralt only:** shut ciri down first (`qm shutdown 150`), as the D7 pass did.
+`onboot: 1` brings it back after the reboot. Do not change that flag.
+
 ```bash
 apt full-upgrade -y      # [on the node]
+# run the kernel-retention checks below, then:
 reboot
 ```
 
@@ -96,7 +155,7 @@ on nodes that already have no remote power-on.
 
 | Rule | Why |
 |---|---|
-| Keep at least the previous kernel of the **running series** (running `7.0.14-12` → keep `7.0.14-4`) | It is the rollback. Nothing else substitutes for it |
+| Keep at least the previous kernel of the **running series** (upgrading to `7.0.14-26` → keep `7.0.14-12`) | It is the rollback. Nothing else substitutes for it |
 | **Verify it is bootable, not merely installed**, before you reboot | `dpkg -l` proving the package is present is not the same as GRUB offering it |
 | A superseded point release from a **different** series is safe to prune | Upgrading the `proxmox-kernel-6.17` meta orphans the old 6.17 point release; that is not the rollback for a 7.0 upgrade |
 | Never run `apt autoremove` blind after a kernel upgrade | Dry-run it first and read the list |
@@ -150,7 +209,9 @@ qm start 150
 docker ps    # inside ciri — `qm start` succeeding does NOT mean jellyfin/ollama came up
 ```
 
-The GTX 1060 has no FLR: a wedged GPU means a full geralt reboot.
+The GTX 1060 has no FLR: a wedged GPU means a full geralt reboot, so a ciri
+restart is only low-risk while someone can reach geralt. When a geralt reboot is
+already planned, let that restart ciri rather than doing it twice.
 
 ## Quarterly: docker upgrades
 
@@ -167,9 +228,9 @@ signed off**, since the previous image is half the rollback.
 
 | Tier | Services | Handling |
 |---|---|---|
-| 0 | nebula-sync, flaresolverr, searxng, alpine, memos, mazanoke | Bulk, one pass |
-| 1 | seerr, bazarr, prowlarr, open-webui, ollama, couchdb (3.x), stirling-pdf | One stack at a time |
-| 2 | Immich, Paperless, Sonarr, Radarr, qBittorrent, gluetun, Jellyfin, Sure | Own window each |
+| 0 | nebula-sync, flaresolverr (both), searxng, alpine, mazanoke, socket-proxy, static-web-server | Bulk, one pass |
+| 1 | homepage, olivetin, seerr, bazarr, prowlarr, open-webui, ollama, couchdb (3.x), stirling-pdf, memos, suwayomi, komga, kavita | One stack at a time |
+| 2 | Immich, Paperless, Sonarr, Radarr, qBittorrent, gluetun (both), Jellyfin, Sure, n8n, Vaultwarden | Own window each |
 | 3 | postgres majors, redis 7.4→8, valkey, Immich's pg14+VectorChord | **Own proposal** — dump+restore |
 
 ### Tier-2 hard rules
@@ -187,19 +248,66 @@ signed off**, since the previous image is half the rollback.
   Do **not** append the manual `docker restart gluetun && …` recovery afterwards — after a
   correct compose recreate it destroys the namespace a second time and re-pairs only
   qBittorrent, causing the exact fault the rule above prevents.
+- **A qBittorrent-only bump can leave gluetun alone**: `docker compose up -d
+  --no-deps qbittorrent` keeps the same netns, listen port and sidecar, and avoids
+  risking Proton's port forward (proven 2026-11-02, 5.2.3 → 5.3.0). The triple
+  recreate is for gluetun bumps.
 - **Pull only the services you are changing** in this stack. A bare `docker compose pull`
   also re-points `alpine:3.21`, stranding the running `qbit-port-sync` on an untagged
   image ID — the shared-tag drift described at the end of this file.
+- **The same netns rule applies to `manga-gluetun`.** `suwayomi` and
+  `manga-flaresolverr` both run on `network_mode: service:manga-gluetun`, so
+  recreate all three together. `komga` and `kavita` are outside the tunnel.
+- **Stop the auto-fix while you work on gluetun.** `servarr-vpn-health.timer`
+  triggers `servarr-vpn-remediate@`, which restarts containers. Run
+  `sudo systemctl stop servarr-vpn-health.timer` first and start it again once
+  the triple is verified, so the two cannot fight over the same containers.
 - **Check any gluetun bump against `/v1/portforward`** — the sidecar hardcodes it.
 - **Jellyfin + Ollama are one change unit** (shared GPU via CDI).
+- **Jellyfin 10.11 → 12.x is a one-way migration** (decided 2026-11-01, target
+  `jellyfin/jellyfin:12.4`; a direct upgrade from 10.11.x is supported). The
+  sideloaded Samsung Tizen build is checked and refreshed **after** the server is
+  done, so the TV may misbehave until then. In order:
+  1. Stop the container, then tar `/data/stacks/jellyfin/config` into
+     `/data/backups/` and confirm it with `ls -lh`. That tarball is the rollback;
+     re-pinning `10.11.11` is not.
+  2. Confirm no two usernames differ only by case. The migration needs them
+     unique, and they must be fixed before upgrading.
+  3. Bump, `up -d`, and watch the first boot log until migrations finish.
+  4. Run a **full library scan**, which upstream requires. It restores
+     alternative versions, takes much longer than usual, and some films may
+     appear newly added.
+     Homepage's widget needs `version: 2` in `services.yaml`, because v1 calls
+     the removed `/emby` routes.
+  5. Check for what the migration switched off. **Legacy authorization is forced
+     off on existing installs** (ours was `true`) and `/emby/*` and
+     `/mediabrowser/*` are gone. Test the Homepage widget, Seerr, the Sonarr and
+     Radarr connections, then the TV, Infuse and Streamyfin.
+  6. Confirm `lab-deep-check.sh --only gpu` and that Ollama still shares the GPU.
+  7. Re-run the Tizen sideload once a build for 12.x is confirmed.
+- **n8n carries the bank-alert pipeline** ([proposal 010](proposals/010-bank-alerts-to-sure.md)).
+  After a bump, confirm the workflow is active and a real alert reaches Sure. A
+  200 from the UI proves nothing about that path.
+- **Memos changed version scheme** (`0.30.0` → `26.11.0`). It is tier 1 now, not
+  bulk: read the migration notes and treat it as a data migration, not a patch.
+  **Anything older than `0.31.0` must run `0.31.0` first.** Going straight to
+  26.x fails in a restart loop with `database schema … is too old to upgrade
+  directly`, before touching the database (hit 2026-11-02).
+- **Read each release's own "upgrade path" section.** A keyword scan of release
+  notes is a triage aid and missed the memos requirement above. A major jump, or
+  a version scheme change, gets its notes read in full.
+- **Vaultwarden has no second chance at a bad upgrade.** Before any bump, confirm
+  last night's backup exists, and afterwards confirm a client can sync and unlock.
 - **After a Jellyfin major, re-run the Samsung Tizen sideload.**
 - **Seerr**: after any move that resets it, re-check Settings → Network → **Enable
   Proxy Support** and Settings → General → **Application URL**. Off, Express rejects
   Caddy's `X-Forwarded-For` and rate limiting keys on the proxy instead of the client.
   Never hand-edit `settings.json` — Seerr rewrites it, like Jellyfin's `system.xml`.
-- **Sure**: verify AI chat still answers — a bind-mounted initializer
-  monkeypatches `Chat::UNDELIVERED_RESPONSE_TIMEOUT` and an upstream refactor
-  breaks it silently. Survived 0.7.3 (2026-08-24). "No reply" is far more often
+- **Sure**: verify AI chat still answers. Since the 0.7.6 upgrade the reply
+  timeout is upstream's `AI_RESPONSE_TIMEOUT`, fed from
+  `LLM_UNDELIVERED_RESPONSE_TIMEOUT` in `.env`. The bind-mounted initializer that
+  patched `Chat::UNDELIVERED_RESPONSE_TIMEOUT` is inert there, because the
+  constant is gone, and can be removed once 0.7.3 stops being the rollback. "No reply" is far more often
   **latency** than breakage: check `docker exec ollama ollama ps` for
   `100% GPU` before suspecting the patch — a model larger than the 6 GB card
   runs on CPU and a multi-tool reply can take 5 minutes, while the browser
@@ -239,10 +347,11 @@ signed off**, since the previous image is half the rollback.
 
 ## Releasing rollbacks (image pruning)
 
-> **NEXT SESSION: class A is the outstanding task from the 2026-08-24 upgrade
-> pass.** Class B is already done; class C has its own gate. Nothing is broken
-> and there is no deadline — `/data` has **67 G free**. Release class A once
-> the sign-off gate below is met.
+> **Class A was released 2026-11-02.** Class B is done; class C has its own gate.
+> The 2026-11-02 pass left its own rollbacks behind: release those once the pass
+> is signed off. Nothing is broken and there is no deadline —
+> `/data` had **32 G free** on 2026-11-02. Check that before a large pull: the
+> images are the rollbacks for this pass, so don't release them to make room for it.
 
 Old images are half the rollback, so pruning is the *last* step of an upgrade
 cycle, never part of it. On ciri there are three distinct classes and only one
@@ -283,7 +392,7 @@ Release the 2026-08-24 rollbacks only when **all** are true:
 - Sure 0.7.3: AI chat answers, balances correct.
 - Ollama 0.32.15 + Jellyfin still share the GPU without contention.
 
-### Class A — the 2026-08-24 upgrade rollbacks (~17.0 G) · **HOLD**
+### Class A — the 2026-08-24 upgrade rollbacks (~17.0 G) · **DONE 2026-11-02**
 
 `ollama:0.32.5` (8.04 G) · `immich-server:v3.0.2` (3.11 G) ·
 `paperless-ngx:2.20.15` (2.04 G) · `immich-machine-learning:v3.0.2` (1.85 G) ·
@@ -349,65 +458,74 @@ Single source of truth for "what is everything on, and when was it last
 checked". Update every cycle. **Fill in "Previous" before bumping** — a rollback
 cannot name a version it never recorded.
 
-## Platform (both nodes verified 2026-08-24)
+## Platform (verified 2026-11-02, after the full pass)
 
 | Host | Component | Current | Notes |
 |---|---|---|---|
-| geralt | pve-manager | 9.2.11 | 0 pending · pass D7 2026-08-24 (was 9.2.4, 98 pending) |
-| geralt | kernel | **7.0.14-12-pve** | was 7.0.14-4; 7.0.14-4-pve-signed retained as rollback |
-| yennefer | pve-manager | 9.2.11 | 0 pending · pass D6 2026-08-24 |
-| yennefer | kernel | **7.0.14-12-pve** | was 7.0.14-4; **7.0.14-4-pve-signed retained as rollback** |
-| 200 `pbs` | Proxmox Backup Server | 4.x | 0 pending (was 39) |
-| 201 `pihole-2` | Pi-hole | v6 | 0 pending (was 35) |
-| 202 `proxy` | Caddy | 2.11.4 | 0 pending; cloudflare plugin **present**. Caddy itself was *not* in the D6 upgrade set — the binary is still package-owned, so the plugin-drop risk stands |
-| 104 `uptime-kuma` | Uptime-Kuma | 2.4.0 | per as-built doc; not re-verified |
-| 205 `pulse` | Pulse | **v6.4.1** | built 2026-09-07, auto-update off; upgrade = re-run `install.sh --version <tag>` |
-| 150 `ciri` | Ubuntu | 26.04 LTS | kernel 7.0.0-30-generic, 8 pending |
-| 150 `ciri` | Docker Engine | **29.7.2** | docs said 29.6.1 — drift corrected |
-| 150 `ciri` | Docker Compose | **v5.5.0** | docs said v5.3.1 — drift corrected |
-| 150 `ciri` | nvidia-container-toolkit | **1.20.0** | docs said 1.19.1 — drift corrected |
-| 150 `ciri` | nvidia-driver-580-server | **580.173.02** | was 580.159.03 at install; rides ciri's apt upgrades. Added to the registry 2026-09-09 — it had drifted unrecorded ([gpu-passthrough.md](gpu-passthrough.md)) |
-| 150 `ciri` | `/data` disk (scsi1) | **128 G** | grown from 64 G on 2026-08-24 (`qm resize` + online `resize2fs`, no downtime); **67 G free** after the upgrade pass and the class-B prune |
+| geralt | pve-manager | **9.2.24** | 0 pending |
+| geralt | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback |
+| yennefer | pve-manager | **9.2.24** | 0 pending |
+| yennefer | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback |
+| geralt, yennefer, ciri | beszel-agent | **0.21.1** | was 0.18.7 |
+| 200 `pbs` | Proxmox Backup Server | **4.2.8** | 0 pending |
+| 101, 201 Pi-hole | Core / Web / FTL | **v6.5 / v6.6.1 / v6.8** | 0 pending |
+| 103, 203 Tailscale | Tailscale | **1.104.4** | 0 pending |
+| 202 `proxy` | Caddy | **2.11.7** | cloudflare plugin present; 2.11.4 build kept at `/root/caddy-2.11.4-cloudflare` |
+| 104 `uptime-kuma` | Uptime-Kuma | **2.5.9** | was 2.4.0 |
+| 204 `beszel` | Beszel hub | **0.21.1** | was 0.18.7; data backup at `/root/beszel-pre-0.21.1.tar.gz` |
+| 205 `pulse` | Pulse | **v6.6.0** | auto-update off; config backup at `/root/pulse-pre-6.6.0.tar.gz`; upgrade = re-run `install.sh --version <tag>` |
+| 150 `ciri` | Ubuntu | 26.04.1 LTS | kernel **7.0.0-42-generic**; 2 pending, both `software-properties`, held back by apt |
+| 150 `ciri` | Docker Engine | **29.9.2** | |
+| 150 `ciri` | Docker Compose | **v5.6.1** | |
+| 150 `ciri` | nvidia-container-toolkit | **1.20.1** | |
+| 150 `ciri` | nvidia-driver-580-server | **580.178.04** | DKMS (`nvidia-srv`), built for 7.0.0-34, -38 and -42 ([gpu-passthrough.md](gpu-passthrough.md)) |
+| 150 `ciri` | `/data` disk (scsi1) | **128 G** | grown from 64 G on 2026-08-24 (`qm resize` + online `resize2fs`, no downtime); **32 G free** on 2026-11-02, after the pass |
 
-## Container images (verified 2026-08-24, post-upgrade pass)
+## Container images (verified against live compose files 2026-11-01)
 
 | Stack | Service | Current | Previous (rollback) | Tier |
 |---|---|---|---|---|
-| homepage | homepage | `ghcr.io/gethomepage/homepage:v2.2.0` | — | 1 |
-| homepage | olivetin | `kaermorhen/olivetin:3000.19.0` (local build from `jamesread/olivetin:3000.19.0`) | — | 1 |
-| homepage | socket-proxy | `lscr.io/linuxserver/socket-proxy:3.4.4` | — | 0 |
-| homepage | results | `joseluisq/static-web-server:2.44.0` | — | 0 |
-| ai | ollama | `ollama/ollama:0.32.15` | `ollama/ollama:0.32.5` | 1 |
-| ai | open-webui | `ghcr.io/open-webui/open-webui:v0.11.0` | — | 1 |
-| ai | searxng | `searxng/searxng:2026.8.22-9fea41204` | `searxng/searxng:2026.7.28-c01178d03` | 0 |
-| immich | server | `ghcr.io/immich-app/immich-server:v3.1.0` | `ghcr.io/immich-app/immich-server:v3.0.2` | 2 |
-| immich | machine-learning | `ghcr.io/immich-app/immich-machine-learning:v3.1.0` | `ghcr.io/immich-app/immich-machine-learning:v3.0.2` | 2 |
+| homepage | homepage | `ghcr.io/gethomepage/homepage:v2.7.0` | `ghcr.io/gethomepage/homepage:v2.2.0` | 1 |
+| homepage | olivetin | `kaermorhen/olivetin:3000.21.0` (local build from `jamesread/olivetin:3000.21.0`) | `kaermorhen/olivetin:3000.19.0` | 1 |
+| homepage | socket-proxy | `lscr.io/linuxserver/socket-proxy:3.4.7` | `lscr.io/linuxserver/socket-proxy:3.4.4` | 0 |
+| homepage | results | `joseluisq/static-web-server:2.44.1` | `joseluisq/static-web-server:2.44.0` | 0 |
+| ai | ollama | `ollama/ollama:0.40.13` | `ollama/ollama:0.32.15` | 1 |
+| ai | open-webui | `ghcr.io/open-webui/open-webui:v0.12.5` | `ghcr.io/open-webui/open-webui:v0.11.0` + data tarball in `/data/backups/` | 1 |
+| ai | searxng | `searxng/searxng:2026.11.1-9ded3bec1` | `searxng/searxng:2026.8.22-9fea41204` | 0 |
+| immich | server | `ghcr.io/immich-app/immich-server:v3.3.5` | `ghcr.io/immich-app/immich-server:v3.1.0` + DB dump in `/data/backups/` | 2 |
+| immich | machine-learning | `ghcr.io/immich-app/immich-machine-learning:v3.3.5` | `ghcr.io/immich-app/immich-machine-learning:v3.1.0` | 2 |
 | immich | database | `ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0` | — | 3 |
-| immich | redis | `valkey/valkey:9.1.1` | `valkey/valkey:9.1.0` | 3 |
-| jellyfin | jellyfin | `jellyfin/jellyfin:10.11.11` | — | 2 |
-| memos | memos | `neosmemo/memos:0.30.0` | `neosmemo/memos:0.29.1` | 0 |
-| nebula-sync | nebula-sync | `ghcr.io/lovelaze/nebula-sync:v0.11.2` | — | 0 |
-| obsidian-sync | couchdb | `couchdb:3.5.2.1` | — | 1 |
-| paperless | webserver | `ghcr.io/paperless-ngx/paperless-ngx:3.0.5` | `ghcr.io/paperless-ngx/paperless-ngx:2.20.15` ⚠️ **tag alone is not a rollback — see v3 note** | 2 |
+| immich | redis | `valkey/valkey:9.1.1` | — | 3 |
+| jellyfin | jellyfin | `jellyfin/jellyfin:12.4` | `jellyfin/jellyfin:10.11.11` ⚠️ **tag alone is not a rollback: restore the config tarball in `/data/backups/`** | 2 |
+| memos | memos | `neosmemo/memos:26.11.0` | `neosmemo/memos:0.30.0` + data tarball in `/data/backups/` | 1 |
+| nebula-sync | nebula-sync | `ghcr.io/lovelaze/nebula-sync:v0.11.3` | `ghcr.io/lovelaze/nebula-sync:v0.11.2` | 0 |
+| obsidian-sync | couchdb | `couchdb:3.5.3` | `couchdb:3.5.2.1` | 1 |
+| paperless | webserver | `ghcr.io/paperless-ngx/paperless-ngx:3.4.1` | `ghcr.io/paperless-ngx/paperless-ngx:3.0.5` + DB dump in `/data/backups/` | 2 |
 | paperless | db | `postgres:16` ⚠️ **floating** — now **16.15** | `rollback/paperless-postgres:16.14` | 3 |
 | paperless | broker | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | `rollback/paperless-redis:7.4.9` | 3 |
 | paperless | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
 | servarr | gluetun | `qmcgaw/gluetun:v3.41.3` | `qmcgaw/gluetun:v3.41.1` | 2 |
-| servarr | qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.14` | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.13` | 2 |
+| servarr | qbittorrent | `lscr.io/linuxserver/qbittorrent:version-5.3.0_v2.1.2` | `lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.14` + config tarball in `/data/backups/` | 2 |
 | servarr | qbit-port-sync | `alpine:3.21` | — | 0 |
-| servarr | prowlarr | `lscr.io/linuxserver/prowlarr:version-2.5.2.5491` | — | 1 |
-| servarr | sonarr | `lscr.io/linuxserver/sonarr:version-4.0.19.2979` | — | 2 |
-| servarr | radarr | `lscr.io/linuxserver/radarr:version-6.3.0.10514` | — | 2 |
-| servarr | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | — | 0 |
-| servarr | bazarr | `lscr.io/linuxserver/bazarr:version-v1.6.0` | — | 1 |
-| servarr | seerr | `ghcr.io/seerr-team/seerr:v3.4.1` | `fallenbagel/jellyseerr:2.7.3` (renamed 2026-08-24) | 1 |
-| shrink | stirling | `docker.io/stirlingtools/stirling-pdf:2.14.3` | — | 1 |
-| shrink | mazanoke | `ghcr.io/civilblur/mazanoke:v1.1.6` | — | 0 |
-| n8n | n8n | `docker.io/n8nio/n8n:2.37.10` | — | 1 |
-| sure | web / worker | `ghcr.io/we-promise/sure:0.7.3` | `ghcr.io/we-promise/sure:0.7.2` | 2 |
+| servarr | prowlarr | `lscr.io/linuxserver/prowlarr:version-2.7.0.5723` | `lscr.io/linuxserver/prowlarr:version-2.5.2.5491` | 1 |
+| servarr | sonarr | `lscr.io/linuxserver/sonarr:version-4.0.20.3014` | `lscr.io/linuxserver/sonarr:version-4.0.19.2979` | 2 |
+| servarr | radarr | `lscr.io/linuxserver/radarr:version-6.4.4.10685` | `lscr.io/linuxserver/radarr:version-6.3.0.10514` | 2 |
+| servarr | flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.2` | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | 0 |
+| servarr | bazarr | `lscr.io/linuxserver/bazarr:version-v1.6.2` | `lscr.io/linuxserver/bazarr:version-v1.6.0` | 1 |
+| servarr | seerr | `ghcr.io/seerr-team/seerr:v3.5.1` | `ghcr.io/seerr-team/seerr:v3.4.1` + config tarball in `/data/backups/` | 1 |
+| shrink | stirling | `docker.io/stirlingtools/stirling-pdf:3.2.2` | `docker.io/stirlingtools/stirling-pdf:2.14.3` + config tarball in `/data/backups/` | 1 |
+| shrink | mazanoke | `ghcr.io/civilblur/mazanoke:v1.1.7` | `ghcr.io/civilblur/mazanoke:v1.1.6` | 0 |
+| n8n | n8n | `docker.io/n8nio/n8n:2.45.7` | `docker.io/n8nio/n8n:2.37.10` + data tarball in `/data/backups/` | 2 |
+| sure | web / worker | `ghcr.io/we-promise/sure:0.7.6` | `ghcr.io/we-promise/sure:0.7.3` + DB dump in `/data/backups/` | 2 |
 | sure | db | `postgres:16` ⚠️ **floating** — now **16.15** | — | 3 |
 | sure | redis | `redis:7.4-alpine` ⚠️ **floating** — now **7.4.11** | — | 3 |
 | sure | backup | `prodrigestivill/postgres-backup-local:16` | — | 3 |
+| vaultwarden | vaultwarden | `vaultwarden/server:1.37.4` | — | 2 |
+| manga | manga-gluetun | `qmcgaw/gluetun:v3.41.3` | — | 2 |
+| manga | suwayomi | `ghcr.io/suwayomi/suwayomi-server:v2.4.2366` | `ghcr.io/suwayomi/suwayomi-server:v2.3.2243` | 1 |
+| manga | manga-flaresolverr | `ghcr.io/flaresolverr/flaresolverr:v3.5.2` | `ghcr.io/flaresolverr/flaresolverr:v3.5.0` | 0 |
+| manga | komga | `gotson/komga:1.29.2` | `gotson/komga:1.27.0` | 1 |
+| books | kavita | `lscr.io/linuxserver/kavita:version-v0.9.1.4` | — | 1 |
 
 ⚠️ **Floating tags violate the pinning policy** — an incident cannot answer
 "what changed?" and a rollback has no version to name. `sure:stable` and
@@ -426,8 +544,32 @@ being unrecoverable.
 
 That the fix was needed at all is the argument for pinning these four.
 
+## Held back after the 2026-11-02 pass
+
+| Service | Running | Available | Why |
+|---|---|---|---|
+| n8n | 2.45.7 | 3.0.1 | Pre-release; stable releases only |
+| valkey (immich) | 9.1.1 | 9.1.3 | Tier 3 |
+| postgres, redis | floating `16`, `7.4-alpine` | 16.15 is current for 16; redis 7.4.12 | Tier 3, shared between stacks |
+| alpine (`qbit-port-sync`) | `3.21` | 3.21.9 | Pulling it strands the running sidecar |
+| Tizen client | built 2026-07-20 | not checked | Works on 12.4, so no rebuild is needed yet |
+
 ## Open items
 
+- **n8n stays on 2.x until 3.x is stable.** 3.0.0 and 3.0.1 are pre-releases
+  (decided 2026-11-02: stable releases only), and n8n's blog gives early December
+  for stable 3.x. Before moving, run Settings › Migration Report, available from
+  2.39, and review [the breaking changes](https://docs.n8n.io/changelog/v30-breaking-changes).
+- **Ollama `qwen3:8b` no longer fits the GPU.** Since 0.40.13 it loads at 6.0 GB
+  and splits 14% CPU / 86% GPU, where `configs/ciri/ai/README.md` says 100% GPU.
+  The first things to try are a lower `OLLAMA_CONTEXT_LENGTH` or `qwen3:4b`.
+  Also check that `OLLAMA_KV_CACHE_TYPE` still applies to the new engine.
+- **Upgraded Ollama models keep a backup copy** on `/mnt/ai-models`. Watch that
+  disk as models get used; the 0.40.2 notes describe how to remove them.
+- **The Samsung Tizen client still runs the 2026-07-20 build.** It plays on 12.4
+  with no rebuild, so refreshing it is optional. Upstream has one open 12.0 issue
+  about photos failing to open full screen.
+- **Remove Sure's inert initializer** once 0.7.3 stops being the rollback.
 - **Pulse's monitoring token holds two privileges wider than read-only**
   (deferred 2026-09-07, [proposal 008](proposals/008-lab-dashboard.md)). Its
   setup script created `pulse-monitor@pve` with `PVEDatastoreAdmin` on
@@ -440,14 +582,16 @@ That the fix was needed at all is the argument for pinning these four.
   `Datastore.AllocateSpace`); PBS's own token is already `Audit`-only and needs
   nothing. Nothing about the dashboard depends on the wider rights, so this is
   a tightening exercise, not a fix.
-- **Kuma `resend_interval = 0` on ~29 monitors** — notifies once, then never
-  again. Caused a 12-day silent outage. **Highest-value fix in the lab**; do it
-  before relying on any post-upgrade monitoring.
+- **Kuma `resend_interval = 0` on ~29 monitors — status unverified.** The D6
+  result says it was 30 minutes by 2026-08-24, while this list and proposal 006
+  §8 still call it open. Check it in the Kuma UI and delete this item if done.
+  It matters: `0` notifies once, then never again, and caused a 12-day silent
+  outage.
 - **Pin `postgres:16` and `redis:7.4-alpine`** — the last four floating tags,
   now demonstrably drifting between stacks (see the registry note).
-- **Release the 2026-08-24 upgrade rollbacks (class A, ~17 G)** — held pending
-  the sign-off gate in [Releasing rollbacks](#releasing-rollbacks-image-pruning).
-  Class B (~3.3 G of unrelated leftovers) was cleared 2026-08-24.
+- **Release the 2026-11-02 rollbacks** once the pass is signed off, by explicit
+  image name as in [Releasing rollbacks](#releasing-rollbacks-image-pruning).
+  The tarballs and dumps in `/data/backups/` go at the same time.
 - **A pre-major `pg_dump` was planned and not taken** (paperless v3). The PBS
   snapshot happened to cover it. Add "verify the artifact exists with `ls -lh`"
   to the pre-flight for any future one-way migration.

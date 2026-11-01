@@ -88,7 +88,7 @@ services:
 
   # ---- Acquisition (no own network — lives in gluetun's netns) ------------
   suwayomi:
-    image: ghcr.io/suwayomi/suwayomi-server:v2.3.2243
+    image: ghcr.io/suwayomi/suwayomi-server:v2.4.2366
     container_name: suwayomi
     restart: unless-stopped
     # All traffic goes through gluetun; dies with the tunnel (kill-switch).
@@ -174,7 +174,7 @@ services:
   # unique per host. No ports: Suwayomi reaches it on localhost:8191 inside
   # the shared namespace, so 8191 stays free on ciri for servarr's instance.
   manga-flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:v3.5.0
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.2
     container_name: manga-flaresolverr
     restart: unless-stopped
     network_mode: "service:manga-gluetun"
@@ -186,7 +186,7 @@ services:
 
   # ---- Library + reader (NOT behind the VPN, deliberately) ----------------
   komga:
-    image: gotson/komga:1.27.0
+    image: gotson/komga:1.29.2
     container_name: komga
     restart: unless-stopped
     user: "13000:13000"

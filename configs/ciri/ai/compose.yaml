@@ -22,7 +22,7 @@
 
 services:
   ollama:
-    image: ollama/ollama:0.32.15
+    image: ollama/ollama:0.40.13
     container_name: ollama
     restart: unless-stopped
     ports:
@@ -73,7 +73,7 @@ services:
       - ai_net
 
   open-webui:
-    image: ghcr.io/open-webui/open-webui:v0.11.0
+    image: ghcr.io/open-webui/open-webui:v0.12.5
     container_name: open-webui
     restart: unless-stopped
     ports:
@@ -101,7 +101,7 @@ services:
       - ai_net
 
   searxng:
-    image: searxng/searxng:2026.8.22-9fea41204
+    image: searxng/searxng:2026.11.1-9ded3bec1
     container_name: searxng
     restart: unless-stopped
     # No published port: only Open WebUI queries it, over ai_net. Publish

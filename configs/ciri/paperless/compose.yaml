@@ -13,7 +13,7 @@ x-db-env: &db_env
 
 services:
   webserver:
-    image: ghcr.io/paperless-ngx/paperless-ngx:3.0.5
+    image: ghcr.io/paperless-ngx/paperless-ngx:3.4.1
     container_name: paperless
     restart: unless-stopped
     depends_on:

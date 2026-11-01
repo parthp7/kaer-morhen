@@ -103,7 +103,7 @@ services:
 
   # ---- Torrent client (no own network — lives in gluetun's netns) ----------
   qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:version-5.2.3_v2.0.14
+    image: lscr.io/linuxserver/qbittorrent:version-5.3.0_v2.1.2
     container_name: qbittorrent
     restart: unless-stopped
     # All traffic goes through gluetun; dies with the tunnel (kill-switch).
@@ -196,7 +196,7 @@ services:
 
   # ---- Indexer manager -----------------------------------------------------
   prowlarr:
-    image: lscr.io/linuxserver/prowlarr:version-2.5.2.5491
+    image: lscr.io/linuxserver/prowlarr:version-2.7.0.5723
     container_name: prowlarr
     restart: unless-stopped
     environment:
@@ -210,7 +210,7 @@ services:
 
   # ---- TV ------------------------------------------------------------------
   sonarr:
-    image: lscr.io/linuxserver/sonarr:version-4.0.19.2979
+    image: lscr.io/linuxserver/sonarr:version-4.0.20.3014
     container_name: sonarr
     restart: unless-stopped
     environment:
@@ -226,7 +226,7 @@ services:
 
   # ---- Movies --------------------------------------------------------------
   radarr:
-    image: lscr.io/linuxserver/radarr:version-6.3.0.10514
+    image: lscr.io/linuxserver/radarr:version-6.4.4.10685
     container_name: radarr
     restart: unless-stopped
     environment:
@@ -245,7 +245,7 @@ services:
   # indexer requests through it (Settings → Indexers → Proxies → FlareSolverr,
   # host http://flaresolverr:8191). See README.
   flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:v3.5.0
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.2
     container_name: flaresolverr
     restart: unless-stopped
     environment:
@@ -258,7 +258,7 @@ services:
 
   # ---- Subtitles -----------------------------------------------------------
   bazarr:
-    image: lscr.io/linuxserver/bazarr:version-v1.6.0
+    image: lscr.io/linuxserver/bazarr:version-v1.6.2
     container_name: bazarr
     restart: unless-stopped
     environment:
@@ -291,7 +291,7 @@ services:
   #   - The image ships no init process, so `init: true` is REQUIRED — without it
   #     PID 1 reaps nothing and zombie processes accumulate.
   seerr:
-    image: ghcr.io/seerr-team/seerr:v3.4.1
+    image: ghcr.io/seerr-team/seerr:v3.5.1
     container_name: seerr
     init: true
     restart: unless-stopped

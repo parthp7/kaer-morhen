@@ -134,6 +134,7 @@
           type: jellyfin
           url: http://{{HOMEPAGE_VAR_LAN_PREFIX}}.150:8096
           key: "{{HOMEPAGE_VAR_JELLYFIN_KEY}}"
+          version: 2   # required from Jellyfin 12: v1 calls the removed /emby routes
           enableBlocks: true
     - qBittorrent:
         icon: qbittorrent.png
