@@ -168,7 +168,7 @@ the four groups described after the table.
 | photos-backup | **Push** (86400 s → **90000 s**) | fed by `restic-photos.sh` on geralt, daily 05:00 IST | dead-man switch for the nightly restic backup ([backups](../scripts/backup/README.md)); silent from 2026-07-16, fixed 2026-07-30 — see below |
 | ciri media mount | **Push** (360 s) | fed by `media-mount-health.sh` on ciri | **functional, not liveness** — added 2026-07-29; became an **NFS** probe 2026-08-23, see below |
 | media-export geralt | **Push** (60 s) | fed by `media-export-health.sh` on geralt | **functional, not liveness** — added 2026-08-23; the *server-side* half of the media path, see below |
-| servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri every 180 s | **functional, not liveness** — added 2026-07-29; leak = hard alert, PF=0 = soft; stranded client / port mismatch / PF exited are **auto-fixed** since 2026-10-20, see below |
+| servarr vpn health | **Push** (360 s) | fed by `servarr-vpn-health.sh` on ciri every 180 s | **functional, not liveness** — added 2026-07-29; leak = hard alert, no egress etc. = red after 3 runs (since 2026-11-02, retries 0), PF=0 = soft; stranded client / port mismatch / PF exited are **auto-fixed** since 2026-10-20, see below |
 | ciri gpu health | **Push** (360 s) | fed by `gpu-health.sh` on ciri | **functional, not liveness** — deployed 2026-08-05; runs a real NVENC encode inside the jellyfin container, see below |
 | proxy-caddy | Ping | `<LAN_PREFIX>.202` | reverse proxy liveness — added 2026-08-23 ([proposal 003](proposals/003-reverse-proxy.md)) |
 | proxy-tls | HTTPS | `https://memos.kaermorhen.fyi` | proxy **plus** certificate expiry (expiry notification on, TLS errors not ignored). Backend up + proxy-tls down isolates the fault to the proxy. Needs a static `/etc/hosts` entry on 104 — see gotchas |
@@ -365,16 +365,24 @@ and prove nothing — that distinction is the whole monitor.
 | | Condition | Why |
 |---|---|---|
 | **Hard** (red immediately) | egress IP == ciri's public IP | a leak; must never happen |
-| **Hard** | `tun0` missing from gluetun's netns | kill-switch failed open (vendor-neutral; replaced a provider check that false-alarmed — see below) |
-| **Hard** | no egress at all from the netns | tunnel down / kill-switch shut — torrenting stopped |
-| **Hard** | gluetun control server unreachable | can't verify anything |
-| **Hard** | qbittorrent or qbit-port-sync orphaned (netns ≠ gluetun's) | gluetun restarted without them; they sit in a dead netns with only `lo` (**auto-fixed**, added 2026-10-21 after a 5 h outage) |
-| **Hard** | qBittorrent API unreachable | dead client behind a live tunnel |
-| **Hard** | gluetun's port-forwarding service has EXITED | a NAT-PMP refusal during PF startup is not retried, and PF is gone until a restart (**auto-fixed**) |
+| **Hard** (red immediately) | `tun0` missing from gluetun's netns | kill-switch failed open (vendor-neutral; replaced a provider check that false-alarmed — see below) |
+| **Hard** (red on 3rd run) | no egress at all from the netns | tunnel down / kill-switch shut — torrenting stopped, nothing leaks; gluetun usually reconnects by the next run |
+| **Hard** (red on 3rd run) | gluetun control server unreachable | can't verify anything; also what a gluetun restart looks like for one run |
+| **Hard** (red on 3rd run) | qbittorrent or qbit-port-sync orphaned (netns ≠ gluetun's) | gluetun restarted without them; they sit in a dead netns with only `lo` (**auto-fixed** from the 1st run, added 2026-10-21 after a 5 h outage) |
+| **Hard** (red on 3rd run) | qBittorrent API unreachable | dead client behind a live tunnel; also what the auto-fix's qbittorrent restart looks like for one run |
+| **Hard** (red on 3rd run) | gluetun's port-forwarding service has EXITED | a NAT-PMP refusal during PF startup is not retried, and PF is gone until a restart (**auto-fixed** from the 1st run) |
 | **Soft** | qBit's external address != the tunnel's | client stranded on a torn-down tunnel after gluetun reconnects; never self-heals (**auto-fixed** after 3 runs) |
 | **Soft** (green, reason logged) | forwarded port == 0 | Proton drops PF server-side intermittently; qbit-port-sync keeps the last good port so torrenting continues |
 | **Soft** | forwarded port != qBit's `listen_port` | the sidecar polls every 30 s; a brief mismatch after a rotation is normal |
 | **Soft** | egress comparison unverifiable | ciri's public-IP lookup failed *and* no cached value — an ipify outage must not fake a leak |
+
+"Red on 3rd run" (since 2026-11-02): the first two consecutive runs push `up`
+with a `degraded:` message, and the third pushes `down`. These leak nothing and
+almost always heal within that time, and they were the bulk of this monitor's
+alerts. Kuma's Retries is **0** on this monitor for the same reason: with a retry
+left, Kuma 2.4 turned the script's own down push into a mislabelled
+`No heartbeat in the time window` page. Details in
+[scripts/monitoring/README.md](../scripts/monitoring/README.md#grace-for-hard-failures-that-heal-added-2026-11-02).
 
 Soft conditions escalate to a hard alert after **10 consecutive runs** (~30 min at
 the 180 s timer; 6 at the old 300 s one), counted in

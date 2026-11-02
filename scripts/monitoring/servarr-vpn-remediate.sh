@@ -292,6 +292,7 @@ record() {
 reset_health_counters() {
   (( DRY_RUN )) && return 0
   echo 0 > "$STATE_DIR/degraded.strikes"
+  echo 0 > "$STATE_DIR/hard.streak"
   echo "" > "$STATE_DIR/reason"
   echo 0 > "$STATE_DIR/reason.count"
 }

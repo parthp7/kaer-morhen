@@ -379,10 +379,14 @@ compare the answer to ciri's own public IP. Probing from ciri would measure ciri
 and prove nothing — qBittorrent lives in gluetun's namespace, so that is the only
 place the question can be asked honestly.
 
-**Hard** (red at once): egress == ciri's public IP; the `tun0` interface missing
-from the netns; no egress at all; gluetun control server unreachable; qbittorrent
-or qbit-port-sync *orphaned* (its netns inode ≠ gluetun's); qBittorrent API
-unreachable; port forwarding EXITED. **Soft** (green, reason in the heartbeat
+**Hard, red at once**: egress == ciri's public IP (a leak); the `tun0` interface
+missing from the netns. These are the only two that can expose the home IP.
+**Hard, red on the 3rd consecutive run** (`HARD_GRACE_RUNS`, ≈6 min; green with a
+`degraded: … [run n/3 before paging]` message before that): no egress at all;
+gluetun control server unreachable; qbittorrent or qbit-port-sync *orphaned* (its
+netns inode ≠ gluetun's); qBittorrent API unreachable; port forwarding EXITED.
+See [Grace](#grace-for-hard-failures-that-heal-added-2026-11-02) below.
+**Soft** (green, reason in the heartbeat
 log): qBit's external address ≠ the tunnel's (a *stranded* client); forwarded port
 `0`; forwarded port ≠ qBit's `listen_port`; or the egress comparison being
 unverifiable — all escalate to red after `MAX_STRIKES` (default 10 at the 3-min
@@ -454,10 +458,41 @@ sudo systemctl restart servarr-vpn-health.timer   # pick up a changed schedule
 journalctl -u servarr-vpn-health.service -n 10 --no-pager
 ```
 
-Kuma monitor: **Push**, name `servarr vpn health`, Heartbeat Interval **360 s**,
-Retries **1** — twice the 180 s push period; see the heartbeat-interval note
-above. Strip the `?status=up&msg=OK&ping=` query string from the URL
-Kuma displays — the script appends its own parameters.
+Kuma monitor: **Push**, name `servarr vpn health`, Heartbeat Interval **360 s**
+(twice the 180 s push period; see the timer note above), **Retries 0**. Strip the
+`?status=up&msg=OK&ping=` query string from the URL Kuma displays — the script
+appends its own parameters.
+
+**Why Retries 0** (it was 1 until 2026-11-02): with a retry left, Kuma stores the
+script's first `status=down` push as PENDING and sends nothing. Its own push
+check then runs before the next push, and in Kuma 2.4.0 that check
+(`server/model/monitor.js`, the `type === "push"` branch) treats *any* previous
+beat that is not UP as a missing heartbeat. So the page that went out said
+`No heartbeat in the time window`, and the real reason stayed in the unseen
+PENDING row. That was every one of the 76 "No heartbeat" alerts from 10-20 to
+11-02. Each followed a down push within 0–243 s, while ciri ran all 6,681 timer
+runs on schedule with no failed push. With Retries 0, a down push is DOWN with its
+own message, and "No heartbeat" again means a heartbeat really was missed. The
+script now does the waiting itself; see Grace below.
+
+### Grace for hard failures that heal (added 2026-11-02)
+
+Most of the red alerts were `no egress` runs that were fine again on the next
+run. These, and the other hard verdicts that leak nothing (ctl unreachable,
+orphaned, qBit API unreachable, PF exited), now push `up` with a `degraded:`
+message for 2 consecutive runs and `down` from the 3rd. That is about 6 minutes,
+enough for gluetun's own reconnect or the auto-fix ladder, whose restarts produce
+some of these verdicts for a run themselves. The auto-fix still starts on the
+first run. Leak and `tun0` missing still page at once.
+
+- **Streak**: `/var/lib/servarr-vpn-health/hard.streak` counts consecutive runs
+  with *any* of these verdicts, because a single gluetun restart can step through
+  several of them. An ok or soft run resets it; a successful auto-fix resets it
+  too.
+- **Not amber**: a Kuma push can only be `up` or `down`. Amber is Kuma's PENDING,
+  which comes from Retries, and Kuma itself turns that into a mislabelled DOWN
+  (above). So the grace runs are green, with the reason in the heartbeat log.
+- `HARD_GRACE_RUNS=1` restores red on the first run.
 
 ### Auto-fix: `servarr-vpn-remediate.sh` (added 2026-10-20)
 
@@ -556,6 +591,16 @@ Tests:
   ```
   → hard fail, Kuma reddens, ntfy fires. Re-run without the override to clear.
   `HOST_IP_OVERRIDE` never writes the host-IP cache, so this leaves no residue.
+- **Test the grace path** without touching the tunnel. A name that cannot resolve
+  fakes `no egress` at once (not an unroutable IP: busybox `wget --timeout` does not
+  bound the TCP connect, so `https://192.0.2.1` hangs for ~2 min):
+  ```bash
+  for i in 1 2 3; do sudo EGRESS_URL=https://egress-test.invalid /usr/local/bin/servarr-vpn-health.sh; done
+  ```
+  → runs 1 and 2 print `degraded: no egress … [run n/3 before paging]` and exit 0,
+  and run 3 prints `FAIL … [persisted 3 consecutive checks]`, Kuma reddens, ntfy
+  fires. The next timer run clears it. A timer run landing in between resets the
+  streak, so just run it again.
 - **Test the soft path**: `sudo MAX_STRIKES=1 /usr/local/bin/servarr-vpn-health.sh`
   while the forwarded port is 0 → escalates immediately instead of after 10.
   Reset afterwards with

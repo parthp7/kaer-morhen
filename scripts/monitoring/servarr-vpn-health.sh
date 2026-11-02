@@ -15,7 +15,8 @@
 #   came from. Not "is gluetun running" — where does the traffic actually exit.
 #
 # Two severities, deliberately
-#   HARD (push down immediately) — things that must never be true:
+#   HARD (push down; at once for 2 and 4, after $HARD_GRACE_RUNS runs for the rest,
+#   see "Grace" below) — things that must never be true:
 #     1. gluetun's control server is unreachable      → can't verify anything
 #     2. the tunnel interface is gone                 → kill-switch has failed open
 #     3. no egress at all from the netns              → tunnel down / kill-switch shut
@@ -129,6 +130,33 @@
 #   provably cannot self-heal. Everything that has ever recovered on its own gets
 #   $MAX_STRIKES to do it.
 #
+# Grace for hard failures that heal (added 2026-11-02)
+#   Only 2 (tun_missing) and 4 (leak) page on the first run. These can expose
+#   the home IP. The other hard verdicts — 1, 3, 5, 6 and 7 — stop torrenting but
+#   leak nothing, and since the auto-fix they nearly always clear by themselves:
+#   gluetun reconnects (no egress), or the remediator restarts the stack, which
+#   produces ctl_unreachable and qbit_api for a run while it does. They push
+#   status=up with a "degraded:" message for the first $HARD_GRACE_RUNS - 1
+#   consecutive runs, and down from the run after that (default 3, ~6 min).
+#   The auto-fix still triggers from the first run.
+#
+#   Measured: in the 14 days to 2026-11-02 the monitor sent 85 Kuma alerts. 76 of
+#   them read "No heartbeat in the time window", and every one of those followed a
+#   down push from this script within 0-243 s (Kuma relabels it, see below). Where
+#   the reason survives, it is mostly no_egress, and most were up again on the
+#   next run.
+#
+#   Why not amber: a push can only send up or down. Amber is Kuma's PENDING
+#   state, which comes from the monitor's Retries setting, and Kuma 2.4's own push
+#   check turns any non-UP beat into "No heartbeat in the time window" (DOWN) at its
+#   next check, losing the real reason. So the grace runs stay green, and the reason
+#   shows in Kuma's heartbeat log. Retries should be 0 on this monitor; see the README.
+#
+#   The streak counts consecutive runs with any grace verdict, not one code. One
+#   gluetun restart can show up as ctl_unreachable, then no_egress, then orphaned,
+#   and that is one outage, not three. An ok or soft run resets it. A leak or
+#   tun_missing run leaves it alone, because that run has already paged.
+#
 # Fail-closed, without crying wolf
 #   "Cannot determine" is never treated as "fine". If ciri's own public IP can't be
 #   fetched, the comparison falls back to the last-known value cached in $STATE_DIR;
@@ -186,8 +214,10 @@
 #           secrets.local.yaml — never here.
 # Env overrides: GLUETUN_CTR, QBIT_CTR, SYNC_CTR, TUN_IF, MAX_STRIKES, KUMA_URL_FILE, STATE_DIR,
 #                PF_QUIET_SECS, REMEDIATE (0 disables the auto-fix trigger),
+#                HARD_GRACE_RUNS (1 restores paging on the first run),
 #                HOST_IP_OVERRIDE (test hook — see the leak-path test in the README),
-#                QBIT_IP_OVERRIDE (test hook — fakes a stranded client)
+#                QBIT_IP_OVERRIDE (test hook — fakes a stranded client),
+#                EGRESS_URL (test hook — an unreachable URL fakes no egress)
 
 set -euo pipefail
 
@@ -206,6 +236,14 @@ readonly MAX_STRIKES="${MAX_STRIKES:-10}"
 readonly KUMA_URL_FILE="${KUMA_URL_FILE:-/etc/kuma-push.servarr-vpn}"
 readonly STATE_DIR="${STATE_DIR:-/var/lib/servarr-vpn-health}"
 readonly STRIKE_FILE="$STATE_DIR/degraded.strikes"
+# Grace for hard failures that heal — see the header. The streak is the number of
+# consecutive runs with a grace verdict.
+readonly HARD_GRACE_RUNS="${HARD_GRACE_RUNS:-3}"
+readonly HARD_STREAK_FILE="$STATE_DIR/hard.streak"
+# Where the netns egress probe asks for its own address. Test hook: a name that
+# cannot resolve (https://egress-test.invalid) fakes no_egress without touching the
+# tunnel. Not an unroutable IP: busybox wget's --timeout does not bound the connect.
+readonly EGRESS_URL="${EGRESS_URL:-https://api.ipify.org}"
 # Last successfully-resolved public IP of ciri itself. Lets the leak comparison
 # survive a transient outage of the external IP lookup without going blind.
 readonly HOST_IP_CACHE="$STATE_DIR/host-public-ip"
@@ -332,21 +370,30 @@ fetch_pf_port() {
     | jq -r '.port // empty' || true
 }
 
-# Consecutive-degraded bookkeeping. Kept out of /tmp so a reboot doesn't silently
-# reset a genuinely stuck port back to strike 0.
-read_strikes() {
+# Consecutive-run counters ($STRIKE_FILE, $HARD_STREAK_FILE). Kept out of /tmp so a
+# reboot doesn't silently reset a genuinely stuck port back to strike 0.
+read_count() {
   local n
-  if [[ -r "$STRIKE_FILE" ]] && n=$(< "$STRIKE_FILE") && [[ "$n" =~ ^[0-9]+$ ]]; then
+  if [[ -r "$1" ]] && n=$(< "$1") && [[ "$n" =~ ^[0-9]+$ ]]; then
     echo "$n"
   else
     echo 0
   fi
 }
 
-write_strikes() {
+write_count() {
   (( DRY_RUN )) && return 0
   mkdir -p "$STATE_DIR" 2>/dev/null || true
-  echo "$1" > "$STRIKE_FILE" 2>/dev/null || true
+  echo "$2" > "$1" 2>/dev/null || true
+}
+
+# Hard verdicts that leak nothing and have always healed: they get the grace runs.
+# leak and tun_missing are deliberately absent. See the header.
+has_grace() {
+  case $1 in
+    ctl_unreachable|no_egress|orphaned|qbit_api|pf_exited) return 0 ;;
+  esac
+  return 1
 }
 
 # Map a reason to the remediation it earns and how many consecutive runs it must
@@ -429,7 +476,7 @@ check() {
 
   # 3. Real egress test: an actual outbound request from inside the torrent netns.
   #    This is the heart of the monitor — everything else is corroboration.
-  if ! vpn_ip=$(in_netns wget -qO- --timeout=15 https://api.ipify.org) || [[ -z "$vpn_ip" ]]; then
+  if ! vpn_ip=$(in_netns wget -qO- --timeout=15 "$EGRESS_URL") || [[ -z "$vpn_ip" ]]; then
     echo "no_egress|no egress from gluetun netns — tunnel down or kill-switch engaged (torrenting is stopped)"
     return 1
   fi
@@ -559,7 +606,7 @@ check() {
 }
 
 main() {
-  local detail rc strikes code count
+  local detail rc strikes code count streak
   case "${1:-}" in
     --dry-run|-n) DRY_RUN=1 ;;
     "")           ;;
@@ -580,13 +627,15 @@ main() {
 
   case $rc in
     0)
-      write_strikes 0
+      write_count "$STRIKE_FILE" 0
+      write_count "$HARD_STREAK_FILE" 0
       push "up" "$detail"
       echo "servarr-vpn-health: $detail"
       ;;
     2)
-      strikes=$(( $(read_strikes) + 1 ))
-      write_strikes "$strikes"
+      write_count "$HARD_STREAK_FILE" 0
+      strikes=$(( $(read_count "$STRIKE_FILE") + 1 ))
+      write_count "$STRIKE_FILE" "$strikes"
       if (( strikes >= MAX_STRIKES )); then
         # Stopped being transient. Escalate to a real alert.
         detail="$detail [persisted $strikes consecutive checks]"
@@ -602,6 +651,20 @@ main() {
     *)
       # Hard failures do not touch the strike counter: they are their own alert,
       # and zeroing it here would let a leak mask an already-escalating port fault.
+      if has_grace "$code"; then
+        streak=$(( $(read_count "$HARD_STREAK_FILE") + 1 ))
+        write_count "$HARD_STREAK_FILE" "$streak"
+        if (( streak < HARD_GRACE_RUNS )); then
+          # Torrenting is stopped, nothing leaks, and it usually heals by the next
+          # run. Stay green with the reason visible; page only if it persists.
+          detail="degraded: $detail [run $streak/$HARD_GRACE_RUNS before paging]"
+          push "up" "$detail"
+          echo "servarr-vpn-health: $detail"
+          maybe_remediate "$code" "$count"
+          return 0
+        fi
+        detail="$detail [persisted $streak consecutive checks]"
+      fi
       push "down" "$detail"
       echo "servarr-vpn-health: FAIL — $detail" >&2
       maybe_remediate "$code" "$count"
