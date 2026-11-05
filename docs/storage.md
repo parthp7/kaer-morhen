@@ -1605,3 +1605,130 @@ Sep 14 23:57:31  sd 6:0:0:0: [sdb] Attached SCSI disk
 
 The enclosure is now the next suspect in line, but one drop is not enough to act on.
 Restart the ≥7–10 day clock from **2026-09-14 23:57**.
+
+## Incident 2026-11-05 — yennefer's boot SSD dropped off the SATA bus
+
+The first failure of a **boot** disk in the lab, and the first incident on yennefer's
+storage. The NFORCE M.2 SATA SSD (`sdb`, `ata3`/`host2`) holds the `pve` VG, which
+means root, swap and the `local-lvm` thin pool, so **every yennefer guest disk** sits on it.
+The drive stopped answering commands while the host kept running. A power cycle brought
+it back with clean SMART. The most likely cause is SATA link power management, but that
+is **not confirmed**.
+
+### What happened
+
+| When (IST) | Event |
+|---|---|
+| 11-01 23:52 | yennefer's last boot before the incident. SSD link up at 6.0 Gbps, ALPM policy `med_power_with_dipm` (`lpm-pol 3`) |
+| 11-05 04:30 | Nightly vzdump snapshots mount and unmount cleanly. Last sign of normal disk I/O in the log |
+| **10:28:55** | **Last entry the journal managed to write.** Nothing about the disk appears before it, so the drive gave no warning |
+| 10:39:42 | Kuma: `pulse` down (`timeout of 48000ms exceeded`) → ntfy |
+| **10:41:22** | Root ext4 (`dm-1`) aborts: `first_error_func=ext4_reserve_inode_write`, mount flag becomes `emergency_ro` |
+| 10:42:19 | Kuma: `pbs` down (`connect EHOSTUNREACH <LAN_PREFIX>.200:8007`) → ntfy |
+| 11:38:18 | Kuma: `beszel` down (`ECONNREFUSED <LAN_PREFIX>.204:8090`) → ntfy |
+| ~12:16 | Investigated over SSH using shell builtins only (see signature below) |
+| ~12:19 | Reboot. The switch is powered from yennefer, so the whole LAN dropped briefly ([hardware-inventory.md](hardware-inventory.md) § DC power backup) |
+| 12:20:07 | `ata3: SATA link up 6.0 Gbps`, SSD enumerates normally. Root fsck skipped, ext4 mounts clean |
+| 12:22:25 | Guest rootfs replay their journals (`recovery complete`) after a ~2 min MMP wait |
+| 12:23–12:25 | Kuma: `pbs`, `pulse`, `beszel`, `yennefer` group all green |
+| 13:21 | ALPM fix applied on `host2` (see Fixes) |
+
+Downtime: **PBS ~1 h 41 m, Pulse ~1 h 45 m, Beszel ~47 m**. Nothing was lost:
+PBS's datastore is on the separate `sda` backup disk, which stayed mounted read-write
+throughout.
+
+### Signature: the disk is gone, not degrading
+
+From 10:41 until the reboot, ssh still logged in, but any binary on disk failed:
+
+```
+bash: line 1: /usr/bin/uptime: Input/output error
+bash: line 1: /usr/bin/journalctl: Input/output error
+```
+
+The kernel ring buffer (only ~10 min deep by then, flooded) showed **every** read
+failing, **sector 0 included**, with a SCSI host error, not a media error:
+
+```
+sd 2:0:0:0: [sdb] tag#6 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+I/O error, dev sdb, sector 0 op 0x0:(READ) flags 0x0 phys_seg 32 prio class 2
+```
+
+`DID_BAD_TARGET` on every LBA means the drive's controller stopped responding as a
+whole. Bad sectors fail only some LBAs and report medium errors. `/sys/block/sdb/device/state`
+still read `running` and `ioerr_cnt` had reached `0x6320` (~25 k).
+The kernel never offlined the device, so it kept retrying. After the reboot, SMART
+confirmed the drive itself is not damaged:
+
+| SMART | Value |
+|---|---|
+| overall | PASSED |
+| 5 Reallocated_Sector_Ct | 0 |
+| 187 Reported_Uncorrect | 0 |
+| 199 UDMA_CRC_Error_Count | 0 (so the connection is clean, not a loose seat) |
+| 180 Unused_Rsvd_Blk_Cnt_Tot | 66 |
+| 194 Temperature | 38 °C (min/max 31/40) |
+| 9 Power_On_Hours / 12 Power_Cycle_Count | 4811 / 250 |
+| Error log | No Errors Logged |
+
+**Triage when binaries return EIO.** Only bash builtins and `/proc`/`/sys` reads still work:
+
+```bash
+read up _ < /proc/uptime; echo "$up"                       # did the host reboot?
+while read -r d m t o _; do echo "$d $m $o"; done < /proc/mounts   # look for emergency_ro
+read -r v < /sys/fs/ext4/dm-1/first_error_time; echo "$v"  # epoch of the ext4 abort
+read -r v < /sys/block/sdb/device/ioerr_cnt;    echo "$v"
+while read -t 2 -r l; do echo "$l"; done < /dev/kmsg       # dmesg without the binary
+for p in /proc/[0-9]*; do read -r c < "$p/comm"; echo "${p#/proc/} $c"; done   # what survived
+```
+
+### Why some guests died and others didn't
+
+All six LXCs are on the same thin pool, so they lost their disks together. Which ones
+**stayed up** came down to whether they needed the disk:
+
+| Guest | During the outage | Why |
+|---|---|---|
+| 200 PBS | container gone | constant disk I/O (task logs, datastore index) |
+| 205 Pulse | container gone | writes its state |
+| 204 Beszel | container up, hub process dead at 11:38 | SQLite writes; lasted ~1 h on cached pages |
+| 202 Caddy | **served normally** (memos 200) | config and certs cached in RAM, logs to stdout |
+| 201 Pi-hole #2 | **answered DNS** | FTL runs from memory |
+| 203 Tailscale-1 | **up** | tailscaled runs from memory |
+
+The three survivors would have failed on the first read that missed the page cache. Leaving
+yennefer like that was a matter of time, not a stable state.
+
+### Detection: Kuma caught it, the host check didn't
+
+Kuma on geralt alerted on `pulse`, `pbs` and `beszel` through `ntfy-alerts`, and that is
+how the user found out. This is the cross-node design in [uptime-kuma.md](uptime-kuma.md)
+doing its job: the Beszel hub cannot report its own host's failure. Two gaps remain:
+
+- **`yennefer-ping` stayed green the whole time.** The kernel kept answering ICMP with
+  no disk at all, and so did the network namespaces of the dead containers. A ping check
+  cannot tell this failure apart from a healthy host.
+- **smartd did not fire,** and could not have: the drive's SMART data stayed clean,
+  and smartd itself lives on the root filesystem that had just failed.
+
+### Red herrings (ruled out, all present before the incident)
+
+- **`ata2` at 1.5 Gbps** is the HP DVD-RW, not the SSD. The SSD is `ata3` at 6.0 Gbps.
+- **postfix `alias database unavailable`**: `/etc/aliases.db` is missing, and root mail had
+  been deferred for days before 11-05. Unrelated, but worth fixing (`newaliases`).
+- **`zfs-mount`/`zfs-share`/`zfs-zed` failed inside PBS LXC 200**: 20+ failures logged
+  before today. These ZFS units can't work in a container and do no harm.
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| **DONE** — reboot (power cycle) | the hung SSD controller. Only a power cycle clears it, and the kernel never offlined the device |
+| **DONE 13:21** — ALPM on the SSD port set to `max_performance`, now and via `/etc/udev/rules.d/60-ssd-alpm.rules` | the **suspected** trigger. Budget DRAM-less SATA SSDs are known to hang on link power-state transitions under `med_power_with_dipm`. Verified: `host2` reads `max_performance`, and `udevadm test` shows the rule matching `…/ata3/host2`. Nothing on the host (no TLP/powertop/PPD) overrides it. Costs ~1 W. Persistence across a reboot is **not yet observed** |
+| **OPEN** — replace the SSD if it drops again under `max_performance` | the alternative cause, the controller or its firmware (`H210928a`). A repeat with ALPM off rules out the power setting, so stop tuning and replace the drive |
+| **OPEN** — a liveness check that needs the disk, e.g. a Kuma push from a yennefer timer that writes to `/` | `yennefer-ping` staying green. Push monitors have their own flapping problem (timer drift), so use `OnCalendar` + `AccuracySec=1s` from the start |
+| **OPEN** — `newaliases` on yennefer | the deferred root mail, so PVE/smartd local mail can be delivered again |
+
+The udev rule matches `KERNEL=="host2"`, which depends on SCSI host numbering. That
+numbering is stable on this fixed-hardware laptop, but if a disk is ever added, re-check
+that `ls -l /sys/class/scsi_host/` still maps `host2` → `ata3`.

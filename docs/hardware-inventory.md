@@ -287,6 +287,12 @@ Note: the boot SSD on this node is SATA (`/dev/sdb`, `ID_BUS=ata`, no NVMe contr
 present on the PCI bus) — the M.2 slot on this chassis is SATA-only, unlike geralt's
 true NVMe drives.
 
+**2026-11-05: the boot SSD dropped off the SATA bus** (`DID_BAD_TARGET` on every
+LBA, root ext4 aborted, PBS/Beszel/Pulse down ~1¾ h). A power cycle recovered it
+and SMART is clean. SATA link power management on its port (`host2`) has been set to
+`max_performance` as the suspected trigger. If it drops again with that setting,
+replace the SSD. Full record: [storage.md](storage.md) § Incident 2026-11-05.
+
 **Network**
 - Ethernet: Realtek RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller
   (rev 15) — bridged as `vmbr0`, IP `<YENNEFER_IP>/24`
