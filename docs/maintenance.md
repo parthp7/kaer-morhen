@@ -514,9 +514,9 @@ cannot name a version it never recorded.
 | Host | Component | Current | Notes |
 |---|---|---|---|
 | geralt | pve-manager | **9.2.24** | 0 pending |
-| geralt | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback. ⚠️ **Suspect** since the 2026-11-06 hard freeze; pin pending ([geralt-hard-freeze.md](geralt-hard-freeze.md)) |
+| geralt | kernel | **7.0.14-12-pve, pinned 2026-11-06** | Rolled back from `7.0.14-26`, which is still installed but ⚠️ **suspect** after the 2026-11-06 hard freeze ([geralt-hard-freeze.md](geralt-hard-freeze.md)). `7.0.14-28` pending, held until the test ends (~11-20) |
 | yennefer | pve-manager | **9.2.24** | 0 pending |
-| yennefer | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback. ⚠️ **Suspect**: boot SSD dropped 11-05 and 11-06, never on `-12`; pin pending ([storage.md](storage.md) § Incident 2026-11-06) |
+| yennefer | kernel | **7.0.14-12-pve, pinned 2026-11-06** | Rolled back from `7.0.14-26`, which is still installed but ⚠️ **suspect**: boot SSD dropped 11-05 and 11-06, never on `-12` ([storage.md](storage.md) § Incident 2026-11-06). `7.0.14-28` pending, held until the test ends (~11-20) |
 | geralt, yennefer, ciri | beszel-agent | **0.21.1** | was 0.18.7 |
 | 200 `pbs` | Proxmox Backup Server | **4.2.8** | 0 pending |
 | 101, 201 Pi-hole | Core / Web / FTL | **v6.5 / v6.6.1 / v6.8** | 0 pending |
@@ -609,10 +609,12 @@ That the fix was needed at all is the argument for pinning these four.
 
 - **Kernel `7.0.14-26-pve` is under suspicion on both nodes (2026-11-06).** Within
   four days of it, yennefer's boot SSD dropped out twice and geralt hard-froze. Neither
-  had happened on `7.0.14-12` (70 clean days on both). Pin `7.0.14-12-pve` on both
-  (§ Rollback) and run for 2+ weeks. If yennefer's SSD drops on `-12`, replace the
-  drive. If both stay clean, stay pinned, skip `-26`, and check the next 7.0 point
-  release before unpinning. Records: [storage.md](storage.md) § Incident 2026-11-06,
+  had happened on `7.0.14-12` (70 clean days on both). **Pinned `7.0.14-12-pve` on
+  both 2026-11-06** (§ Rollback), verified live: running kernel, pin snippet and GRUB
+  default all on `-12`, invariants pass. **Test runs until ~2026-11-20; no kernel change
+  before then.** If yennefer's SSD drops on `-12`, replace the drive. If both stay
+  clean, skip `-26` and decide on `7.0.14-28` (already pending in apt) before
+  unpinning. `apt full-upgrade` during the test is safe: the pin keeps `-12` booting. Records: [storage.md](storage.md) § Incident 2026-11-06,
   [geralt-hard-freeze.md](geralt-hard-freeze.md).
 - **n8n stays on 2.x until 3.x is stable.** 3.0.0 and 3.0.1 are pre-releases
   (decided 2026-11-02: stable releases only), and n8n's blog gives early December

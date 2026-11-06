@@ -98,6 +98,6 @@ and was found only because services stopped working.
 | Action | Status | Answers |
 |---|---|---|
 | Reboot geralt | **DONE** 13:14 | the freeze |
-| Pin `7.0.14-12-pve` on **both** nodes ([maintenance.md](maintenance.md) § Rollback) | **OPEN** | suspect 1. Run it for 2+ weeks, several times the 4-day gap. A repeat on the old kernel clears the kernel; a clean run plus continued yennefer health convicts it |
+| Pin `7.0.14-12-pve` on **both** nodes ([maintenance.md](maintenance.md) § Rollback) | **DONE 2026-11-06**, verified live. Test runs to ~2026-11-20 | suspect 1. Run it for 2+ weeks, several times the 4-day gap. A repeat on the old kernel clears the kernel; a clean run plus continued yennefer health convicts it |
 | An external "is the lab alive" check: a free hosted uptime monitor or a phone app watching a Tailscale address or a Kuma push from outside | **OPEN** | the silent double failure |
 | If it freezes again: photograph the whole screen **before** rebooting, press Caps Lock (does its LED toggle?) and try `Alt+SysRq+S`, `U`, `B` (sync, remount read-only, reboot; `kernel.sysrq = 438` allows them, but not the debug dumps). A response to either means the kernel was still alive, note fan noise and how hot the chassis is | standing | tells a full CPU hang from a dead console |

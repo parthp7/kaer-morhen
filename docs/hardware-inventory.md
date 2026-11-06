@@ -296,7 +296,8 @@ replace the SSD. Full record: [storage.md](storage.md) § Incident 2026-11-05.
 **2026-11-06: it dropped again, with ALPM at `max_performance`,** so ALPM is ruled out.
 Replacement is **on hold**: the drive ran 70 days clean on kernel `7.0.14-12` and failed
 twice in four days on `7.0.14-26`, and geralt froze on the same kernel the same morning.
-Pin `7.0.14-12` first, and replace the SSD if it drops on that. Full record:
+`7.0.14-12` was pinned on both nodes on 2026-11-06 for a test running to ~11-20.
+Replace the SSD if it drops on that kernel. Full record:
 [storage.md](storage.md) § Incident 2026-11-06.
 
 **Network**

@@ -1792,7 +1792,7 @@ regression could explain both, but this is **a correlation, not a proof**.
 | Fix | Answers |
 |---|---|
 | **DONE 13:08** — power cycle | the hung drive, as on 11-05 |
-| **OPEN** — pin `7.0.14-12-pve` on yennefer (and geralt), procedure in [maintenance.md](maintenance.md) § Rollback | the kernel suspicion. It is the cheapest test that can tell the two causes apart |
+| **DONE 2026-11-06** — pinned `7.0.14-12-pve` on yennefer and geralt ([maintenance.md](maintenance.md) § Rollback). Verified after reboot: `-12` running, ALPM `max_performance`, 0 `ata3` exceptions. **Test runs to ~2026-11-20** | the kernel suspicion. It is the cheapest test that can tell the two causes apart |
 | **OPEN, conditional** — replace the SSD **if it drops on `7.0.14-12`** | a drive/firmware fault (`H210928a`). If the old kernel stays clean for 2+ weeks (several times the 4-day gap seen on -26), blame the kernel, keep the drive, and report upstream |
 | **KEEP** — ALPM `max_performance` udev rule | it costs ~1 W and removes one variable from the test. Do not revert it in the middle of the kernel test |
 | **OPEN** — alerting that survives both nodes being down | see [geralt-hard-freeze.md](geralt-hard-freeze.md) § Why nothing alerted |
