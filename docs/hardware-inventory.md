@@ -293,6 +293,13 @@ and SMART is clean. SATA link power management on its port (`host2`) has been se
 `max_performance` as the suspected trigger. If it drops again with that setting,
 replace the SSD. Full record: [storage.md](storage.md) § Incident 2026-11-05.
 
+**2026-11-06: it dropped again, with ALPM at `max_performance`,** so ALPM is ruled out.
+Replacement is **on hold**: the drive ran 70 days clean on kernel `7.0.14-12` and failed
+twice in four days on `7.0.14-26`, and geralt froze on the same kernel the same morning.
+`7.0.14-12` was pinned on both nodes on 2026-11-06 for a test running to ~11-20.
+Replace the SSD if it drops on that kernel. Full record:
+[storage.md](storage.md) § Incident 2026-11-06.
+
 **Network**
 - Ethernet: Realtek RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller
   (rev 15) — bridged as `vmbr0`, IP `<YENNEFER_IP>/24`
