@@ -1724,11 +1724,75 @@ doing its job: the Beszel hub cannot report its own host's failure. Two gaps rem
 | Fix | Answers |
 |---|---|
 | **DONE** — reboot (power cycle) | the hung SSD controller. Only a power cycle clears it, and the kernel never offlined the device |
-| **DONE 13:21** — ALPM on the SSD port set to `max_performance`, now and via `/etc/udev/rules.d/60-ssd-alpm.rules` | the **suspected** trigger. Budget DRAM-less SATA SSDs are known to hang on link power-state transitions under `med_power_with_dipm`. Verified: `host2` reads `max_performance`, and `udevadm test` shows the rule matching `…/ata3/host2`. Nothing on the host (no TLP/powertop/PPD) overrides it. Costs ~1 W. Persistence across a reboot is **not yet observed** |
-| **OPEN** — replace the SSD if it drops again under `max_performance` | the alternative cause, the controller or its firmware (`H210928a`). A repeat with ALPM off rules out the power setting, so stop tuning and replace the drive |
+| **DONE 13:21** — ALPM on the SSD port set to `max_performance`, now and via `/etc/udev/rules.d/60-ssd-alpm.rules` | the **suspected** trigger. Budget DRAM-less SATA SSDs are known to hang on link power-state transitions under `med_power_with_dipm`. Verified: `host2` reads `max_performance`, and `udevadm test` shows the rule matching `…/ata3/host2`. Nothing on the host (no TLP/powertop/PPD) overrides it. Costs ~1 W. Persistence across a reboot confirmed on 11-06. **It did not prevent the 11-06 dropout** |
+| **TRIGGERED 11-06, then put on hold** — replace the SSD if it drops again under `max_performance` | it dropped again on 11-06 with ALPM off, so ALPM is ruled out. Replacement is now conditional on a kernel test, see § Incident 2026-11-06 |
 | **OPEN** — a liveness check that needs the disk, e.g. a Kuma push from a yennefer timer that writes to `/` | `yennefer-ping` staying green. Push monitors have their own flapping problem (timer drift), so use `OnCalendar` + `AccuracySec=1s` from the start |
 | **OPEN** — `newaliases` on yennefer | the deferred root mail, so PVE/smartd local mail can be delivered again |
 
 The udev rule matches `KERNEL=="host2"`, which depends on SCSI host numbering. That
 numbering is stable on this fixed-hardware laptop, but if a disk is ever added, re-check
 that `ls -l /sys/class/scsi_host/` still maps `host2` → `ata3`.
+
+## Incident 2026-11-06 — yennefer's boot SSD dropped again, with ALPM off
+
+The same drive and the same failure as 11-05, **20 hours after the ALPM fix**. This
+time the kernel logged the start of it. The same morning geralt hard-froze on its own,
+53 minutes later (see [geralt-hard-freeze.md](geralt-hard-freeze.md)), so the whole lab
+was down and nothing alerted. Root cause is **not confirmed**. The one change common
+to both failures is kernel `7.0.14-26-pve`, installed on both nodes in the 2026-11-01/02
+maintenance pass.
+
+### What happened
+
+| When (IST) | Event |
+|---|---|
+| 11-06 04:30 | Nightly vzdump snapshots mount and unmount cleanly |
+| **06:16:30** | `ata3.00: exception … frozen`, `failed command: FLUSH CACHE EXT`, `Emask 0x4 (timeout)`. Two hard link resets (`link is slow to respond`), then `SATA link up 6.0 Gbps`, `retrying FLUSH`, `EH complete` |
+| 06:16–06:17 | pvestatd `status update time (104 s)`, `cfs-lock … timeout`, `pbs-vault … 500 read timeout`. The host is crawling |
+| **06:17:55** | **Last journal entry.** The drive did not come back a second time |
+| 07:09 | geralt freezes (separate fault). From here Kuma (on geralt) is dead too, so no alerts are possible |
+| ~13:00 | On site: the console showed ext4 journal write errors and the root fs remounting read-only. The login prompt redrew and never got as far as a shell |
+| 13:08:55 | Reboot (power cycle). Whole LAN dropped briefly (switch is powered from yennefer) |
+
+Downtime: **all yennefer guests ~6 h 50 m.** No data loss is known; PBS's datastore
+is on `sda`.
+
+### What is different from 11-05
+
+| | 11-05 | 11-06 |
+|---|---|---|
+| ALPM on `host2` | `med_power_with_dipm` | **`max_performance`** (live since 11-05 13:21; also seen persisted after the 13:08 reboot) |
+| What the log caught | nothing (journal stopped 12 min before the ext4 abort) | the first FLUSH timeout and the link resets |
+| ssh | logged in, binaries returned EIO | **key rejected** (`Permission denied (publickey)`); sshd could not read the key files |
+| Console login | not tried | prompt redrew in a loop |
+| Kernel | `7.0.14-26-pve` | `7.0.14-26-pve` |
+
+SMART after the reboot is unchanged and clean: PASSED, 0 reallocated, 0 reported
+uncorrectable, 0 CRC errors, empty error log, 36 °C. Power-on hours 4829, cycles 251.
+
+### The verdict changed: suspect the kernel before the drive
+
+The 11-05 plan was "if it drops again under `max_performance`, replace the SSD". It did,
+so ALPM is **ruled out**. But one more check changed the conclusion:
+
+| yennefer boot | Kernel | Span | ALPM on `host2` | `ata3` exceptions |
+|---|---|---|---|---|
+| -3 | `7.0.14-12-pve` | 08-24 → 11-01, **70 days** | `med_power_with_dipm` | **0** |
+| -2 | `7.0.14-26-pve` | 11-01 → 11-05, 3.5 days | `med_power_with_dipm` | dropout (11-05) |
+| -1 | `7.0.14-26-pve` | 11-05 → 11-06, 18 h | `max_performance` | **1** (dropout, 11-06) |
+
+On the old kernel the drive ran 70 days, with the very ALPM setting first blamed,
+and never logged an error. On the new kernel it dropped twice in four days.
+geralt, on the same new kernel, hard-froze 4 days in, for the first time since
+the GPU wedge was fixed on 2026-07-31. A drive that has started failing would not explain geralt. A kernel
+regression could explain both, but this is **a correlation, not a proof**.
+
+### Fixes, and which failure each one answers
+
+| Fix | Answers |
+|---|---|
+| **DONE 13:08** — power cycle | the hung drive, as on 11-05 |
+| **OPEN** — pin `7.0.14-12-pve` on yennefer (and geralt), procedure in [maintenance.md](maintenance.md) § Rollback | the kernel suspicion. It is the cheapest test that can tell the two causes apart |
+| **OPEN, conditional** — replace the SSD **if it drops on `7.0.14-12`** | a drive/firmware fault (`H210928a`). If the old kernel stays clean for 2+ weeks (several times the 4-day gap seen on -26), blame the kernel, keep the drive, and report upstream |
+| **KEEP** — ALPM `max_performance` udev rule | it costs ~1 W and removes one variable from the test. Do not revert it in the middle of the kernel test |
+| **OPEN** — alerting that survives both nodes being down | see [geralt-hard-freeze.md](geralt-hard-freeze.md) § Why nothing alerted |

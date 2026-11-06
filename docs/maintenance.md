@@ -344,6 +344,57 @@ signed off**, since the previous image is half the rollback.
 | A guest | PBS restore (`pct restore` / `qm restore`) — loop proven 2026-07-10 |
 | A container | Re-pin the previous tag from the registry, `docker compose up -d` |
 | A host, not booting | **Physical access. There is no host-level backup.** |
+| A host kernel | Pin the previous kernel, below |
+
+### Kernel rollback: pin the previous kernel
+
+Both nodes boot plain GRUB on UEFI (`/etc/kernel/proxmox-boot-uuids` does not exist,
+so `proxmox-boot-tool status` errors). On such hosts `proxmox-boot-tool kernel pin`
+writes `GRUB_DEFAULT` to `/etc/default/grub.d/proxmox-kernel-pin.cfg` and runs
+`update-grub` itself. `/etc/default/grub` (`GRUB_DEFAULT=0`) is left alone, and so
+is the `GRUB_CMDLINE_LINUX_DEFAULT` invariant. A pin survives later kernel installs
+until it is removed.
+
+**One node per window, physically present** (rules above). yennefer first. Its
+reboot drops the whole LAN, because it powers the switch.
+
+```bash
+# [on the node] 1. the rollback must be bootable, not merely installed
+ls -l /boot/vmlinuz-7.0.14-12-pve /boot/initrd.img-7.0.14-12-pve
+grep -c "7.0.14-12-pve" /boot/grub/grub.cfg            # expect > 0
+proxmox-boot-tool kernel list                          # 7.0.14-12-pve listed
+
+# 2. pin it. Prints "Setting '7.0.14-12-pve' as grub default entry and running update-grub."
+proxmox-boot-tool kernel pin 7.0.14-12-pve
+
+# 3. verify BEFORE rebooting: both must name 7.0.14-12-pve
+cat /etc/default/grub.d/proxmox-kernel-pin.cfg         # GRUB_DEFAULT="gnulinux-advanced-…>gnulinux-7.0.14-12-pve-advanced-…"
+grep -m1 '^set default=' /boot/grub/grub.cfg
+
+# 4. geralt only: stop ciri first (onboot: 1 brings it back)
+qm shutdown 150
+
+# 5.
+reboot
+```
+
+When it returns:
+
+```bash
+uname -r                                               # [on the node] 7.0.14-12-pve
+scripts/maintenance/lab-inventory.sh --strict          # [from the repo] invariants must pass
+scripts/maintenance/lab-smoke.sh
+```
+
+- **If the pin did not take**, select the kernel by hand at the GRUB menu (Advanced
+  options for Proxmox VE GNU/Linux, then `7.0.14-12-pve`). Then check step 3 again.
+- **Only want to try it for one boot?** Use `proxmox-boot-tool kernel pin 7.0.14-12-pve --next-boot`.
+- **To undo:** `proxmox-boot-tool kernel unpin`, then reboot. The snippet is removed and
+  GRUB goes back to entry 0, the newest kernel.
+- **While pinned, `lab-inventory.sh` reports `REBOOT NEEDED`** (running `-12`, newest
+  installed `-26`). That is expected. Do not "fix" it with a reboot.
+- **Never `apt autoremove` while a pin is in place** without a dry-run. Once the meta
+  package moves on, the pinned kernel is exactly what autoremove offers to remove.
 
 ## Releasing rollbacks (image pruning)
 
@@ -463,9 +514,9 @@ cannot name a version it never recorded.
 | Host | Component | Current | Notes |
 |---|---|---|---|
 | geralt | pve-manager | **9.2.24** | 0 pending |
-| geralt | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback |
+| geralt | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback. ⚠️ **Suspect** since the 2026-11-06 hard freeze; pin pending ([geralt-hard-freeze.md](geralt-hard-freeze.md)) |
 | yennefer | pve-manager | **9.2.24** | 0 pending |
-| yennefer | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback |
+| yennefer | kernel | **7.0.14-26-pve** | `7.0.14-12` is the rollback. ⚠️ **Suspect**: boot SSD dropped 11-05 and 11-06, never on `-12`; pin pending ([storage.md](storage.md) § Incident 2026-11-06) |
 | geralt, yennefer, ciri | beszel-agent | **0.21.1** | was 0.18.7 |
 | 200 `pbs` | Proxmox Backup Server | **4.2.8** | 0 pending |
 | 101, 201 Pi-hole | Core / Web / FTL | **v6.5 / v6.6.1 / v6.8** | 0 pending |
@@ -556,6 +607,13 @@ That the fix was needed at all is the argument for pinning these four.
 
 ## Open items
 
+- **Kernel `7.0.14-26-pve` is under suspicion on both nodes (2026-11-06).** Within
+  four days of it, yennefer's boot SSD dropped out twice and geralt hard-froze. Neither
+  had happened on `7.0.14-12` (70 clean days on both). Pin `7.0.14-12-pve` on both
+  (§ Rollback) and run for 2+ weeks. If yennefer's SSD drops on `-12`, replace the
+  drive. If both stay clean, stay pinned, skip `-26`, and check the next 7.0 point
+  release before unpinning. Records: [storage.md](storage.md) § Incident 2026-11-06,
+  [geralt-hard-freeze.md](geralt-hard-freeze.md).
 - **n8n stays on 2.x until 3.x is stable.** 3.0.0 and 3.0.1 are pre-releases
   (decided 2026-11-02: stable releases only), and n8n's blog gives early December
   for stable 3.x. Before moving, run Settings › Migration Report, available from
