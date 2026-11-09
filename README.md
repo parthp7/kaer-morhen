@@ -11,6 +11,7 @@
 - [Maintenance & upgrades](docs/maintenance.md) — the weekly/monthly/quarterly cadence, per-guest upgrade exceptions, geralt's boot-critical invariants, rollback paths, and the version registry for every host and container image
 - [Docker VM](docs/docker-vm.md) — ciri (VM 150): disk split, mounts, and the stack inventory
 - [GPU passthrough](docs/gpu-passthrough.md) — GTX 1060 via VFIO to ciri, the D3cold/PGON trap, and CDI wiring
+- [ciri services map](docs/ciri-services.md) — every stack on ciri as Mermaid flow diagrams, with the Uptime-Kuma check that watches each one and the gaps
 - [Uptime-Kuma](docs/uptime-kuma.md) — LXC 104: the monitor list, push monitors, and alerting gaps
 - [Tailscale](docs/tailscale.md) — subnet-router pair (203 primary, 103 standby) and split DNS
 - [Jellyfin clients](docs/jellyfin-clients.md) — client compatibility matrix and the Samsung Tizen sideload
