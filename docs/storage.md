@@ -75,7 +75,7 @@ ZFS ARC capped at **2 GiB** (`/etc/modprobe.d/zfs.conf`).
 
 | Device | Backing | Configured as | Purpose |
 |---|---|---|---|
-| 256 GB SATA SSD (boot) | LVM `pve` VG | `local` (dir) + `local-lvm` (thin) | Proxmox root/swap; **all yennefer guest disks** |
+| 256 GB SATA SSD (boot), EVM `EVMM2/256GB` since 2026-11-16 | LVM `pve` VG | `local` (dir) + `local-lvm` (thin) | Proxmox root/swap; **all yennefer guest disks** |
 | 1 TB HDD (WD) | ext4, label `backup`, `/mnt/backup` | `backup-dump` (dir) | vzdump target now; `/mnt/backup/pbs` reserved for PBS datastore |
 
 **No ZFS on yennefer** — deliberate. The disk only holds backups: PBS checksums and
@@ -1793,6 +1793,51 @@ regression could explain both, but this is **a correlation, not a proof**.
 |---|---|
 | **DONE 13:08** — power cycle | the hung drive, as on 11-05 |
 | **DONE 2026-11-06** — pinned `7.0.14-12-pve` on yennefer and geralt ([maintenance.md](maintenance.md) § Rollback). Verified after reboot: `-12` running, ALPM `max_performance`, 0 `ata3` exceptions. **Test runs to ~2026-11-20** | the kernel suspicion. It is the cheapest test that can tell the two causes apart |
-| **OPEN, conditional** — replace the SSD **if it drops on `7.0.14-12`** | a drive/firmware fault (`H210928a`). If the old kernel stays clean for 2+ weeks (several times the 4-day gap seen on -26), blame the kernel, keep the drive, and report upstream |
+| **DONE 2026-11-16** (see Resolution below) — replace the SSD **if it drops on `7.0.14-12`** | a drive/firmware fault (`H210928a`). If the old kernel stays clean for 2+ weeks (several times the 4-day gap seen on -26), blame the kernel, keep the drive, and report upstream |
 | **KEEP** — ALPM `max_performance` udev rule | it costs ~1 W and removes one variable from the test. Do not revert it in the middle of the kernel test |
 | **OPEN** — alerting that survives both nodes being down | see [geralt-hard-freeze.md](geralt-hard-freeze.md) § Why nothing alerted |
+
+## Resolution 2026-11-15 / 16 — the drive, not the kernel: SSD replaced
+
+**Third dropout on the pinned `-12` kernel.** The 11-06 boot ran `7.0.14-12` with ALPM
+at `max_performance`. Its journal stopped dead at **2026-11-10 08:46:59 IST**, with no
+ata or ext4 error logged. That rules out the kernel for yennefer. geralt has not frozen
+on `-12`, so its test continues separately.
+
+**Reproduced on demand (11-15).**
+- SMART self-tests were clean.
+- `dd if=/dev/sdb of=/dev/null bs=4M iflag=direct` stalled at byte **1,388,314,624**:
+  - `ata3` went frozen with no ERR/UNC status;
+  - the hard resets failed even at 3.0 Gbps;
+  - the kernel logged "reset failed, giving up", then `DID_BAD_TARGET`. That is the 11-05 signature.
+- After reseating the drive in the only M.2 slot, the same command failed at the
+  **identical byte**.
+- A run starting further in (`skip=340`) froze at sector 2,790,720.
+
+So the controller hangs on a fixed zone, sectors ~2.71M–2.79M, instead of reporting a
+read error. The `dmsetup` table puts that zone **inside `pve-swap`**. The likely
+explanation for the "random" dropouts is the kernel swapping through it.
+Reformatting can't fix a controller hang. Stopgap: swap off.
+
+**Replacement (11-16):** EVM `EVMM2/256GB`, full record in
+[proposal 013](proposals/013-yennefer-ssd-replacement.md).
+1. **Burn-in.** It was run unattended with
+   [`scripts/hardware/ssd-burnin.sh`](../scripts/hardware/ssd-burnin.sh) from
+   SystemRescue (`copytoram`). It wrote a unique stream over the whole drive, read it
+   back with a SHA-256 match, and did a second full read. 0 ata errors. PASS.
+2. **Rebuild.** A fresh PVE 9.2 install rather than a clone, since a clone would have
+   read through the bad zone. It ran the same day.
+3. **Restored from the host tarball:**
+   - SSH host keys;
+   - `/etc/pve` storage, jobs, users and tokens, and notifications;
+   - the ALPM rule, smartd to ntfy, the Beszel agent, and the `-12` pin.
+4. **Containers:** all six came back from stopped-mode vzdumps on `backup-dump`.
+5. **Swap:** back on.
+
+| Fix | Answers |
+|---|---|
+| **DONE** — SSD replaced, host rebuilt | the hanging controller |
+| **DONE** — swap re-enabled on the new drive | the 11-15 stopgap |
+| **KEEP** — ALPM `max_performance` rule, `-12` pin (until geralt's test ends) | consistency across both nodes |
+| **Post-reinstall gotcha** — Pulse pins the PVE TLS fingerprint. Update it in Pulse → Settings → Proxmox → yennefer after any reinstall or certificate regeneration | Pulse polling failed until fixed |
+| **OPEN** — retire the old NFORCE after ~2 clean weeks (~2026-11-30) | |

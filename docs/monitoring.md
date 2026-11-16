@@ -118,8 +118,55 @@ Labels shown here are the current (2026-09-02) values; the original build set
 bare paths and no labels. ciri's agent carries its own list — see
 [docker-vm.md](docker-vm.md).
 
-Temperatures (coretemp) and the SMART tab appeared without extra packages —
-PVE ships smartmontools; no lm-sensors needed on this hardware.
+Temperatures (coretemp) and the SMART tab appeared without extra packages.
+PVE ships smartmontools, and no lm-sensors is needed on this hardware.
+
+**SMART data needs capabilities (fixed 2026-11-17).** The SMART tab was empty on
+both nodes for a long time. The agent runs as the unprivileged `beszel` user, and
+membership of the `disk` group only lets it open the drives. Reading SMART needs
+kernel capabilities on top of that:
+- **SATA:** ATA pass-through needs `CAP_SYS_RAWIO`. Without it, the agent logs
+  `smartctl failed … no serial number (exit status 2)`.
+- **NVMe:** admin commands need `CAP_SYS_ADMIN`. The NVMe device files also have to
+  be readable by the `disk` group, because the default is `root`-only `0600`.
+
+The capability is set in a separate drop-in, so agent updates and `override.conf`
+don't touch it:
+
+```bash
+# both nodes — /etc/systemd/system/beszel-agent.service.d/smart.conf
+[Service]
+AmbientCapabilities=CAP_SYS_RAWIO CAP_SYS_ADMIN      # yennefer: CAP_SYS_RAWIO only (no NVMe)
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_SYS_ADMIN
+
+# geralt only — /etc/udev/rules.d/60-nvme-disk-group.rules
+SUBSYSTEM=="nvme", KERNEL=="nvme[0-9]*", GROUP="disk", MODE="0660"
+```
+
+Apply with `udevadm control --reload && udevadm trigger --subsystem-match=nvme`, then
+`systemctl daemon-reload && systemctl restart beszel-agent`. Trade-off: `CAP_SYS_ADMIN`
+is close to root, on an agent that listens on :45876. It was accepted on geralt
+because the drives are old and their wear data is wanted in Beszel.
+
+Check it read-only:
+- `grep CapEff /proc/$(systemctl show -p MainPID --value beszel-agent)/status`;
+- the hub's `smart_devices` table should hold 4 rows for geralt and 2 for yennefer.
+
+**After a node reinstall, the agent's fingerprint changes.** The agent keeps it in
+`/var/lib/beszel-agent/fingerprint`, which isn't in the host tarball. The hub then
+rejects the WebSocket with `fingerprint mismatch`, and the agent falls back to SSH
+mode on :45876. Data still flows, but the log fills with warnings.
+
+Fix (done for yennefer 2026-11-17):
+1. Beszel → Settings → Tokens & Fingerprints → the node → reset.
+2. **The reset also issues a new token**, so the agent then gets `401` until it's
+   updated. Copy the new token and set it in the agent:
+   `sed -i 's/^Environment="TOKEN=.*"$/Environment="TOKEN=<new>"/' /etc/systemd/system/beszel-agent.service`
+3. Run `systemctl daemon-reload && systemctl restart beszel-agent`. A restart is
+   needed in any case: while the SSH fallback is connected, the agent doesn't retry
+   the WebSocket.
+
+Done when the log shows `WebSocket connected` and there is an ESTAB connection to the hub on :8090.
 
 ### 3. Beszel alerts → ntfy
 

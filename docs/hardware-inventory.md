@@ -279,7 +279,7 @@ targeted fix rather than new hardware.
 
 | Device | Type | Size | Model | Role |
 |---|---|---|---|---|
-| sdb | SSD, SATA | 256 GB (238.5 GiB) | NFORCE 256M2 G2-PN43SY | Proxmox boot drive (`pve` VG: root/swap/data-thin); all yennefer guest disks on `local-lvm` |
+| sdb | SSD, SATA, M.2 2280, DRAM-less | 256 GB (238.5 GiB) | EVM `EVMM2/256GB`, fw HDFEF3.4 (since 2026-11-16) | Proxmox boot drive (`pve` VG: root 69 G / swap 7.7 G / data-thin 141 G); all yennefer guest disks on `local-lvm` |
 | sda | HDD, SATA | 1 TB (931.5 GiB) | WDC WD10JPVX-60JC3T1 | ext4 `backup` at `/mnt/backup` — vzdump + future PBS datastore (see [storage.md](storage.md)) |
 | sr0 | DVD-RW (SATA) | 1 GB (media dependent) | HP DVDRW GUE1N | Unused optical drive |
 
@@ -299,6 +299,22 @@ twice in four days on `7.0.14-26`, and geralt froze on the same kernel the same 
 `7.0.14-12` was pinned on both nodes on 2026-11-06 for a test running to ~11-20.
 Replace the SSD if it drops on that kernel. Full record:
 [storage.md](storage.md) § Incident 2026-11-06.
+
+**2026-11-16: SSD REPLACED.** The drive dropped a third time on the pinned `-12` kernel
+(11-10), which rules out the kernel. On 11-15 the fault was reproduced on demand: a
+full `dd` read hung the controller at the **same LBA, ~2.71M, every run**, inside
+`pve-swap`, even after a reseat. The replacement is an **EVM `EVMM2/256GB`**. It
+passed a full write and read-back burn-in, then got a fresh PVE 9.2 install with the
+config and guests restored ([proposal 013](proposals/013-yennefer-ssd-replacement.md)).
+
+What to know about the new drive:
+- **Sustained writes:** it's DRAM-less, with ~90 GB of SLC cache, then a steady ~49 MB/s.
+- **Reads:** ~270 MB/s.
+- **Misleading SMART fields:** the Device Statistics "endurance used" (read 91, then
+  73) and the temperature (shows -41 °C) are firmware junk. Track wear with
+  attributes 165/167 (max/avg erase count) instead.
+- **No SMART error log:** the drive doesn't support one.
+- **Old drive:** the NFORCE is kept labelled until ~2026-11-30, then retired.
 
 **Network**
 - Ethernet: Realtek RTL8111/8168/8211/8411 PCI Express Gigabit Ethernet Controller
