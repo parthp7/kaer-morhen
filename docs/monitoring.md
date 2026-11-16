@@ -155,8 +155,18 @@ Check it read-only:
 **After a node reinstall, the agent's fingerprint changes.** The agent keeps it in
 `/var/lib/beszel-agent/fingerprint`, which isn't in the host tarball. The hub then
 rejects the WebSocket with `fingerprint mismatch`, and the agent falls back to SSH
-mode on :45876. Data still flows, but the log fills with warnings. Fix: Beszel →
-Settings → Tokens & Fingerprints → the node → reset the fingerprint.
+mode on :45876. Data still flows, but the log fills with warnings.
+
+Fix (done for yennefer 2026-11-17):
+1. Beszel → Settings → Tokens & Fingerprints → the node → reset.
+2. **The reset also issues a new token**, so the agent then gets `401` until it's
+   updated. Copy the new token and set it in the agent:
+   `sed -i 's/^Environment="TOKEN=.*"$/Environment="TOKEN=<new>"/' /etc/systemd/system/beszel-agent.service`
+3. Run `systemctl daemon-reload && systemctl restart beszel-agent`. A restart is
+   needed in any case: while the SSH fallback is connected, the agent doesn't retry
+   the WebSocket.
+
+Done when the log shows `WebSocket connected` and there is an ESTAB connection to the hub on :8090.
 
 ### 3. Beszel alerts → ntfy
 
