@@ -262,3 +262,153 @@ light-guest disk.
 **Gotcha.** The first SystemRescue session (booted without copytoram) lost the stick to a
 USB disconnect, and every later binary load failed with squashfs I/O errors. Always
 use `copytoram` for long tests.
+
+---
+
+# Part 2: fresh Proxmox VE install and restore
+
+**Inputs, all verified 2026-11-16:**
+- **Host config tarball:** `/mnt/backup/yennefer-host-2026-11-15.tgz`.
+- **Container backups for 200–205:** in `/mnt/backup/dump/dump/`. They are stopped-mode vzdumps from 11-16, newer than the PBS copies from 11-14.
+- **Mac copies:** identical copies of the tarball and all six container backups are in `~/workspace/homelab-backup/yennefer-rebuild/`.
+- **Installer:** PVE **9.2-1** ISO on the stick (re-flashed with `dd`).
+
+**Approach:** a fresh install rather than a clone (cloning would have meant
+reading the old drive's bad zone). Then put back the host-level state the
+installer can't know about:
+- the SSH identity (host keys and authorized keys);
+- the `/etc/pve` config (storage, backup job, users and API tokens for Pulse and
+  homepage, the ntfy notification target);
+- the host tweaks (ALPM udev rule, smartd to ntfy, kernel pin, Beszel agent);
+- the six containers.
+
+### A. Install (laptop console)
+
+1. Boot the stick (Esc → F9 → USB) → **Install Proxmox VE (Graphical)**.
+2. **Target harddisk: the 238 GB `EVMM2/256GB` drive. NOT the 931 GB WDC**, which holds every backup.
+   - Options → `ext4`, leave the sizes at their defaults (~60 GB root, ~8 GB swap, the rest goes to the `data` thin pool).
+3. Country India, timezone **Asia/Kolkata**, keyboard U.S. English.
+4. Root password, and email the same as before.
+5. Network:
+   - interface `nic0`, and leave **pin network interface names** on, because the old config uses `nic0`;
+   - hostname `yennefer.kaermorhen.internal`;
+   - IP `<YENNEFER_IP>/24`, gateway `<LAN_PREFIX>.1`, DNS `<LAN_PREFIX>.1`.
+6. Install → reboot → remove the stick.
+
+**Done when** `https://<YENNEFER_IP>:8006` shows the login page.
+
+### B. Everything else, over SSH from the Mac (you run it; easier than typing on the laptop)
+
+First login only (the host keys are new until B2):
+```bash
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@<YENNEFER_IP>
+```
+
+**B1. Mount the backup disk and unpack the old config**
+```bash
+mkdir -p /mnt/backup
+echo 'LABEL=backup /mnt/backup ext4 defaults,noatime,nofail 0 2' >> /etc/fstab
+systemctl daemon-reload && mount /mnt/backup && ls /mnt/backup /mnt/backup/dump/dump
+mkdir -p /root/old && tar -xzf /mnt/backup/yennefer-host-2026-11-15.tgz -C /root/old
+```
+Done when the ls shows `pbs/`, `dump/` and the six `vzdump-lxc-20*-2026_11_16-*` files.
+
+**B2. SSH identity**
+
+Restores the old host keys, so `known_hosts` on the Mac, geralt and ciri stays valid.
+It also restores the authorized keys and root's own keys.
+```bash
+cp -a /root/old/etc/ssh/ssh_host_* /etc/ssh/
+cp /root/old/etc/pve/priv/authorized_keys /etc/pve/priv/authorized_keys
+cp -a /root/old/root/.ssh/id_rsa /root/old/root/.ssh/id_rsa.pub /root/old/root/.ssh/config /root/.ssh/
+systemctl restart ssh
+```
+Done when `exit` then plain `ssh lab-yennefer` logs in with no host-key warning and no password.
+
+**B3. Repos, upgrade, kernel pin**
+
+7.0.14-12 is the kernel this hardware ran clean for 70 days, and it matches geralt's pin.
+```bash
+cp /root/old/etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/
+apt update && apt full-upgrade -y
+apt install -y proxmox-kernel-7.0.14-12-pve-signed
+proxmox-boot-tool kernel pin 7.0.14-12-pve
+```
+Done when `apt update` shows no `enterprise.proxmox.com` 401 errors and the pin command reports success.
+
+**B4. Proxmox config**
+
+Restores storage, the 04:30 PBS job, users and API tokens (Pulse, homepage), and ntfy notifications.
+```bash
+cd /root/old/etc/pve
+cp storage.cfg jobs.cfg user.cfg notifications.cfg datacenter.cfg /etc/pve/
+mkdir -p /etc/pve/priv/storage
+cp priv/token.cfg priv/notifications.cfg /etc/pve/priv/
+cp priv/storage/pbs-vault.pw /etc/pve/priv/storage/
+pvesm status
+```
+Done when `local`, `local-lvm` and `backup-dump` are `active`. `pbs-vault` stays inactive until CT 200 is up.
+
+**B5. Host tweaks: ALPM, smartd → ntfy, Beszel agent**
+```bash
+cp /root/old/etc/udev/rules.d/60-ssd-alpm.rules /etc/udev/rules.d/
+cp /root/old/etc/ntfy.topic /etc/ntfy.topic && chmod 600 /etc/ntfy.topic
+install -m 755 /root/old/root/smartd-ntfy.sh /usr/local/bin/smartd-ntfy.sh
+cp /root/old/etc/smartd.conf /etc/smartd.conf && systemctl restart smartd
+
+S=/root/old/etc/systemd/system/beszel-agent.service
+K=$(sed -n 's/.*"KEY=\(.*\)"$/\1/p' $S); T=$(sed -n 's/.*"TOKEN=\(.*\)"$/\1/p' $S)
+curl -sL https://get.beszel.dev -o /tmp/install-agent.sh && bash /tmp/install-agent.sh -k "$K" -t "$T"
+mkdir -p /etc/systemd/system/beszel-agent.service.d
+cp /root/old/etc/systemd/system/beszel-agent.service.d/override.conf /etc/systemd/system/beszel-agent.service.d/
+systemctl daemon-reload && systemctl restart beszel-agent && systemctl is-active beszel-agent smartd
+```
+Done when both report `active`. If the Beszel installer prompts, accept the defaults.
+
+**B6. Restore the six containers**
+
+The six backups are ~2 GB compressed and ~16 GB once restored, which is well inside the drive's ~90 GB fast cache.
+```bash
+cd /mnt/backup/dump/dump
+for id in 200 201 202 203 204 205; do
+  pct restore $id vzdump-lxc-$id-2026_11_16-*.tar.zst --storage local-lvm || break
+done
+pct config 200 | grep mp0      # expect: mp0: /mnt/backup/pbs,mp=/datastore
+pct config 203 | grep dev0     # expect: dev0: /dev/net/tun
+```
+If `mp0` is missing: `pct set 200 -mp0 /mnt/backup/pbs,mp=/datastore`.
+
+**B7. Reboot**
+
+This applies the kernel pin and the ALPM rule. All six containers come back via `onboot: 1`.
+```bash
+reboot
+```
+
+### C. Verify, after the reboot
+
+```bash
+uname -r                                                   # 7.0.14-12-pve
+swapon --show                                              # /dev/dm-? ~8G — swap back ON
+ls -l /sys/block/sd*/device | grep -o 'host[0-9]'; cat /sys/class/scsi_host/host*/link_power_management_policy
+pct list                                                   # 200–205 running
+pvesm status                                               # all four active, incl. pbs-vault
+```
+
+Then check from outside the host:
+- **Pi-hole:** `dig @<LAN_PREFIX>.201 google.com` answers.
+- **Tailscale:** `pct exec 203 -- tailscale status` shows it online.
+- **Kuma:** all yennefer monitors are green.
+- **Beszel:** yennefer is reporting.
+- **Pulse:** sees yennefer. The PVE TLS certificate is new, so re-accept it in Pulse settings if it complains.
+- **PBS:** GUI → Datacenter → Backup → Run now. All six back up to `pbs-vault` OK.
+
+**Done when** all of the above pass.
+
+### D. After
+
+- Old SSD: keep it labelled for ~2 weeks of clean running, then retire it.
+- Switch power: move it back to yennefer's USB if that's still wanted.
+- Docs: update `hardware-inventory.md` (sdb model, firmware, the DRAM-less write profile) and `storage.md` (yennefer section).
+- Delete `/root/old` once everything is verified. It holds private keys, though only
+  in a root-only directory.
