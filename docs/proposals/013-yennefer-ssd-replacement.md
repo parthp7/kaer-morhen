@@ -1,6 +1,6 @@
 # 013 — yennefer boot SSD replacement: part 1, burn-in test of the new drive
 
-**Status:** part 1 **PASSED** 2026-11-16 (results at the end). Part 2 not started.
+**Status:** **DONE 2026-11-16.** Part 1 passed; part 2 installed, restored and verified the same night.
 **Why:** yennefer's boot SSD (NFORCE 256M2 G2, `sdb`) hangs its controller on a
 fixed LBA zone, sectors ~2.71M–2.79M, which sits inside `pve-swap`. A
 `dd` read freezes at the same byte every time, before and after a reseat. The
@@ -400,7 +400,10 @@ Then check from outside the host:
 - **Tailscale:** `pct exec 203 -- tailscale status` shows it online.
 - **Kuma:** all yennefer monitors are green.
 - **Beszel:** yennefer is reporting.
-- **Pulse:** sees yennefer. The PVE TLS certificate is new, so re-accept it in Pulse settings if it complains.
+- **Pulse:** sees yennefer. **Pulse pins the PVE TLS fingerprint**, so after a reinstall its log shows
+  `certificate fingerprint mismatch`. Get the new fingerprint with
+  `openssl s_client -connect localhost:8006 </dev/null 2>/dev/null | openssl x509 -noout -fingerprint -sha256`
+  and paste it into Pulse → Settings → Proxmox → yennefer → Fingerprint. (Done 2026-11-16.)
 - **PBS:** GUI → Datacenter → Backup → Run now. All six back up to `pbs-vault` OK.
 
 **Done when** all of the above pass.
